@@ -1,0 +1,348 @@
+/* AREAL Design System — Warm Coffee-Golden Theme */
+/* Brand: #262423 (noble dark), #fdf8f3 (warm cream), #a56eff (accent) */
+
+/* =============================================
+   1. Hide sidebar collapse button
+   ============================================= */
+#sidebar-content > button:has(> .sr-only) {
+  display: none !important;
+}
+
+/* =============================================
+   2. Move search bar to sidebar (above navigation)
+   ============================================= */
+@media (min-width: 1024px) {
+  #search-bar-entry {
+    position: fixed !important;
+    left: 1.75rem;
+    top: 4.5rem;
+    width: calc(19rem - 3.5rem);
+    z-index: 50;
+  }
+
+  div:has(> #search-bar-entry) {
+    flex: 0 0 0 !important;
+    min-width: 0 !important;
+    width: 0 !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+  }
+
+  #navigation-items {
+    padding-top: 3.5rem !important;
+  }
+
+  /* Move tabs into main navbar row, next to Launch App */
+  div:has(> .nav-tabs) {
+    position: absolute !important;
+    top: 0;
+    right: 13rem;
+    height: 4rem !important;
+    padding: 0 !important;
+    display: flex !important;
+    align-items: center;
+    z-index: 20;
+  }
+
+  .nav-tabs {
+    height: 100% !important;
+    gap: 2rem !important;
+  }
+
+  /* Hide the active tab underline (it overflows the merged row) */
+  .nav-tabs-item > div {
+    display: none !important;
+  }
+}
+
+/* =============================================
+   3. TOC — left border indicator
+   ============================================= */
+.toc-item {
+  border-left: 2px solid rgba(0, 0, 0, 0.1);
+  padding-left: 12px;
+}
+
+html.dark .toc-item {
+  border-left-color: rgba(255, 255, 255, 0.1);
+}
+
+/* =============================================
+   4. Warm brand tones — Light mode
+   ============================================= */
+
+/* Sidebar warm background */
+#sidebar-content {
+  background-color: rgba(253, 248, 243, 0.6);
+}
+
+/* Sidebar border warmth */
+#sidebar-content {
+  border-color: rgba(38, 36, 35, 0.08) !important;
+}
+
+/* Sidebar group headers */
+.sidebar-group-header h5 {
+  letter-spacing: 0.01em;
+}
+
+/* Active sidebar item */
+#sidebar-content a[aria-current="page"],
+#sidebar-content li a.font-medium {
+  color: #262423 !important;
+  font-weight: 600;
+}
+
+/* Navbar warm background */
+#navbar > div:first-child {
+  background-color: rgba(253, 248, 243, 0.85) !important;
+  backdrop-filter: blur(12px);
+}
+
+#navbar > div:nth-child(2) {
+  background-color: rgba(253, 248, 243, 0.85) !important;
+}
+
+/* Primary button in navbar — Launch App */
+#topbar-cta-button a {
+  background-color: #a56eff !important;
+  color: white !important;
+  padding: 0.5rem 1.25rem !important;
+  border-radius: 8px !important;
+  font-weight: 600 !important;
+  font-size: 12px !important;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  transition: background-color 0.2s ease;
+}
+
+#topbar-cta-button a:hover {
+  background-color: #9254e0 !important;
+}
+
+#topbar-cta-button a div {
+  color: white !important;
+}
+
+/* Hide the arrow icon in CTA */
+#topbar-cta-button svg {
+  display: none !important;
+}
+
+/* Footer warm tones */
+#footer {
+  border-top-color: rgba(38, 36, 35, 0.08);
+}
+
+/* Links — warm hover */
+a:hover {
+  color: #a56eff;
+}
+
+/* Headings — noble dark */
+h1, h2, h3, h4, h5, h6 {
+  color: #262423;
+}
+
+/* =============================================
+   5. Warm brand tones — Dark mode
+   ============================================= */
+
+html.dark #sidebar-content {
+  background-color: rgba(38, 36, 35, 0.6);
+  border-color: rgba(255, 255, 255, 0.05) !important;
+}
+
+html.dark #navbar > div:first-child {
+  background-color: rgba(38, 36, 35, 0.9) !important;
+  backdrop-filter: blur(12px);
+}
+
+html.dark #navbar > div:nth-child(2) {
+  background-color: rgba(38, 36, 35, 0.9) !important;
+}
+
+html.dark #sidebar-content a[aria-current="page"],
+html.dark #sidebar-content li a.font-medium {
+  color: #F9F7EF !important;
+}
+
+html.dark h1,
+html.dark h2,
+html.dark h3,
+html.dark h4,
+html.dark h5,
+html.dark h6 {
+  color: #F9F7EF;
+}
+
+/* =============================================
+   6. Refined card & content spacing
+   ============================================= */
+
+/* Rounded corners matching brand */
+#search-bar-entry {
+  border-radius: 10px !important;
+}
+
+/* Next/prev page cards — warm */
+a[class*="border"][class*="rounded"] {
+  border-color: rgba(38, 36, 35, 0.08);
+}
+
+html.dark a[class*="border"][class*="rounded"] {
+  border-color: rgba(255, 255, 255, 0.07);
+}
+
+/* =============================================
+   7. Hide pagination on intro page
+   ============================================= */
+.intro-page ~ #pagination,
+.intro-page ~ * #pagination,
+body:has(.intro-page) #pagination {
+  display: none !important;
+}
+
+/* =============================================
+   8. Hero background — intro page only
+   ============================================= */
+
+/* Gradient overlay triggered by .intro-gradient class in MDX */
+.intro-gradient {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 100vh;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 70% 40% at 50% -5%, rgba(255, 237, 236, 0.25) 0%, transparent 70%),
+    radial-gradient(ellipse 50% 30% at 60% 0%, rgba(206, 200, 255, 0.15) 0%, transparent 60%);
+}
+
+html.dark .intro-gradient {
+  background:
+    radial-gradient(ellipse 70% 40% at 50% -5%, rgba(165, 110, 255, 0.08) 0%, transparent 70%),
+    radial-gradient(ellipse 50% 30% at 60% 0%, rgba(255, 237, 236, 0.03) 0%, transparent 60%);
+}
+
+/* =============================================
+   9. Changelog Tags
+   ============================================= */
+
+.changelog-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  margin-right: 6px;
+  line-height: 1.6;
+}
+
+.changelog-tag-update {
+  background-color: rgba(165, 110, 255, 0.12);
+  color: #a56eff;
+}
+
+.changelog-tag-feature {
+  background-color: rgba(72, 187, 120, 0.12);
+  color: #38a169;
+}
+
+.changelog-tag-fix {
+  background-color: rgba(237, 137, 54, 0.12);
+  color: #dd6b20;
+}
+
+.changelog-tag-breaking {
+  background-color: rgba(245, 101, 101, 0.12);
+  color: #e53e3e;
+}
+
+.changelog-tag-security {
+  background-color: rgba(66, 153, 225, 0.12);
+  color: #3182ce;
+}
+
+html.dark .changelog-tag-update {
+  background-color: rgba(165, 110, 255, 0.18);
+  color: #c9a0ff;
+}
+
+html.dark .changelog-tag-feature {
+  background-color: rgba(72, 187, 120, 0.18);
+  color: #68d391;
+}
+
+html.dark .changelog-tag-fix {
+  background-color: rgba(237, 137, 54, 0.18);
+  color: #f6ad55;
+}
+
+html.dark .changelog-tag-breaking {
+  background-color: rgba(245, 101, 101, 0.18);
+  color: #fc8181;
+}
+
+html.dark .changelog-tag-security {
+  background-color: rgba(66, 153, 225, 0.18);
+  color: #63b3ed;
+}
+
+/* Changelog entry styling */
+.changelog-entry {
+  border-left: 2px solid rgba(165, 110, 255, 0.3);
+  padding-left: 1.25rem;
+  margin-bottom: 2.5rem;
+}
+
+html.dark .changelog-entry {
+  border-left-color: rgba(165, 110, 255, 0.4);
+}
+
+.changelog-date {
+  font-size: 13px;
+  font-weight: 500;
+  color: #888;
+  letter-spacing: 0.02em;
+  margin-bottom: 4px;
+}
+
+/* Clickable tag links */
+.changelog-tag-link,
+.changelog-tag-link:hover,
+.changelog-tag-link:focus,
+.changelog-tag-link:active,
+.changelog-tag-link:visited {
+  text-decoration: none !important;
+  border-bottom: none !important;
+  box-shadow: none !important;
+  background-image: none !important;
+  transition: transform 0.15s ease, filter 0.15s ease;
+  display: inline-flex;
+}
+
+.changelog-tag-link:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.1);
+}
+
+.changelog-tag-link:hover .changelog-tag {
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+html.dark .changelog-tag-link:hover .changelog-tag {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+/* Hide pagination on changelog pages */
+body:has(.changelog-entry) #pagination,
+body:has(.changelog-tag) #pagination {
+  display: none !important;
+}

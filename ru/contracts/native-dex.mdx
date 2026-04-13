@@ -1,0 +1,1253 @@
+---
+title: "Native DEX"
+description: "Разрешённый AMM со стандартной кривой и пулами концентрированной ликвидности"
+---
+
+# Native DEX
+
+<Card title="✅ Готово к разработке" icon="check" color="#48bb78">
+  Эта спецификация контракта прошла аудит бизнес-логики, техническую проверку, проверку кросс-программной интеграции (OT + RWT + YD), верификацию архитектуры комиссий и анализ потоков crank-операций. Разработчик может реализовать контракт по этому документу.
+</Card>
+
+Специализированный AMM для торговли токенами OT и RWT. Два типа пулов: постоянное произведение (StandardCurve) и концентрированная ликвидность на основе бинов (Concentrated). Создание пулов ограничено вайтлистом — только одобренные создатели могут запускать пулы. Все комиссии за свопы делятся между LP-холдерами (доступны для вывода из fee vault каждого пула) и Areal Finance (протокольная комиссия в RWT). Комиссии взимаются **поверх суммы свопа** в RWT для сохранения капитализации пула. Пары с токенами OT взимают дополнительную комиссию 0,5%, которая направляется в казначейство проекта OT (управляется Futarchy). Пулы, содержащие токены OT, также получают доход в RWT через Yield Distribution — автокомпаундинг в резервы через `compound_yield`.
+
+<Warning>
+  **Обновляемый контракт.** Полномочия на обновление программы = Team Multisig (Squads). Отделены от authority конфигурации и authority паузы.
+</Warning>
+
+## Ключевые концепции
+
+<CardGroup cols={3}>
+  <Card title="22 инструкции" icon="code">
+    Конфигурация, создание пулов, добавление/удаление/zap ликвидности, своп, сдвиг, компаундинг, nexus (инициализация, депозит, вывод прибыли, своп, добавление/удаление LP, обновление менеджера), пауза, authority
+  </Card>
+  <Card title="6 аккаунтов состояния" icon="database">
+    DexConfig, PoolState, PoolCreators, LpPosition, BinArray, LiquidityNexus
+  </Card>
+  <Card title="6 PDA Seeds" icon="key">
+    dex_config, pool_creators, pool, lp, bins, liquidity_nexus
+  </Card>
+</CardGroup>
+
+## Два типа пулов
+
+<CardGroup cols={2}>
+  <Card title="StandardCurve" icon="chart-line">
+    **Постоянное произведение: x × y = k**
+
+    - Простая, проверенная математика AMM
+    - Непрерывное ценообразование: `price = reserve_b / reserve_a`
+    - LP-доли: `sqrt(a × b)` при первом добавлении, пропорционально после
+    - Подходит для: общей торговли, глубокой ликвидности
+  </Card>
+  <Card title="Concentrated" icon="chart-bar">
+    **Ликвидность на основе бинов (модель книги ордеров)**
+
+    - 70 бинов на пул, настраиваемый размер шага (по умолчанию 0,1%)
+    - Бины ниже активного = только USDC (bid). Бины выше = только RWT (ask). Активный бин = оба.
+    - Пользователи добавляют/удаляют ликвидность так же, как в StandardCurve — бинами управляет Rebalancer
+    - Своп проходит через бины, потребляя ликвидность и сдвигая активный бин
+    - `shift_liquidity` (только Rebalancer) перепозиционирует диапазон вокруг NAV
+    - Подходит для: узких диапазонов вокруг NAV, эффективности капитала
+  </Card>
+</CardGroup>
+
+## Архитектура комиссий
+
+<Steps>
+  <Step title="Базовая комиссия">
+    Применяется к каждому свопу. По умолчанию: 50 bps (0,5%). Максимум: 1 000 bps (10%). Устанавливается для каждого пула при создании, копируется из DexConfig.
+  </Step>
+  <Step title="Распределение комиссии">
+    - **LP-комиссия** (по умолчанию 50% от базовой) → в **RWT**, переводится в fee vault пула. LP-холдеры забирают вознаграждения через `claim_lp_fees` — мгновенно, без vesting.
+    - **Протокольная комиссия** (по умолчанию 50% от базовой) → всегда в **RWT**, переводится на `areal_fee_destination` (RWT ATA Areal Finance).
+  </Step>
+  <Step title="Комиссии поверх свопа (без размывания пула)">
+    Все комиссии взимаются **поверх суммы свопа** в RWT. Резервы пула никогда не уменьшаются на комиссии — общая капитализация пула остаётся неизменной. Если пользователь продаёт RWT: пользователь платит `amount_in + fees` (дополнительные RWT сверху). Если пользователь покупает RWT: пользователь получает `amount_out` полностью, комиссии берутся отдельно из валового выхода RWT перед доставкой.
+  </Step>
+  <Step title="Всегда в RWT">
+    Каждый пул образует пару с RWT (например, OT/RWT, RWT/USDC). Все комиссии (LP, протокольная, казначейство OT) всегда берутся в RWT. Не нужно указание токена комиссии, логика конвертации не требуется.
+  </Step>
+  <Step title="LP-комиссия → Fee Vault (мгновенный вывод)">
+    LP-комиссии собираются в **fee vault каждого пула** (RWT-аккаунт, принадлежащий PDA пула). LP-холдеры забирают свою пропорциональную долю в любое время через `claim_lp_fees` — без вестинга, без merkle proof, без офф-чейн сервера. Доступная сумма = `fee_vault_balance × lp_shares / total_shares - already_claimed`.
+  </Step>
+  <Step title="Комиссия казначейства OT (только для пар с OT)">
+    Пулы с токеном OT взимают **дополнительные 50 bps (0,5%)** на каждом свопе — отправляются целиком в RWT на Treasury RWT ATA проекта OT (управляется Futarchy). Итоговая эффективная комиссия для пар с OT: **100 bps (1%)**. Пулы без OT (например, RWT/USDC) не затронуты — стандартные 50 bps. Комиссия казначейства OT рассчитывается от той же валовой суммы, что и базовая комиссия (без компаундинга). Хранится как программная константа `OT_TREASURY_FEE_BPS = 50` — изменяется только через обновление программы.
+  </Step>
+</Steps>
+
+## Шесть ролей
+
+<CardGroup cols={3}>
+  <Card title="🏛️ Authority" icon="landmark">
+    **Team Multisig** (после начальной настройки)
+
+    - `update_dex_config` — комиссии, адреса назначения, rebalancer
+    - `update_pool_creators` — управление вайтлистом
+    - `propose_authority_transfer`
+  </Card>
+  <Card title="🛑 Pause Authority" icon="shield">
+    **Team Multisig** (Squads)
+
+    - `pause_pool` / `unpause_pool`
+
+    Неизменяемый — устанавливается при инициализации, изменяется только через обновление программы.
+  </Card>
+  <Card title="⚖️ Rebalancer" icon="scale-balanced">
+    **Кошелёк Pool Rebalancer** (выделенная ключевая пара бота)
+
+    - `shift_liquidity` — управление концентрацией бинов
+
+    Устанавливается при инициализации, изменяется authority через `update_dex_config`.
+  </Card>
+</CardGroup>
+
+<CardGroup cols={3}>
+  <Card title="💧 Nexus Manager" icon="droplet">
+    **Кошелёк бота** (LP-бот Areal Finance)
+
+    - `nexus_swap` / `nexus_add_liquidity` / `nexus_remove_liquidity`
+
+    Управляет LP-позициями Areal Finance. Изменяется authority через `update_nexus_manager`.
+  </Card>
+  <Card title="🏗️ Pool Creators" icon="hammer">
+    **Кошельки из вайтлиста** (макс. 10)
+
+    - `create_pool` / `create_concentrated_pool`
+
+    Закрытая платформа — только одобренные создатели. Управляется authority.
+  </Card>
+  <Card title="🌐 Без ограничений" icon="globe">
+    **Любой кошелёк**
+
+    - `swap` — торговля токенами
+    - `add_liquidity` / `zap_liquidity` / `remove_liquidity`
+    - `compound_yield` — автокомпаундинг RWT
+  </Card>
+</CardGroup>
+
+## Инструкции
+
+### Инициализация
+
+<AccordionGroup>
+  <Accordion title="initialize_dex">
+    Создание глобальной конфигурации DEX и вайтлиста создателей пулов. Вызывается один раз.
+
+    **Параметры:**
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `areal_fee_destination` | `Pubkey` | **RWT ATA** Areal Finance — получает протокольные комиссии в RWT (статический, неизменяемый) |
+    | `pause_authority` | `Pubkey` | Подписант экстренной паузы (Team Multisig, неизменяемый) |
+    | `rebalancer` | `Pubkey` | Кошелёк Pool Rebalancer — может вызывать shift_liquidity |
+
+    **Вызывающий:** Deployer (однократно)
+
+    **Аккаунты:**
+    - `authority` (signer, mut) — deployer, оплачивает создание
+    - `dex_config` (init) — PDA seed: `["dex_config"]`
+    - `pool_creators` (init) — PDA seed: `["pool_creators"]`
+    - `system_program`
+
+    **Создаёт:**
+    - `DexConfig` PDA — глобальный синглтон конфигурации
+    - `PoolCreators` PDA — вайтлист (deployer автоматически добавляется первым создателем)
+
+    **Начальное состояние:**
+    - `base_fee_bps = 50` (0,5%)
+    - `lp_fee_share_bps = 5,000` (50% комиссии для LP)
+    - `is_active = true`
+  </Accordion>
+</AccordionGroup>
+
+### Создание пулов
+
+<AccordionGroup>
+  <Accordion title="create_pool">
+    Создание пула StandardCurve (постоянное произведение) для пары токенов. Без параметров — конфигурация пула (комиссия, тип) определяется из DexConfig и аккаунтов.
+
+    **Вызывающий:** Создатель из вайтлиста
+
+    **Аккаунты:**
+    - `creator` (signer, mut) — должен быть в вайтлисте pool_creators, оплачивает создание аккаунтов
+    - `dex_config` — проверяет is_active, предоставляет base_fee_bps и lp_fee_share_bps
+    - `pool_creators` — проверяет, что `creator` в вайтлисте
+    - `pool_state` (init) — PDA seed: `["pool", token_a_mint, token_b_mint]`
+    - `token_a_mint` — ограничение: `key < token_b_mint.key` (каноничный порядок)
+    - `token_b_mint` — ограничение: `key > token_a_mint.key`
+    - `vault_a` (init) — SPL-аккаунт токена для A, authority = pool_state PDA (keypair, не ATA)
+    - `vault_b` (init) — SPL-аккаунт токена для B, authority = pool_state PDA (keypair, не ATA)
+    - `ot_treasury` (опционально) — OT Treasury PDA: `["ot_treasury", ot_mint]`. Обязателен при создании пары с OT. Должен принадлежать `OT_PROGRAM_ID`.
+    - `ot_treasury_rwt_ata` (опционально) — RWT ATA, принадлежащий PDA `ot_treasury`. Обязателен, когда предоставлен `ot_treasury`.
+    - `token_program`, `system_program`
+
+    **Валидация:**
+    - `token_a_mint ≠ token_b_mint`
+    - Один из `token_a_mint` или `token_b_mint` должен быть `RWT_MINT` (все пулы образуют пару с RWT — необходимо для протокольной комиссии в RWT)
+    - `token_a_mint < token_b_mint` (лексикографический порядок — каноничная деривация PDA, предотвращает дублирование пулов с обратным порядком)
+    - Создатель должен быть в вайтлисте
+    - Если предоставлен `ot_treasury`: проверка деривации PDA `["ot_treasury", ot_mint]`, где `ot_mint` — минт, не являющийся RWT. Проверка, что владелец аккаунта — `OT_PROGRAM_ID`. Проверка, что `ot_treasury_rwt_ata` является ассоциированным токен-адресом для (`ot_treasury`, `RWT_MINT`). Ошибка `InvalidOtTreasuryDestination` при невыполнении любой проверки.
+
+    **Начальное состояние:** Reserves = 0, total_lp_shares = 0, fee_bps скопирован из DexConfig. `ot_treasury_fee_destination` = `ot_treasury_rwt_ata.key()` если предоставлены аккаунты OT treasury, иначе `None`.
+
+    <Note>
+      `fee_bps` пула копируется из DexConfig при создании и **неизменяем** после этого. Изменение `base_fee_bps` в DexConfig влияет только на будущие пулы. Для изменения комиссии существующего пула требуется обновление программы. Аналогично, `ot_treasury_fee_destination` устанавливается при создании и неизменяем.
+    </Note>
+  </Accordion>
+
+  <Accordion title="create_concentrated_pool">
+    Создание пула Concentrated (на основе бинов) с BinArray.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `bin_step_bps` | `u16` | Шаг цены между бинами (по умолчанию: 10 = 0,1%) |
+    | `initial_active_bin` | `i32` | Начальный ID активного бина |
+
+    **Вызывающий:** Создатель из вайтлиста
+
+    **Аккаунты:** Те же, что и `create_pool`, плюс:
+    - `bin_array` (init) — PDA seed: `["bins", pool_state]`
+
+    **Валидация:**
+    - `bin_step_bps > 0`
+    - Один из `token_a_mint` или `token_b_mint` должен быть `RWT_MINT`
+    - `token_a_mint < token_b_mint` (каноничный порядок)
+    - Создатель должен быть в вайтлисте
+    - Валидация OT treasury аналогична `create_pool` (опциональные аккаунты, те же проверки деривации)
+
+    **Начальное состояние:** 70 пустых бинов, центрированных вокруг initial_active_bin. Только `target_bin_count` бинов (по умолчанию 40) активно используются Rebalancer — остальные бины служат буфером для сдвига диапазона при изменении NAV.
+  </Accordion>
+</AccordionGroup>
+
+### Ликвидность
+
+<Note>
+  **Единый LP-интерфейс.** Пользователи взаимодействуют через `add_liquidity` и `remove_liquidity` независимо от типа пула. Для пулов Concentrated протокол (Pool Rebalancer) управляет концентрацией бинов внутренне через `shift_liquidity`. Пользователи изолированы от управления бинами — они просто вносят токены и получают пропорциональные доли.
+</Note>
+
+<AccordionGroup>
+  <Accordion title="add_liquidity">
+    Добавление ликвидности в любой пул (StandardCurve или Concentrated). Получение LP-долей пропорционально депозиту. Для пулов Concentrated токены поступают в хранилища, а Rebalancer распределяет их по бинам отдельно.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount_a` | `u64` | Количество токена A |
+    | `amount_b` | `u64` | Количество токена B |
+
+    **Вызывающий:** Без ограничений
+
+    **Аккаунты:**
+    - `provider` (signer) — владеет токен-аккаунтами
+    - `payer` (signer, mut) — оплачивает ренту за инициализацию LpPosition
+    - `pool_state` (mut) — обновляет резервы, lp_shares
+    - `lp_position` (init_if_needed) — PDA seed: `["lp", pool_state, provider]`
+    - `provider_token_a` (mut) — ограничение: `owner == provider`, `mint == pool.token_a_mint`
+    - `provider_token_b` (mut) — ограничение: `owner == provider`, `mint == pool.token_b_mint`
+    - `vault_a` (mut), `vault_b` (mut) — хранилища пула
+    - `bin_array` (mut, опционально) — обязателен для пулов Concentrated (для распределения по бинам)
+    - `token_program`, `system_program`
+
+    **Валидация:**
+    - `amount_a > 0 && amount_b > 0` (оба обязательны; для одного токена используйте `zap_liquidity`)
+    - Пул должен быть активен
+
+    **Математика (одинакова для обоих типов пулов):**
+    - Первое добавление: `shares = sqrt(amount_a × amount_b)`, должно быть ≥ MIN_LIQUIDITY (1 000). Защита от переполнения: `amount_a * amount_b` должно помещаться в u128.
+    - Последующие: `shares = min(amount_a × total_shares / reserve_a, amount_b × total_shares / reserve_b)`. `min()` означает, что избыточные токены одной стороны **не вносятся** — используется только пропорциональная сумма. Неиспользованные токены остаются в кошельке пользователя.
+
+    <Warning>
+      **Несбалансированные депозиты теряют стоимость.** Если пользователь вносит в соотношении, отличном от соотношения пула, он фактически получает доли на основе МЕНЬШЕЙ стороны. Используйте `zap_liquidity` для несбалансированных сумм — он автоматически свопнет для соответствия соотношению пула. Офф-чейн UI должен рассчитать оптимальные суммы перед вызовом `add_liquidity`.
+    </Warning>
+
+    **Эффект:** Перевод токенов в хранилища, минтинг LP-долей, обновление резервов. Для пулов Concentrated новая ликвидность **немедленно распределяется по текущим активным бинам** пропорционально — без ожидания Rebalancer. Эмитирует `LiquidityAdded`.
+
+    <Note>
+      **Пулы Concentrated — распределение по бинам при добавлении:**
+      ```
+      // Distribute new tokens across active bin range proportionally
+      for each bin in [lower_active..upper_active]:
+        if bins_have_existing_liquidity:
+          // Proportional to existing weights
+          weight = bin.liquidity_a + bin.liquidity_b
+          share = weight / total_active_liquidity
+        else:
+          // First add: uniform distribution
+          share = 1 / active_bin_count
+        
+        if bin < active_bin_id:
+          bin.liquidity_b += amount_b * share  // USDC only (bid side)
+        elif bin > active_bin_id:
+          bin.liquidity_a += amount_a * share  // RWT only (ask side)
+        else:  // active bin
+          bin.liquidity_a += amount_a * share  // both tokens
+          bin.liquidity_b += amount_b * share
+      ```
+      Rebalancer (`shift_liquidity`) только **сдвигает** весь диапазон при изменении NAV — он не обрабатывает новые депозиты. Это гарантирует, что свопы всегда имеют доступ ко всей внесённой ликвидности.
+    </Note>
+  </Accordion>
+
+  <Accordion title="zap_liquidity">
+    Добавление ликвидности с любым соотношением токенов — включая один токен. Контракт автоматически свопает для соответствия соотношению пула, затем добавляет обе стороны. Работает для пулов StandardCurve и Concentrated. Атомарно — нет риска изменения цены между свопом и добавлением.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount_a` | `u64` | Количество токена A (может быть 0) |
+    | `amount_b` | `u64` | Количество токена B (может быть 0) |
+    | `min_shares` | `u128` | Минимум LP-долей для получения (защита от проскальзывания) |
+
+    **Вызывающий:** Без ограничений
+
+    **Аккаунты:**
+    - `provider` (signer) — владеет токен-аккаунтами
+    - `payer` (signer, mut) — оплачивает ренту за инициализацию LpPosition
+    - `pool_state` (mut) — должен быть активен
+    - `dex_config` — для расчёта комиссий
+    - `lp_position` (init_if_needed) — PDA seed: `["lp", pool_state, provider]`
+    - `provider_token_a` (mut) — ограничение: `owner == provider`, `mint == pool.token_a_mint`
+    - `provider_token_b` (mut) — ограничение: `owner == provider`, `mint == pool.token_b_mint`
+    - `vault_a` (mut), `vault_b` (mut) — хранилища пула
+    - `areal_fee_account` (mut) — получает протокольную комиссию от внутреннего свопа
+    - `ot_treasury_fee_account` (mut, опционально) — получает комиссию казначейства OT от внутреннего свопа (обязателен для пар с OT)
+    - `bin_array` (mut, опционально) — обязателен для пулов Concentrated
+    - `token_program`, `system_program`
+
+    **Валидация:**
+    - `amount_a > 0 || amount_b > 0` (минимум один токен)
+    - Пул должен быть активен
+
+    **Логика:**
+    1. Чтение текущего соотношения пула. **Если пул пуст** (reserves = 0): пропуск свопа, обработка как обычный `add_liquidity` с обеими суммами как есть. Иначе: `target_ratio = reserve_a / reserve_b`
+    2. Расчёт количества для свопа для соответствия соотношению:
+       ```
+       If amount_a / amount_b > target_ratio:
+         // Too much A — swap excess A → B
+         excess_a = amount_a - (amount_b * reserve_a / reserve_b)
+         swap_amount = excess_a / 2  (swap half of excess)
+         Internal swap: A → B (same fee math as regular swap)
+       Else:
+         // Too much B — swap excess B → A
+         excess_b = amount_b - (amount_a * reserve_b / reserve_a)
+         swap_amount = excess_b / 2
+         Internal swap: B → A
+       ```
+    3. После внутреннего свопа: соотношение пула изменилось, пересчёт оптимальных сумм для добавления
+    4. Добавление ликвидности сбалансированными суммами (та же математика, что и `add_liquidity`)
+    5. `shares ≥ min_shares` (проверка проскальзывания)
+    6. Эмитирует `ZapLiquidityExecuted`
+
+    <Note>
+      **Zap одним токеном:** Если `amount_a = 0`, весь `amount_b` делится — половина свопается в токен A, половина остаётся как токен B. Аналогично в обратную сторону. Это простейший UX: «внесите USDC, получите LP-доли.»
+    </Note>
+
+    <Note>
+      Внутренний своп несёт те же комиссии, что и обычный своп (LP-комиссия → fee vault пула, протокольная комиссия → Areal Finance, комиссия казначейства OT → OT Treasury для пар с OT). Это сделано намеренно — zap не должен быть лазейкой без комиссий.
+    </Note>
+  </Accordion>
+
+  <Accordion title="remove_liquidity">
+    Удаление ликвидности из любого пула. Сжигание LP-долей, получение пропорциональных токенов из общих резервов.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `shares_to_burn` | `u128` | LP-доли для погашения |
+
+    **Вызывающий:** LP-провайдер (должен владеть позицией)
+
+    **Аккаунты:**
+    - `provider` (signer) — должен соответствовать `lp_position.owner`
+    - `pool_state` (mut)
+    - `lp_position` (mut) — ограничение: `owner == provider`, `pool == pool_state`
+    - `provider_token_a` (mut), `provider_token_b` (mut)
+    - `vault_a` (mut), `vault_b` (mut)
+    - `token_program`
+
+    **Математика (одинакова для обоих типов пулов):**
+    ```
+    amount_a = shares_to_burn * reserve_a / total_lp_shares
+    amount_b = shares_to_burn * reserve_b / total_lp_shares
+    ```
+
+    **Валидация:**
+    - `shares_to_burn ≤ lp_position.shares`
+    - Работает даже когда пул на паузе (LP всегда может выйти)
+
+    **Эффект:** PDA пула подписывает переводы из хранилищ. Если `lp_position.shares == 0` после сжигания, аккаунт LpPosition закрывается, рента возвращается провайдеру. Эмитирует `LiquidityRemoved`.
+  </Accordion>
+
+  <Accordion title="shift_liquidity">
+    Сдвиг всего диапазона бинов концентрированной ликвидности на новую позицию (например, при изменении NAV). **Только Rebalancer** — пользователи не могут вызывать. Токены не входят/выходят из хранилищ — только внутреннее перераспределение бинов. НЕ обрабатывает новые депозиты — `add_liquidity` распределяет по бинам немедленно.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `nav_bin` | `i32` | Целевой ID бина NAV (центр нового диапазона). **Рассчитывается офф-чейн** ботом Rebalancer из `rwt_vault.nav_book_value` через RPC: `nav_bin = log(nav_price) / log(1 + bin_step_bps/10000)` |
+    | `target_bin_count` | `u16` | Общее количество бинов в диапазоне (разделено вокруг nav_bin) |
+
+    **Вызывающий:** Только Rebalancer (должен соответствовать `dex_config.rebalancer`)
+
+    **Аккаунты:**
+    - `rebalancer` (signer) — должен соответствовать `dex_config.rebalancer`
+    - `dex_config` — для валидации rebalancer
+    - `pool_state` (mut) — должен быть типа Concentrated
+    - `bin_array` (mut)
+
+    **Валидация:**
+    - Пул должен быть типа Concentrated
+    - `target_bin_count > 0`
+    - `target_bin_count ≤ MAX_BINS` (70)
+    - Вычисленный диапазон `[nav_bin - count/2, nav_bin + count/2]` в пределах BinArray
+    - Новый диапазон должен отличаться от текущего (предотвращает бесполезную ребалансировку, тратящую вычислительные ресурсы)
+
+    **Логика (на основе дельт, без полного сбора):**
+    1. **Вычисление целей:** Для каждого бина в диапазоне рассчитывается целевая ликвидность по формуле пирамиды (асимметричная 2:1, центрированная на nav_bin).
+       - Бины на стороне bid (ниже nav_bin): **только USDC**, взвешены по пирамиде
+         `target_usdc(bin) = total_pool_usdc * 2/3 * weight(bin) / total_bid_weight`
+         `weight(bin) = bin - lower + 1` (ближе к NAV = больше)
+       - `nav_bin`: **и RWT, и USDC** (вершина пирамиды)
+       - Бины на стороне ask (выше nav_bin): **только RWT**, взвешены по пирамиде
+         `target_rwt(bin) = total_pool_rwt * 1/3 * weight(bin) / total_ask_weight`
+         `weight(bin) = upper - bin + 1` (ближе к NAV = больше)
+    2. **Вычисление дельт и ребалансировка:**
+       ```
+       lower = nav_bin - target_bin_count / 2
+       upper = nav_bin + target_bin_count / 2
+       total_bid_weight = sum(bin - lower + 1 for bin in [lower..nav_bin])
+       total_ask_weight = sum(upper - bin + 1 for bin in [nav_bin..upper])
+
+       for each bin in [0..MAX_BINS]:
+         if bin < lower or bin > upper:
+           // Drain bins outside new range
+           surplus_usdc += bin.liquidity_b;  bin.liquidity_b = 0
+           surplus_rwt  += bin.liquidity_a;  bin.liquidity_a = 0
+         elif bin < nav_bin:
+           // Bid side: USDC only
+           target = total_pool_usdc * 2/3 * (bin - lower + 1) / total_bid_weight
+           delta = target - bin.liquidity_b  // i128
+           if delta > 0: deficit_usdc += delta
+           else: surplus_usdc += abs(delta)
+         elif bin > nav_bin:
+           // Ask side: RWT only
+           target = total_pool_rwt * 1/3 * (upper - bin + 1) / total_ask_weight
+           delta = target - bin.liquidity_a
+           if delta > 0: deficit_rwt += delta
+           else: surplus_rwt += abs(delta)
+         else:
+           // nav_bin: both tokens (peak of pyramid)
+
+       // Apply: distribute surplus to deficit bins proportionally
+       // surplus_usdc == deficit_usdc (conservation invariant)
+       // surplus_rwt  == deficit_rwt  (conservation invariant)
+       // Dust from integer division stays in reserves
+       ```
+
+    **`active_bin_id` НЕ изменяется** — только свопы перемещают активный бин. Сдвиг только перепозиционирует, где находится ликвидность.
+
+    **Без разрыва ликвидности:** В отличие от «собрать всё → перераспределить», бины всегда содержат ликвидность во время сдвига. Токены перетекают напрямую из избыточных бинов в дефицитные.
+
+    **Пирамидальное распределение:**
+    ```
+                   bid (USDC 2x)    NAV    ask (RWT 1x)
+                              ██████│███
+                           █████████│██████
+                        ████████████│█████████
+                     ███████████████│████████████
+                  ██████████████████│██████████████
+               █████████████████████│████████████████
+            ████████████████████████│██████████████████
+         ███████████████████████████│████████████████████
+      ██████████████████████████████│██████████████████████
+    ────────────────────────────────┼────────────────────────
+    bin: lower ──── дешевле ─────── NAV ─────── дороже ──── upper
+    ```
+
+    **Почему асимметричное:** Сторона bid (2x USDC) приоритизирует покупку RWT ниже NAV — это основной вариант использования рынка. Сторона ask (1x RWT) обеспечивает буфер выше NAV для zap_liquidity и мелких сделок, но крупные покупки выше NAV идут через `mint_rwt` (дешевле по цене NAV).
+
+    **Эффект:** Токены не входят/выходят из хранилищ. Dust от целочисленного деления остаётся в резервах. Эмитирует `LiquidityShifted`.
+  </Accordion>
+</AccordionGroup>
+
+### Своп
+
+<AccordionGroup>
+  <Accordion title="swap">
+    Своп токенов через любой пул. Контракт автоматически использует правильную математику в зависимости от типа пула: постоянное произведение для StandardCurve, обход бинов для Concentrated.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount_in` | `u64` | Количество входного токена |
+    | `min_amount_out` | `u64` | Минимальный выход (защита от проскальзывания) |
+    | `a_to_b` | `bool` | Направление свопа |
+
+    **Вызывающий:** Без ограничений
+
+    **Аккаунты:**
+    - `user` (signer)
+    - `pool_state` (mut) — должен быть активен
+    - `dex_config` — должен быть активен
+    - `bin_array` (mut, опционально) — обязателен только для пулов Concentrated
+    - `user_token_in` (mut), `user_token_out` (mut)
+    - `vault_in` (mut), `vault_out` (mut)
+    - `areal_fee_account` (mut) — получает протокольную комиссию
+    - `ot_treasury_fee_account` (mut, опционально) — получает комиссию казначейства OT. Обязателен, если `pool_state.ot_treasury_fee_destination` равен `Some`. Должен соответствовать сохранённому адресу.
+    - `token_program`
+
+    **Математика комиссий (оба типа пулов). Все комиссии в RWT, взимаются поверх:**
+
+    Если вход = RWT (пользователь продаёт RWT):
+    ```
+    // Fees calculated on swap amount
+    fee_total = amount_in * fee_bps / 10,000
+    fee_lp = fee_total * lp_fee_share_bps / 10,000
+    fee_protocol = fee_total - fee_lp
+
+    // OT Treasury fee (only if ot_treasury_fee_destination is Some)
+    ot_treasury_fee = amount_in * OT_TREASURY_FEE_BPS / 10,000  // 50 bps on gross amount
+
+    // User pays fees ON TOP — total debit from user wallet:
+    user_total_debit = amount_in + fee_total + ot_treasury_fee
+    // Full amount_in goes into pool (no fee deduction from reserves)
+    amount_out = constant_product(amount_in)
+    ```
+
+    Если вход = OT (пользователь покупает RWT):
+    ```
+    amount_out_gross = constant_product(amount_in)
+
+    // Fees calculated on gross RWT output
+    fee_total = amount_out_gross * fee_bps / 10,000
+    fee_lp = fee_total * lp_fee_share_bps / 10,000
+    fee_protocol = fee_total - fee_lp
+
+    // OT Treasury fee (only if ot_treasury_fee_destination is Some)
+    ot_treasury_fee = amount_out_gross * OT_TREASURY_FEE_BPS / 10,000  // 50 bps on gross amount
+
+    // Fees deducted from gross output — user receives net:
+    amount_out = amount_out_gross - fee_total - ot_treasury_fee
+    ```
+
+    **Адреса назначения комиссий (оба направления):**
+    - `fee_lp` → RWT переводится в `fee_vault` пула (RWT-аккаунт каждого пула, доступен LP-холдерам через `claim_lp_fees`)
+    - `fee_protocol` → RWT переводится на `areal_fee_account` (RWT ATA Areal Finance)
+    - `ot_treasury_fee` → RWT переводится на `ot_treasury_fee_account` (только для пар с OT)
+    - Для пулов без OT `ot_treasury_fee = 0` (без дополнительной комиссии)
+
+    **Обновление резервов после свопа (для программиста):**
+    ```
+    // Reserves stay intact — fees never touch pool liquidity
+    reserve_in  += amount_in   // full swap amount enters pool
+    reserve_out -= amount_out_gross  // gross amount leaves pool (before fee split)
+    // All fees are external to pool reserves
+    total_fees_accumulated += fee_total + ot_treasury_fee
+    ```
+
+    **Выход StandardCurve:**
+    ```
+    amount_out = reserve_out * net_input / (reserve_in + net_input)
+    ```
+
+    **Выход Concentrated (обход бинов):**
+    ```
+    remaining = net_input  (or amount_in if fee taken from output)
+    total_out = 0
+    current_bin = active_bin_id
+
+    while remaining > 0:
+      bin = bin_array[current_bin]
+      
+      if a_to_b (selling RWT for USDC):
+        available = bin.liquidity_b  (USDC in this bin)
+        price = (1 + bin_step_bps/10000) ^ current_bin
+        consumable = min(remaining * price, available)  // cast u128
+        total_out += consumable
+        remaining -= consumable / price
+        bin.liquidity_b -= consumable
+        bin.liquidity_a += consumable / price
+        if bin.liquidity_b == 0:
+          current_bin -= 1  // move to cheaper bin
+          if current_bin < lower_bin_id: break  // no more liquidity
+      
+      else (buying RWT with USDC):
+        available = bin.liquidity_a  (RWT in this bin)
+        price = (1 + bin_step_bps/10000) ^ current_bin
+        consumable = min(remaining / price, available)  // cast u128
+        total_out += consumable
+        remaining -= consumable * price
+        bin.liquidity_a -= consumable
+        bin.liquidity_b += consumable * price
+        if bin.liquidity_a == 0:
+          current_bin += 1  // move to more expensive bin
+          if current_bin > upper_bin_id: break
+
+    active_bin_id = current_bin
+    amount_out = total_out
+    ```
+
+    **Валидация:**
+    - `amount_in > 0`
+    - Резервы пула ненулевые: `reserve_in > 0 && reserve_out > 0` (StandardCurve) или хотя бы один бин имеет ликвидность (Concentrated). Ошибка `EmptyReserves`, если в пуле нет ликвидности.
+    - `amount_out ≥ min_amount_out` (проверка проскальзывания)
+    - `amount_out > 0`
+    - Пул и DEX должны быть активны
+
+    **Эффект:** Пользователь отправляет вход → хранилище. Пул отправляет выход → пользователь. LP-комиссия → fee_vault пула (доступна LP-холдерам). Протокольная комиссия → areal_fee_account. Комиссия казначейства OT → ot_treasury_fee_account (только для пар с OT). Все комиссии в RWT, взимаются поверх свопа — резервы пула не затронуты. Эмитирует `SwapExecuted`.
+  </Accordion>
+</AccordionGroup>
+
+### Компаундинг доходности
+
+<AccordionGroup>
+  <Accordion title="compound_yield">
+    Получение дохода в RWT из Yield Distribution от имени PDA пула, автокомпаундинг дохода OT в резервы пула. Выгодно всем LP-холдерам пропорционально. Примечание: это только для дохода OT — комиссии LP за свопы собираются в отдельном fee vault и выводятся индивидуально через `claim_lp_fees`.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `cumulative_amount` | `u64` | Кумулятивная доля пула (из листа merkle) |
+    | `proof` | `Vec<[u8; 32]>` | Путь merkle proof |
+
+    **Вызывающий:** Без ограничений (crank)
+
+    **Аккаунты:**
+    - `crank` (signer, mut) — оплачивает инициализацию ClaimStatus
+    - `pool_state` (mut) — обновляет резервы
+    - `target_vault` (mut) — ограничение: должен быть `pool.vault_a` или `pool.vault_b` (тот, который RWT)
+    - Аккаунты YD CPI: `yd_distributor`, `yd_claim_status`, `yd_reward_vault`
+    - `yd_program` — ограничение: `key == YD_PROGRAM_ID`
+    - `token_program`, `system_program`
+
+    **Логика:**
+    1. Снимок баланса target_vault до операции
+    2. CPI → `yield_distribution::claim` с PDA пула как claimant
+    3. Измерение полученных RWT (после - до)
+    4. Добавление полученной суммы в резервы пула (reserve_a или reserve_b)
+    5. Эмитирует `CompoundYieldExecuted`
+
+    <Note>
+      PDA пула выступает как холдер OT (если пул содержит токены OT в своих резервах). Полученные RWT идут напрямую в резервы, увеличивая стоимость всех LP-позиций одинаково. Индивидуальный вывод для LP не нужен. Минт `target_vault` валидируется программой YD во время CPI (`claimant_token.mint == reward_vault.mint`) — crank не может перенаправить RWT в неправильное хранилище. **Применимо только к пулам, содержащим OT** (например, OT/RWT). Вызов compound_yield на пуле RWT/USDC завершится ошибкой InvalidProof (у пула нет баланса OT → отсутствует в merkle tree).
+    </Note>
+  </Accordion>
+
+  <Accordion title="claim_lp_fees">
+    Вывод накопленных LP-вознаграждений за свопы из fee vault пула. Каждый LP-холдер выводит пропорционально своей доле в общем объёме LP. Без вестинга — вознаграждения доступны мгновенно.
+
+    **Вызывающий:** LP-холдер (без ограничений — любой с LP-позицией)
+
+    **Аккаунты:**
+    - `lp_holder` (signer) — должен владеть LP-позицией
+    - `pool_state` — читает `total_lp_shares`
+    - `lp_position` (mut) — читает `shares`, обновляет `fees_claimed`
+    - `fee_vault` (mut) — RWT fee vault пула, ограничение: `owner == pool_state.key()`
+    - `lp_holder_rwt_ata` (mut) — RWT ATA холдера, получает выведенные комиссии
+    - `token_program`
+
+    **Логика:**
+    ```
+    cumulative_per_share = pool_state.cumulative_fees_per_share  // u128, updated on each swap
+    entitled = lp_position.shares * cumulative_per_share / PRECISION
+    claimable = entitled - lp_position.fees_claimed
+    
+    if claimable == 0: return
+    
+    transfer claimable RWT: fee_vault → lp_holder_rwt_ata (pool PDA signs)
+    lp_position.fees_claimed += claimable
+    ```
+
+    **Валидация:**
+    - `lp_position.owner == lp_holder.key()`
+    - `claimable > 0`
+    - `fee_vault.amount >= claimable`
+
+    **Эффект:** RWT переводятся из fee vault LP-холдеру. Эмитирует `LpFeesClaimed`.
+
+    <Note>
+      **Как работает cumulative_fees_per_share:** При каждом свопе контракт обновляет `pool_state.cumulative_fees_per_share += fee_lp * PRECISION / total_lp_shares`. Это позволяет вести учёт O(1) для каждого холдера — итерация по LP-холдерам не нужна. Каждая LP-позиция отслеживает свои `fees_claimed` для предотвращения двойного вывода. Паттерн используется в Sushiswap MasterChef, Raydium и большинстве DeFi-распределителей комиссий.
+    </Note>
+  </Accordion>
+</AccordionGroup>
+
+### Liquidity Nexus
+
+Управление LP Areal Finance. PDA Nexus владеет LP-позициями и токен-аккаунтами. Бот-менеджер выполняет операции; средства защищены программой (менеджер не может извлечь токены напрямую). Вознаграждения LP-комиссий накапливаются в fee vault пула и выводятся в Areal Treasury через `nexus_claim_rewards`.
+
+<AccordionGroup>
+  <Accordion title="initialize_nexus">
+    Создание PDA Liquidity Nexus и установка начального менеджера. Один Nexus на развёртывание DEX (синглтон).
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `manager` | `Pubkey` | Начальный кошелёк менеджера Nexus (бот) |
+
+    **Вызывающий:** Authority (Team Multisig)
+
+    **Аккаунты:**
+    - `authority` (signer, mut) — должен соответствовать `dex_config.authority`
+    - `dex_config` — для валидации authority
+    - `nexus` (init) — PDA seed: `["liquidity_nexus"]`
+    - `system_program`
+
+    **Создаёт:**
+    - `LiquidityNexus` PDA — синглтон, владеет LP-позициями
+
+    **Начальное состояние:** `manager = manager param`, `is_active = true`
+  </Accordion>
+
+  <Accordion title="nexus_deposit">
+    Депозит токенов в PDA Nexus. Стандартный способ добавления капитала в Nexus. Без ограничений — crank-и вызывают после распределения дохода OT или вывода дохода RWT.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount` | `u64` | Количество токенов для депозита |
+
+    **Вызывающий:** Без ограничений (crank)
+
+    **Аккаунты:**
+    - `depositor` (signer) — исходный кошелёк
+    - `nexus` (mut) — проверяет is_active
+    - `depositor_token_account` (mut) — ограничение: `owner == depositor`
+    - `nexus_token_account` (mut) — ограничение: `owner == nexus.key()`
+    - `token_mint` — валидация принимаемого типа токена
+    - `token_program`
+
+    **Валидация:**
+    - `amount > 0`
+    - `nexus.is_active == true`
+    - `token_mint == USDC_MINT || token_mint == RWT_MINT` (только принимаемые токены)
+
+    **Логика:**
+    1. Перевод `amount` от depositor → nexus ATA
+    2. Перевод `amount` из `depositor_token_account` в `nexus_token_account`
+    4. Эмитирует `NexusDeposited`
+
+    <Note>
+      OT `distribute_revenue` отправляет 10% USDC на промежуточный кошелёк (crank). Затем crank вызывает `nexus_deposit` для направления в Nexus. То же для RWT из `claim_yield` — crank получает 15% RWT, затем вызывает `nexus_deposit`.
+    </Note>
+  </Accordion>
+
+  <Accordion title="nexus_claim_rewards">
+    Вывод накопленных LP-вознаграждений из fee vault пулов в Areal Treasury. PDA Nexus выступает как LP-холдер и выводит свою пропорциональную долю. Только Authority.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `pool` | `Pubkey` | Пул для вывода комиссий |
+
+    **Вызывающий:** Authority (Team Multisig)
+
+    **Аккаунты:**
+    - `authority` (signer) — должен соответствовать `dex_config.authority`
+    - `dex_config` — для валидации authority
+    - `nexus` — PDA, подписывает как LP-холдер
+    - `pool_state` — читает `cumulative_fees_per_share`
+    - `nexus_lp_position` (mut) — LP-позиция Nexus в этом пуле, обновляет `fees_claimed`
+    - `fee_vault` (mut) — RWT fee vault пула
+    - `treasury_token_account` (mut) — RWT ATA Areal Treasury, получает выведенные вознаграждения
+    - `token_program`
+
+    **Логика:**
+    1. Расчёт доступного для вывода по той же формуле, что и `claim_lp_fees`
+    2. Перевод RWT из fee_vault → `treasury_token_account` (Areal Treasury)
+    3. Обновление `nexus_lp_position.fees_claimed`
+    4. Эмитирует `NexusRewardsClaimed`
+
+    <Note>
+      Используется тот же учёт `cumulative_fees_per_share`, что и для обычных LP-выводов. LP-позиции PDA Nexus зарабатывают комиссии как любой другой LP-холдер — вознаграждения идут напрямую в Areal Treasury.
+    </Note>
+  </Accordion>
+
+  <Accordion title="nexus_swap">
+    Своп токенов из PDA Nexus через любой пул DEX. Та же логика свопа, что и обычный `swap`, но PDA Nexus подписывает как пользователь.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount_in` | `u64` | Количество входного токена |
+    | `min_amount_out` | `u64` | Минимальный выход (защита от проскальзывания) |
+    | `a_to_b` | `bool` | Направление свопа |
+
+    **Вызывающий:** Только менеджер Nexus
+
+    **Аккаунты:**
+    - `manager` (signer) — должен соответствовать `nexus.manager`
+    - `nexus` — PDA, подписывает своп как пользователь
+    - `nexus_token_in` (mut) — ограничение: `owner == nexus.key()`
+    - `nexus_token_out` (mut) — ограничение: `owner == nexus.key()`
+    - `pool_state` (mut), `dex_config`, `bin_array` (опционально)
+    - `vault_in` (mut), `vault_out` (mut)
+    - `areal_fee_account` (mut)
+    - `ot_treasury_fee_account` (mut, опционально) — обязателен для пар с OT
+    - `token_program`
+
+    **Валидация:**
+    - `amount_in > 0`
+    - `min_amount_out > 0` (защита от проскальзывания обязательна — предотвращает выполнение свопов менеджером по произвольным ценам)
+    - `manager == nexus.manager`
+
+    **Эффект:** Внутренний CPI к логике `swap` с PDA Nexus как пользователем. Комиссия казначейства OT взимается для пар с OT. Эмитирует `SwapExecuted`.
+
+    <Warning>
+      **Доверие к менеджеру.** Хотя `min_amount_out > 0` обязательно, значение устанавливает менеджер. Скомпрометированный менеджер может установить `min_amount_out = 1` и выполнять сделки по ужасным ценам. Смягчение: authority (Team Multisig) мониторит события свопов и заменяет менеджера через `update_nexus_manager` при обнаружении аномальных сделок. Все свопы проверяемы через события `SwapExecuted`.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="nexus_add_liquidity">
+    Добавление ликвидности из PDA Nexus в любой пул. Работает как zap — принимает любое соотношение токенов, включая один токен. PDA Nexus подписывает как провайдер.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount_a` | `u64` | Количество токена A (может быть 0) |
+    | `amount_b` | `u64` | Количество токена B (может быть 0) |
+    | `min_shares` | `u128` | Минимум LP-долей (защита от проскальзывания) |
+
+    **Вызывающий:** Только менеджер Nexus
+
+    **Аккаунты:**
+    - `manager` (signer) — должен соответствовать `nexus.manager`
+    - `nexus` — PDA, подписывает как провайдер
+    - `pool_state` (mut), `dex_config`
+    - `lp_position` (init_if_needed) — PDA seed: `["lp", pool_state, nexus]`
+    - `nexus_token_a` (mut) — ограничение: `owner == nexus.key()`
+    - `nexus_token_b` (mut) — ограничение: `owner == nexus.key()`
+    - `vault_a` (mut), `vault_b` (mut)
+    - `areal_fee_account` (mut) — для комиссии внутреннего свопа при zap
+    - `bin_array` (mut, опционально)
+    - `token_program`, `system_program`
+
+    **Эффект:** Логика zap (автосвоп для соответствия соотношению) + добавление ликвидности. PDA Nexus как провайдер. Эмитирует `LiquidityAdded`.
+  </Accordion>
+
+  <Accordion title="nexus_remove_liquidity">
+    Удаление ликвидности из LP-позиции PDA Nexus.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `shares_to_burn` | `u128` | LP-доли для погашения |
+
+    **Вызывающий:** Только менеджер Nexus
+
+    **Аккаунты:**
+    - `manager` (signer) — должен соответствовать `nexus.manager`
+    - `nexus` — PDA, подписывает как провайдер
+    - `pool_state` (mut)
+    - `lp_position` (mut) — ограничение: `owner == nexus.key()`
+    - `nexus_token_a` (mut), `nexus_token_b` (mut)
+    - `vault_a` (mut), `vault_b` (mut)
+    - `token_program`
+
+    **Эффект:** PDA пула подписывает переводы vault→nexus. Эмитирует `LiquidityRemoved`.
+  </Accordion>
+
+  <Accordion title="update_nexus_manager">
+    Изменение кошелька менеджера Nexus.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `new_manager` | `Pubkey` | Новый кошелёк менеджера |
+
+    **Вызывающий:** Authority (Team Multisig)
+
+    **Аккаунты:**
+    - `authority` (signer) — должен соответствовать `dex_config.authority`
+    - `dex_config`
+    - `nexus` (mut)
+
+    **Эффект:** Устанавливает `nexus.manager = new_manager`. Эмитирует `NexusManagerUpdated`.
+  </Accordion>
+</AccordionGroup>
+
+### Конфигурация и Authority
+
+<AccordionGroup>
+  <Accordion title="update_dex_config">
+    Обновление глобальной конфигурации DEX. Полная перезапись.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `base_fee_bps` | `u16` | Новая базовая комиссия (макс. 1 000 = 10%) |
+    | `lp_fee_share_bps` | `u16` | Новая доля LP-комиссии (макс. 10 000 = 100%) |
+    | `rebalancer` | `Pubkey` | Новый кошелёк Rebalancer |
+    | `is_active` | `bool` | Глобальный флаг активности DEX |
+
+    **Вызывающий:** Authority (Team Multisig)
+
+    **Аккаунты:**
+    - `authority` (signer) — должен соответствовать `dex_config.authority`
+    - `dex_config` (mut)
+
+    **Валидация:**
+    - `base_fee_bps ≤ 1,000` (макс. 10%)
+    - `lp_fee_share_bps ≤ 10,000`
+
+    **Эффект:** Перезаписывает конфигурацию. Эмитирует `DexConfigUpdated`.
+
+    <Note>
+      `areal_fee_destination` и `pause_authority` неизменяемы — устанавливаются при инициализации, изменить невозможно. Только обновление программы может их модифицировать.
+    </Note>
+  </Accordion>
+
+  <Accordion title="update_pool_creators">
+    Добавление или удаление кошелька из вайтлиста создателей пулов.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `wallet` | `Pubkey` | Кошелёк создателя для добавления/удаления |
+    | `action` | `CreatorAction` | `Add` или `Remove` |
+
+    **Вызывающий:** Authority (Team Multisig)
+
+    **Аккаунты:**
+    - `authority` (signer) — должен соответствовать `pool_creators.authority`
+    - `pool_creators` (mut)
+
+    **Валидация:**
+    - Add: ещё не в вайтлисте, количество < MAX_POOL_CREATORS (10)
+    - Remove: должен существовать в вайтлисте
+
+    **Эффект:** Обновляет вайтлист. Эмитирует `PoolCreatorsUpdated`.
+  </Accordion>
+
+  <Accordion title="propose_authority_transfer">
+    Шаг 1: Текущий authority предлагает нового authority.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `new_authority` | `Pubkey` | Предлагаемый новый authority |
+
+    **Вызывающий:** Текущий authority
+
+    **Аккаунты:**
+    - `authority` (signer) — должен соответствовать `dex_config.authority`
+    - `dex_config` (mut)
+
+    **Валидация:** `new_authority ≠ current authority`
+
+    **Эффект:** Устанавливает `dex_config.pending_authority = Some(new_authority)`. Эмитирует `AuthorityTransferProposed`.
+
+    <Note>
+      Повторный вызов **перезаписывает** существующий pending_authority. Предыдущий предложенный authority теряет возможность принять передачу.
+    </Note>
+  </Accordion>
+
+  <Accordion title="accept_authority_transfer">
+    Шаг 2: Предложенный authority принимает.
+
+    **Вызывающий:** Новый authority (должен подписать)
+
+    **Аккаунты:**
+    - `new_authority` (signer) — должен соответствовать `dex_config.pending_authority`
+    - `dex_config` (mut)
+    - `pool_creators` (mut) — authority также обновляется здесь
+
+    **Валидация:** `signer == dex_config.pending_authority`
+
+    **Эффект:** Устанавливает `authority = new_authority` и в `dex_config`, и в `pool_creators`. Очищает `pending_authority`. Эмитирует `AuthorityTransferAccepted`.
+  </Accordion>
+</AccordionGroup>
+
+### Экстренные операции
+
+<AccordionGroup>
+  <Accordion title="pause_pool">
+    Экстренная пауза отдельного пула. Останавливает свопы и добавление новой ликвидности. НЕ влияет на remove_liquidity (LP всегда могут выйти).
+
+    **Вызывающий:** Pause Authority (Team Multisig)
+
+    **Аккаунты:**
+    - `pause_authority` (signer) — должен соответствовать `dex_config.pause_authority`
+    - `dex_config` — для валидации pause_authority
+    - `pool_state` (mut)
+
+    **Эффект:** Устанавливает `pool_state.is_active = false`. Эмитирует `PoolPaused`.
+  </Accordion>
+
+  <Accordion title="unpause_pool">
+    Возобновление работы приостановленного пула.
+
+    **Вызывающий:** Pause Authority (Team Multisig)
+
+    **Аккаунты:**
+    - `pause_authority` (signer) — должен соответствовать `dex_config.pause_authority`
+    - `dex_config`
+    - `pool_state` (mut)
+
+    **Эффект:** Устанавливает `pool_state.is_active = true`. Эмитирует `PoolUnpaused`.
+  </Accordion>
+</AccordionGroup>
+
+## Аккаунты состояния
+
+### DexConfig
+
+Глобальный синглтон. Один на развёртывание протокола.
+
+| Field | Type | Description |
+|---|---|---|
+| `authority` | `Pubkey` | Authority конфигурации (Team Multisig после начальной настройки) |
+| `pending_authority` | `Option<Pubkey>` | Целевой адрес ожидающей передачи authority |
+| `pause_authority` | `Pubkey` | Подписант экстренной паузы (Team Multisig, неизменяемый) |
+| `base_fee_bps` | `u16` | Базовая комиссия за своп (по умолчанию: 50 = 0,5%) |
+| `lp_fee_share_bps` | `u16` | Доля LP в комиссии (по умолчанию: 5 000 = 50%) |
+| `areal_fee_destination` | `Pubkey` | **RWT ATA** Areal Finance — получает протокольные комиссии в RWT |
+| `rebalancer` | `Pubkey` | Кошелёк Pool Rebalancer — единственный подписант, допущенный к вызову `shift_liquidity` |
+| `is_active` | `bool` | Глобальный аварийный выключатель DEX |
+| `bump` | `u8` | Bump seed PDA |
+
+**PDA Seed:** `["dex_config"]`
+
+### PoolState
+
+Один на пару токенов. Хранит резервы, доли, комиссии.
+
+| Field | Type | Description |
+|---|---|---|
+| `pool_type` | `PoolType` | `StandardCurve` или `Concentrated` |
+| `token_a_mint` | `Pubkey` | Минт токена A |
+| `token_b_mint` | `Pubkey` | Минт токена B |
+| `vault_a` | `Pubkey` | Хранилище токена A (authority = PDA пула) |
+| `vault_b` | `Pubkey` | Хранилище токена B (authority = PDA пула) |
+| `reserve_a` | `u64` | Текущий баланс A |
+| `reserve_b` | `u64` | Текущий баланс B |
+| `total_lp_shares` | `u128` | Выпущенные LP-доли |
+| `fee_bps` | `u16` | Комиссия за своп (скопирована из DexConfig при создании) |
+| `is_active` | `bool` | Флаг активности пула (может быть приостановлен Team Multisig) |
+| `total_fees_accumulated` | `u64` | Общие комиссии за всё время (LP + протокольные) |
+| `fee_vault` | `Pubkey` | RWT-аккаунт для сбора LP-комиссий (authority = PDA пула) |
+| `cumulative_fees_per_share` | `u128` | Нарастающая сумма `fee_lp * PRECISION / total_lp_shares` — используется для учёта комиссий O(1) на холдера |
+| `bin_step_bps` | `u16` | Шаг бина (0 для StandardCurve) |
+| `active_bin_id` | `i32` | Текущий активный бин (только Concentrated) |
+| `ot_treasury_fee_destination` | `Option<Pubkey>` | RWT ATA PDA OT Treasury. При `Some` взимается дополнительная комиссия 50 bps на свопах и отправляется сюда. `None` для пулов без OT (например, RWT/USDC). Устанавливается при создании, **неизменяемый**. |
+| `bump` | `u8` | Bump seed PDA |
+
+**PDA Seed:** `["pool", token_a_mint, token_b_mint]`
+
+### PoolCreators
+
+Вайтлист кошельков, допущенных к созданию пулов. Макс. 10.
+
+| Field | Type | Description |
+|---|---|---|
+| `authority` | `Pubkey` | Кто может добавлять/удалять создателей |
+| `creators` | `[Pubkey; 10]` | Кошельки из вайтлиста |
+| `active_count` | `u8` | Количество активных создателей |
+| `bump` | `u8` | Bump seed PDA |
+
+**PDA Seed:** `["pool_creators"]`
+
+### LpPosition
+
+На каждую пару (пул, провайдер) для учёта LP. Создаётся при первом добавлении через `init_if_needed`.
+
+| Field | Type | Description |
+|---|---|---|
+| `pool` | `Pubkey` | Связанный пул |
+| `owner` | `Pubkey` | Кошелёк LP-провайдера |
+| `shares` | `u128` | LP-доли во владении |
+| `fees_claimed` | `u128` | Кумулятивные выведенные LP-комиссии (предотвращает двойной вывод) |
+| `fee_debt` | `u128` | Снимок комиссий на момент депозита — исключает комиссии до депозита из вывода |
+| `last_update_ts` | `i64` | Метка времени последнего взаимодействия |
+| `bump` | `u8` | Bump seed PDA |
+
+**PDA Seed:** `["lp", pool_state, provider]`
+
+### BinArray
+
+Бины концентрированной ликвидности. Один на пул Concentrated.
+
+| Field | Type | Description |
+|---|---|---|
+| `pool` | `Pubkey` | Связанный пул |
+| `bins` | `[Bin; 70]` | Массив бинов. Каждый бин: `liquidity_a: u64` (RWT), `liquidity_b: u64` (USDC). Ниже активного: только liquidity_b. Выше активного: только liquidity_a. Активный бин: оба. |
+| `lower_bin_id` | `i32` | ID bins[0] |
+| `bin_step_bps` | `u16` | Шаг цены между бинами |
+| `active_bin_id` | `i32` | Текущий активный бин |
+| `bump` | `u8` | Bump seed PDA |
+
+**PDA Seed:** `["bins", pool_state]`
+
+### LiquidityNexus
+
+PDA управления LP Areal Finance. Синглтон — один на DEX. Владеет токен-ATA и LP-позициями. Бот-менеджер выполняет операции; средства защищены программой.
+
+| Field | Type | Description |
+|---|---|---|
+| `manager` | `Pubkey` | Кошелёк бота, который может выполнять операции nexus |
+| `total_deposited_usdc` | `u64` | Кумулятивный USDC, внесённый через `nexus_deposit` |
+| `total_deposited_rwt` | `u64` | Кумулятивный RWT, внесённый через `nexus_deposit` |
+| `is_active` | `bool` | Флаг активности |
+| `bump` | `u8` | Bump seed PDA |
+
+**PDA Seed:** `["liquidity_nexus"]`
+
+<Note>
+  PDA Nexus владеет LP-позициями (LpPosition, где `owner == nexus.key()`) и токен-ATA. Менеджер может свопать/добавлять/удалять LP, но НЕ МОЖЕТ переводить токены из ATA Nexus напрямую — только через инструкции DEX. Вознаграждения LP-комиссий выводятся из YD напрямую в Areal Treasury через `nexus_claim_rewards`. При компрометации менеджера authority заменяет его через `update_nexus_manager`.
+</Note>
+
+## PDA Seeds
+
+| Account | Seeds | Description |
+|---|---|---|
+| DexConfig | `"dex_config"` | Глобальный синглтон конфигурации |
+| PoolCreators | `"pool_creators"` | Вайтлист создателей |
+| PoolState | `"pool"`, `token_a_mint`, `token_b_mint` | Пул для каждой пары |
+| LpPosition | `"lp"`, `pool_state`, `provider` | Учёт для каждого LP |
+| BinArray | `"bins"`, `pool_state` | Бины Concentrated |
+| LiquidityNexus | `"liquidity_nexus"` | LP-менеджер Areal Finance |
+
+<Note>
+  Аккаунты хранилищ (vault_a, vault_b) НЕ являются PDA — это обычные SPL-аккаунты токенов с `authority = pool_state PDA`. Создаются как keypair-аккаунты при создании пула.
+</Note>
+
+## Константы
+
+| Constant | Value | Description |
+|---|---|---|
+| `BPS_DENOMINATOR` | `10,000` | 100% в базисных пунктах |
+| `DEFAULT_BASE_FEE_BPS` | `50` | Комиссия за своп 0,5% |
+| `DEFAULT_LP_FEE_SHARE_BPS` | `5,000` | 50% комиссии для LP |
+| `MAX_FEE_BPS` | `1,000` | Максимальный лимит комиссии 10% |
+| `MAX_BINS` | `70` | Бинов на пул концентрированной ликвидности |
+| `DEFAULT_BIN_STEP_BPS` | `10` | 0,1% между бинами |
+| `MAX_POOL_CREATORS` | `10` | Макс. создателей в вайтлисте |
+| `MIN_LIQUIDITY` | `1,000` | Минимум долей при первом добавлении (защита от dust) |
+| `OT_TREASURY_FEE_BPS` | `50` | Дополнительная комиссия 0,5% для пар с OT — отправляется на RWT ATA OT Treasury |
+| `RWT_MINT` | hardcoded | Минт токена RWT — все пулы должны включать RWT (валидируется в create_pool) |
+| `USDC_MINT` | hardcoded | Минт USDC — для валидации токена в nexus_deposit |
+| `OT_PROGRAM_ID` | hardcoded | Program ID контракта OT — валидируется в create_pool для проверки владения PDA OT Treasury |
+| `YD_PROGRAM_ID` | hardcoded | Валидируется в compound_yield |
+
+## События
+
+| Event | Fields | When |
+|---|---|---|
+| `DexInitialized` | authority, base_fee_bps, timestamp | DEX создан |
+| `PoolCreated` | pool, token_a_mint, token_b_mint, pool_type, creator, ot_treasury_fee_destination, timestamp | Пул создан |
+| `LiquidityAdded` | pool, provider, amount_a, amount_b, shares_minted, timestamp | LP добавлена |
+| `ZapLiquidityExecuted` | pool, provider, input_a, input_b, swapped_amount, shares_minted, timestamp | Zap: автосвоп + добавление LP |
+| `LiquidityRemoved` | pool, provider, amount_a, amount_b, shares_burned, timestamp | LP удалена |
+| `LiquidityShifted` | pool, rebalancer, old_lower, old_upper, new_lower, new_upper, timestamp | Бины ребалансированы |
+| `SwapExecuted` | pool, user, a_to_b, amount_in, amount_out, fee_lp, fee_protocol, fee_ot_treasury, timestamp | Своп выполнен |
+| `LpFeesClaimed` | pool, lp_holder, amount, timestamp | LP-холдер вывел вознаграждения за свопы |
+| `CompoundYieldExecuted` | pool, rwt_claimed, timestamp | Доход OT автокомпаундирован в пул |
+| `PoolCreatorsUpdated` | wallet, action, active_count, timestamp | Вайтлист изменён |
+| `DexConfigUpdated` | base_fee_bps, lp_fee_share_bps, rebalancer, is_active, timestamp | Конфигурация изменена |
+| `AuthorityTransferProposed` | current_authority, pending_authority, timestamp | Передача предложена |
+| `AuthorityTransferAccepted` | old_authority, new_authority, timestamp | Передача принята |
+| `PoolPaused` | pool, timestamp | Пул экстренно приостановлен |
+| `PoolUnpaused` | pool, timestamp | Пул возобновлён |
+| `NexusInitialized` | manager, timestamp | Nexus создан |
+| `NexusDeposited` | token_mint, amount, timestamp | Капитал внесён в Nexus |
+| `NexusRewardsClaimed` | amount, treasury_destination, timestamp | LP-вознаграждения выведены из YD в Areal Treasury |
+| `NexusProfitsWithdrawn` | token_mint, amount, remaining_profit, treasury_destination, timestamp | Прибыль выведена в Areal Treasury |
+| `NexusManagerUpdated` | old_manager, new_manager, timestamp | Менеджер Nexus изменён |
+
+## Коды ошибок
+
+| Error | Description |
+|---|---|
+| `Unauthorized` | Не является authority DEX |
+| `CreatorNotWhitelisted` | Не в вайтлисте создателей пулов |
+| `DexPaused` | Глобальный DEX is_active = false |
+| `PoolNotActive` | Пул is_active = false |
+| `WhitelistFull` | Макс. 10 создателей |
+| `IdenticalMints` | token_a == token_b |
+| `CreatorNotFound` | Remove: создатель не в вайтлисте |
+| `ZeroAmount` | Amount = 0 |
+| `InsufficientLiquidity` | Резервы пула пусты |
+| `InsufficientShares` | У LP меньше долей, чем запрошено для сжигания |
+| `InitialLiquidityTooSmall` | Первое добавление < MIN_LIQUIDITY |
+| `SlippageExceeded` | Выход < min_amount_out |
+| `ZeroOutput` | Своп произведёт 0 |
+| `EmptyReserves` | Невозможно свопнуть с нулевыми резервами |
+| `MathOverflow` | Арифметическое переполнение |
+| `InvalidFee` | base_fee_bps > MAX_FEE_BPS |
+| `InvalidFeeShare` | lp_fee_share_bps > 10 000 |
+| `InvalidBinRange` | lower ≥ upper или вне границ |
+| `BinOutOfRange` | ID бина вне BinArray |
+| `InsufficientBinLiquidity` | Нет ликвидности в бинах для свопа |
+| `InvalidBinStep` | bin_step_bps = 0 для concentrated |
+| `MissingRwtMint` | Ни token_a, ни token_b не является RWT_MINT |
+| `InvalidMintOrder` | token_a_mint >= token_b_mint (должен быть каноничный порядок) |
+| `InvalidVault` | target_vault не является vault_a или vault_b |
+| `NothingToCompound` | Не получено RWT из YD |
+| `SelfTransfer` | Невозможно передать authority самому себе |
+| `NoPendingAuthority` | Нет ожидающей передачи |
+| `InvalidPendingAuthority` | Подписант ≠ pending_authority |
+| `InvalidOtTreasuryDestination` | ot_treasury_fee_destination не соответствует вычисленному RWT ATA для PDA OT Treasury, или PDA OT Treasury не принадлежит OT_PROGRAM_ID |
+| `MissingOtTreasuryAccount` | У пула установлен ot_treasury_fee_destination, но ot_treasury_fee_account не предоставлен в свопе |
+| `InvalidNexusToken` | token_mint в nexus_deposit не является USDC_MINT или RWT_MINT |
+| `NexusNotActive` | Nexus is_active = false |
+| `InvalidNexusManager` | Подписант ≠ nexus.manager |
+| `NexusClaimFailed` | PDA Nexus не найден в merkle tree или proof невалиден |
+
+## Архитектура и руководство по интеграции
+
+### Кросс-программная интеграция
+
+<AccordionGroup>
+  <Accordion title="← RWT Engine (свопы хранилища)">
+    - RWT Engine `vault_swap` делает CPI к `native_dex::swap`
+    - PDA RWT Vault подписывает как пользователь
+    - Менеджер контролирует направление и проскальзывание
+  </Accordion>
+
+  <Accordion title="← Yield Distribution (конвертация USDC→RWT)">
+    - YD `convert_to_rwt` делает CPI к `native_dex::swap` (покупка RWT ниже NAV)
+    - PDA YD Accumulator подписывает как пользователь
+  </Accordion>
+
+  <Accordion title="Liquidity Nexus (внутренний PDA DEX)">
+    - PDA Nexus живёт внутри контракта DEX — владеет LP-позициями и токен-ATA
+    - Капитал поступает через `nexus_deposit`: 10% дохода OT (USDC) + 15% дохода RWT Engine (RWT)
+    - Бот-менеджер вызывает `nexus_swap`, `nexus_add_liquidity`, `nexus_remove_liquidity`
+    - Вознаграждения LP-комиссий выводятся из YD в Areal Treasury через `nexus_claim_rewards` (Authority)
+    - Менеджер заменяется authority DEX (Team Multisig) через `update_nexus_manager`
+  </Accordion>
+
+  <Accordion title="→ Yield Distribution (compound_yield)">
+    - PDA пула получает доход в RWT от OT из YD через CPI → автокомпаундинг в резервы пула
+    - Все LP-холдеры получают выгоду пропорционально (более глубокий пул = лучшие сделки)
+    - LP-комиссии за свопы обрабатываются отдельно через fee vault каждого пула (`claim_lp_fees`)
+  </Accordion>
+
+  <Accordion title="← Pool Rebalancer (shift_liquidity)">
+    - Бот Rebalancer вызывает `shift_liquidity` для перепозиционирования концентрированной LP вокруг NAV
+    - Кошелёк Rebalancer подписывает как signer (выделенная ключевая пара, не PDA)
+  </Accordion>
+</AccordionGroup>
+
+### Допущения о доверии
+
+<Warning>
+  **Доверие к создателям пулов:** Создатели из вайтлиста могут устанавливать начальные параметры пула (bin_step). Злоумышленный создатель может установить невыгодную начальную цену при первом добавлении ликвидности. Смягчение: authority (Team Multisig) контролирует вайтлист.
+</Warning>
+
+<Warning>
+  **Зависимость compound_yield от YD:** Использует захардкоженный program ID YD для CPI. Если программа YD обновлена на новый адрес, compound_yield должен быть обновлён через обновление программы.
+</Warning>
+
+### Чеклист развёртывания
+
+**Предварительные условия:** Yield Distribution должен быть развёрнут (необходим для CPI compound_yield).
+
+1. **Вызвать `initialize_dex`** с areal_fee_destination (RWT ATA Areal Finance), pause_authority (Team Multisig), rebalancer (кошелёк бота)
+2. **Вызвать `initialize_nexus`** с manager (кошелёк бота Nexus)
+3. **Создать ATA Nexus** — создать USDC ATA и RWT ATA, принадлежащие PDA Nexus (необходимы до того, как адреса назначения OT и конфигурация RWT Engine будут на них указывать)
+4. **Добавить создателей пулов** через `update_pool_creators`
+5. **Создать пулы** — все пулы образуют пару с RWT (например, OT/RWT, RWT/USDC). Минты должны быть в каноничном порядке (`token_a < token_b`). Для пар с OT: передать PDA `ot_treasury` и его RWT ATA — OT Treasury должен быть инициализирован через контракт OT до создания пула
+6. **Передать authority** в Team Multisig через `propose_authority_transfer` + `accept_authority_transfer`
+
+### Сводка потоков токенов
+
+| From | To | Mechanism | Who triggers |
+|------|-----|-----------|-------------|
+| Токен пользователя (вход) | Хранилище пула (vault_in) | swap | Пользователь |
+| Хранилище пула (vault_out) | Токен пользователя (выход) | swap | Пользователь |
+| Комиссия за своп (доля LP) | Fee vault пула (RWT) | swap | Автоматически |
+| Fee vault пула | RWT ATA LP-холдера | claim_lp_fees | LP-холдер |
+| Комиссия за своп (доля протокола) | RWT ATA Areal Finance (всегда в RWT) | swap | Автоматически |
+| Комиссия за своп (казначейство OT) | RWT ATA OT Treasury (только пары с OT, всегда в RWT) | swap | Автоматически |
+| LP-токены A+B | Хранилища пула | add_liquidity | LP-провайдер |
+| LP любое соотношение / один токен | Хранилища пула (через внутренний своп) | zap_liquidity | LP-провайдер |
+| Хранилища пула | LP-токены A+B | remove_liquidity | LP-провайдер |
+| YD reward vault | Резервы пула (RWT) | compound_yield (CPI к YD) | Crank |
+| Доход OT (10% USDC) | USDC ATA crank → USDC ATA Nexus | OT `distribute_revenue` → `nexus_deposit` (два шага: crank получает, затем вносит) | Crank |
+| Доход RWT Engine (15% RWT) | RWT ATA crank → RWT ATA Nexus | RWT `claim_yield` → `nexus_deposit` (два шага: crank получает, затем вносит) | Crank |
+| LP-вознаграждения Nexus (RWT) | RWT ATA Areal Treasury | `nexus_claim_rewards` | Authority |
+| Токены Nexus | Хранилища пула | nexus_add_liquidity | Менеджер Nexus |
+| Хранилища пула | Токены Nexus | nexus_remove_liquidity | Менеджер Nexus |

@@ -1,0 +1,283 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "palm",
+  "name": "Areal Finance",
+  "colors": {
+    "primary": "#a56eff",
+    "light": "#c9a0ff",
+    "dark": "#7c3aed"
+  },
+  "favicon": "/images/favicondarkmode.svg",
+  "appearance": {
+    "default": "system"
+  },
+  "background": {
+    "color": {
+      "light": "#fdf8f3",
+      "dark": "#262423"
+    }
+  },
+  "fonts": {
+    "heading": {
+      "family": "Inter",
+      "weight": 700
+    },
+    "body": {
+      "family": "Inter",
+      "weight": 400
+    }
+  },
+  "navbar": {
+    "primary": {
+      "type": "button",
+      "label": "Launch App",
+      "href": "https://areal.finance"
+    }
+  },
+  "navigation": {
+    "languages": [
+      {
+        "language": "en",
+        "tabs": [
+          {
+            "tab": "Documentation",
+            "groups": [
+              {
+                "group": "Get Started",
+                "icon": "hand-wave",
+                "pages": [
+                  "get-started/introduction"
+                ]
+              },
+              {
+                "group": "Areal",
+                "icon": "sparkles",
+                "pages": [
+                  "areal/problem",
+                  "areal/solution",
+                  "areal/vision"
+                ]
+              },
+              {
+                "group": "Architecture",
+                "icon": "gear",
+                "pages": [
+                  "architecture/overview",
+                  "architecture/governance-and-futarchy",
+                  "architecture/liquidity-and-native-dex",
+                  "architecture/yield-and-reward-distribution"
+                ]
+              },
+              {
+                "group": "Economics",
+                "icon": "chart-line",
+                "pages": [
+                  "economics/tokens",
+                  "economics/rwt-real-world-token",
+                  "economics/ownership-tokens",
+                  "economics/arl-protocol-token",
+                  "economics/treasury"
+                ]
+              },
+              {
+                "group": "Security",
+                "icon": "shield",
+                "pages": [
+                  "security/legal-architecture",
+                  "security/risk-disclosure",
+                  "security/disclaimer"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Contracts",
+            "groups": [
+              {
+                "group": "Smart Contracts",
+                "icon": "file-code",
+                "pages": [
+                  "contracts/ownership-token",
+                  "contracts/rwt-engine",
+                  "contracts/yield-distribution",
+                  "contracts/native-dex",
+                  "contracts/futarchy"
+                ]
+              },
+              {
+                "group": "Off-Chain Services",
+                "icon": "robot",
+                "pages": [
+                  "bots/off-chain-services"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Changelog",
+            "groups": [
+              {
+                "group": "Changelog",
+                "icon": "clock-rotate-left",
+                "pages": [
+                  "changelog/overview"
+                ]
+              },
+              {
+                "group": "By Tag",
+                "icon": "tags",
+                "pages": [
+                  "changelog/features",
+                  "changelog/updates",
+                  "changelog/fixes",
+                  "changelog/breaking",
+                  "changelog/security"
+                ]
+              },
+              {
+                "group": "April 2026",
+                "icon": "calendar",
+                "pages": [
+                  "changelog/2026-04-13-lp-fee-claim",
+                  "changelog/2026-04-13-ot-swap-fee"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "language": "ru",
+        "tabs": [
+          {
+            "tab": "Документация",
+            "groups": [
+              {
+                "group": "Начало работы",
+                "icon": "hand-wave",
+                "pages": [
+                  "ru/get-started/introduction"
+                ]
+              },
+              {
+                "group": "Areal",
+                "icon": "sparkles",
+                "pages": [
+                  "ru/areal/problem",
+                  "ru/areal/solution",
+                  "ru/areal/vision"
+                ]
+              },
+              {
+                "group": "Архитектура",
+                "icon": "gear",
+                "pages": [
+                  "ru/architecture/overview",
+                  "ru/architecture/governance-and-futarchy",
+                  "ru/architecture/liquidity-and-native-dex",
+                  "ru/architecture/yield-and-reward-distribution"
+                ]
+              },
+              {
+                "group": "Экономика",
+                "icon": "chart-line",
+                "pages": [
+                  "ru/economics/tokens",
+                  "ru/economics/rwt-real-world-token",
+                  "ru/economics/ownership-tokens",
+                  "ru/economics/arl-protocol-token",
+                  "ru/economics/treasury"
+                ]
+              },
+              {
+                "group": "Безопасность",
+                "icon": "shield",
+                "pages": [
+                  "ru/security/legal-architecture",
+                  "ru/security/risk-disclosure",
+                  "ru/security/disclaimer"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Контракты",
+            "groups": [
+              {
+                "group": "Смарт-контракты Areal",
+                "icon": "file-code",
+                "pages": [
+                  "ru/contracts/ownership-token",
+                  "ru/contracts/rwt-engine",
+                  "ru/contracts/yield-distribution",
+                  "ru/contracts/native-dex",
+                  "ru/contracts/futarchy"
+                ]
+              },
+              {
+                "group": "Off-Chain сервисы",
+                "icon": "robot",
+                "pages": [
+                  "ru/bots/off-chain-services"
+                ]
+              }
+            ]
+          },
+          {
+            "tab": "Changelog",
+            "groups": [
+              {
+                "group": "Changelog",
+                "icon": "clock-rotate-left",
+                "pages": [
+                  "ru/changelog/overview"
+                ]
+              },
+              {
+                "group": "По тегу",
+                "icon": "tags",
+                "pages": [
+                  "ru/changelog/features",
+                  "ru/changelog/updates",
+                  "ru/changelog/fixes",
+                  "ru/changelog/breaking",
+                  "ru/changelog/security"
+                ]
+              },
+              {
+                "group": "Апрель 2026",
+                "icon": "calendar",
+                "pages": [
+                  "ru/changelog/2026-04-13-lp-fee-claim",
+                  "ru/changelog/2026-04-13-ot-swap-fee"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "redirects": [
+    {
+      "source": "/",
+      "destination": "/get-started/introduction"
+    }
+  ],
+  "errors": {
+    "404": {
+      "redirect": true
+    }
+  },
+  "logo": {
+    "light": "/images/logoblue.svg",
+    "dark": "/images/logowhite.svg"
+  },
+  "footer": {
+    "socials": {
+      "x": "https://x.com/arealprotocol",
+      "github": "https://github.com/areal-network"
+    }
+  },
+  "rounded": "relaxed"
+}

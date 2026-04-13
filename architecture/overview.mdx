@@ -1,0 +1,152 @@
+---
+title: Architecture Overview
+description: The three pillars of Areal protocol architecture — governance, liquidity, and yield distribution
+---
+
+## What Areal Builds
+
+**Areal is a full-stack on-chain protocol for launching, governing, and scaling real-world asset projects.**
+
+The protocol provides unified infrastructure where RWA projects can issue [Ownership Tokens](/economics/ownership-tokens), connect to shared liquidity, distribute yield to holders, and govern their assets through market-driven mechanisms — all without building custom infrastructure from scratch.
+
+Areal operates as a **protocol layer**, not as a custodial platform, fund, or asset manager.
+
+---
+
+## Three Pillars of Architecture
+
+Areal's architecture rests on three tightly integrated systems. Each one is designed to serve the unique demands of real-world assets — long investment horizons, real revenue, legal enforceability, and transparent capital allocation.
+
+<CardGroup cols={3}>
+  <Card title="Governance & Futarchy" icon="scale-balanced" href="/architecture/governance-and-futarchy" color="#a56eff">
+    Market-driven decision-making that replaces subjective voting with economic signals
+  </Card>
+  <Card title="Native DEX" icon="arrow-right-arrow-left" href="/architecture/liquidity-and-native-dex" color="#a56eff">
+    A specialized exchange for yield-bearing tokens where LPs earn real-world yield, not just swap fees
+  </Card>
+  <Card title="Yield Distribution" icon="chart-line" href="/architecture/yield-and-reward-distribution" color="#a56eff">
+    No-staking reward system — hold tokens, earn rewards every second, claim in RWT
+  </Card>
+</CardGroup>
+
+---
+
+## Governance & Futarchy
+
+Every [DAO Ownership Company](/economics/ownership-tokens) on Areal is governed through **futarchy** — a framework where proposals are evaluated by conditional markets, not by votes.
+
+For each proposal, two markets open: one pricing the token if the proposal passes, another if it fails. Traders express their expectations by trading, and the outcome is determined by comparing time-weighted average prices (TWAPs). This ensures that decisions are backed by real economic stakes, not rhetoric.
+
+Futarchy is purpose-built for RWA because real assets demand disciplined, outcome-oriented governance over long-term capital.
+
+<Card title="Deep dive: Governance & Futarchy" icon="arrow-right" href="/architecture/governance-and-futarchy">
+  How decision markets work, why markets beat votes, and how Areal applies futarchy to RWA projects
+</Card>
+
+---
+
+## Native DEX
+
+Areal's decentralized exchange is built specifically for **yield-bearing tokens**. Unlike standard AMMs, the Areal DEX passes through the embedded yield of tokens in liquidity pools to LP providers — on top of regular swap fees.
+
+The DEX supports two pool types:
+- **Concentrated liquidity pools** (bin-based) — for RWT / USDY and RWT / USDC master pools, centered around NAV Book Value
+- **Standard curve pools** (x * y = k) — for RWT / Ownership Token pairs and RWT / third-party assets (tokenized equities, blue-chip tokens)
+
+All pairs are denominated in RWT, creating a unified trading hub. Non-OT pairs (RWT/USDC, RWT/USDY) charge a **0.5% base fee** split 50/50 (0.25% LP providers, 0.25% Areal Treasury). OT pairs charge **1% total** (0.5% base + 0.5% OT Treasury), distributed as: 0.25% LP, 0.25% Areal Treasury, 0.5% Project Reserve. All fees are charged on top of the swap in RWT — pool capitalization is never diluted. LP fees are collected in a per-pool fee vault and claimable instantly via `claim_lp_fees`.
+
+<Card title="Deep dive: Liquidity & Native DEX" icon="arrow-right" href="/architecture/liquidity-and-native-dex">
+  Yield pass-through mechanics, pool types, fee structure, and how the DEX drives the Areal economy
+</Card>
+
+---
+
+## Yield & Reward Distribution
+
+Areal implements a **no-staking reward model** for Ownership Token holders. Simply holding OTs in your wallet is enough — the protocol tracks balances and accrues rewards every second.
+
+The process: a project DAO allocates revenue → funds are split 50/50 into RWT and USDY → deposited into the master liquidity pool for 12 months → earn additional yield from swap fees and token appreciation → withdrawn daily and distributed to holders **in RWT**.
+
+This mechanism amplifies rewards during distribution, unifies payouts across all projects, and strengthens the RWT economy.
+
+<Card title="Deep dive: Yield & Reward Distribution" icon="arrow-right" href="/architecture/yield-and-reward-distribution">
+  No-staking architecture, distribution flow, yield amplification through liquidity, and aggregated portfolio
+</Card>
+
+---
+
+## How It All Connects
+
+The three pillars form a self-reinforcing system:
+
+> **Governance** decides how revenue is allocated → **Yield Distribution** deploys funds into the **DEX** → the **DEX** generates fee revenue back into **Governance**
+
+This creates a flywheel: better governance → smarter capital allocation → deeper liquidity → more trading volume → more fee revenue → more resources for governance and distribution.
+
+---
+
+## Protocol Tokens
+
+These three architecture pillars power the economic life of Areal's token ecosystem:
+
+<CardGroup cols={3}>
+  <Card title="RWT - Real World Token" icon="vault" href="/economics/rwt-real-world-token" color="#a56eff">
+    The primary utility token — aggregates yield from multiple RWA projects through a diversified vault of Ownership Tokens
+  </Card>
+  <Card title="Ownership Tokens" icon="key" href="/economics/ownership-tokens" color="#a56eff">
+    Project-specific tokens backed by a DAO Ownership Company — real ownership of tangible and intangible assets
+  </Card>
+  <Card title="ARL - Protocol Token" icon="scale-balanced" href="/economics/arl-protocol-token" color="#a56eff">
+    The governance token of Areal DAO — used for protocol-level decision-making and ecosystem coordination
+  </Card>
+</CardGroup>
+
+---
+
+## How It Works in Practice
+
+This is what the Areal experience looks like for someone who wants to build wealth, not trade:
+
+<Steps>
+  <Step title="Choose your exposure">
+    Decide how you want to participate: [RWT](/economics/rwt-real-world-token) for diversified, vault-backed exposure to the entire portfolio — or specific [Ownership Tokens](/economics/ownership-tokens) for direct exposure to individual projects.
+  </Step>
+  <Step title="Capital works for you">
+    Real-world assets generate revenue. That revenue flows through the protocol — growing RWT's [NAV Book Value](/economics/rwt-real-world-token), distributing yield to OT holders, and funding the [Treasury](/economics/treasury).
+  </Step>
+  <Step title="Compound without effort">
+    70% of RWT Vault yield is credited to book value automatically. Your position appreciates as real income flows in — no harvesting, no restaking, no manual compounding.
+  </Step>
+  <Step title="Governance handles the rest">
+    Which assets to acquire, how to allocate capital, when to rebalance — all managed through [futarchy governance](/architecture/governance-and-futarchy) by the community. You participate if you want, or simply hold and benefit.
+  </Step>
+</Steps>
+
+---
+
+## Who Areal Is For
+
+<CardGroup cols={3}>
+  <Card title="RWA projects" icon="building">
+    Launch with ready-made infrastructure — DAO governance, liquidity pools, yield distribution, and treasury management. No need to build from scratch.
+  </Card>
+  <Card title="Token holders" icon="wallet">
+    Earn real-world yield by holding tokens. Participate in governance through markets. Access diversified RWA exposure via RWT.
+  </Card>
+  <Card title="Liquidity providers" icon="droplet">
+    Earn swap fees plus embedded token yield. Provide liquidity to yield-bearing pairs that generate returns from both sides.
+  </Card>
+</CardGroup>
+
+---
+
+## Design Boundaries
+
+<CardGroup cols={2}>
+  <Card title="Areal does" icon="check">
+    Provide non-custodial on-chain infrastructure. Coordinate liquidity and incentives. Execute governance-approved actions. Distribute yield transparently.
+  </Card>
+  <Card title="Areal does not" icon="xmark">
+    Guarantee returns or yields. Provide investment advice. Control project-specific business operations. Hold custody of user assets.
+  </Card>
+</CardGroup>

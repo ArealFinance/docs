@@ -1,0 +1,35 @@
+---
+title: Changelog
+description: Последние обновления и изменения Areal Finance
+hidePagination: true
+---
+
+Все значимые изменения протокола Areal Finance документируются здесь. Фильтр по тегу:
+
+<div style={{ display: "flex", gap: "6px", marginBottom: "1.5rem", flexWrap: "wrap" }}>
+  <a href="/ru/changelog/features" className="changelog-tag-link"><span className="changelog-tag changelog-tag-feature">Feature</span></a>
+  <a href="/ru/changelog/updates" className="changelog-tag-link"><span className="changelog-tag changelog-tag-update">Update</span></a>
+  <a href="/ru/changelog/fixes" className="changelog-tag-link"><span className="changelog-tag changelog-tag-fix">Fix</span></a>
+  <a href="/ru/changelog/breaking" className="changelog-tag-link"><span className="changelog-tag changelog-tag-breaking">Breaking</span></a>
+  <a href="/ru/changelog/security" className="changelog-tag-link"><span className="changelog-tag changelog-tag-security">Security</span></a>
+</div>
+
+---
+
+<div className="changelog-entry">
+  <div className="changelog-date">13 апреля 2026</div>
+
+  ### [LP Fee Reward Model — Per-Pool Fee Vault](/ru/changelog/2026-04-13-lp-fee-claim) <a href="/ru/changelog/breaking" className="changelog-tag-link"><span className="changelog-tag changelog-tag-breaking">Breaking</span></a>
+
+  LP-комиссии больше не авто-компаундятся в резервы пула. Теперь они собираются в per-pool fee vault — LP-холдеры клеймят мгновенно через `claim_lp_fees`. Комиссии взимаются поверх свопа для сохранения капитализации пула.
+
+</div>
+
+<div className="changelog-entry">
+  <div className="changelog-date">13 апреля 2026</div>
+
+  ### [Обновление комиссии OT Swap](/ru/changelog/2026-04-13-ot-swap-fee) <a href="/ru/changelog/updates" className="changelog-tag-link"><span className="changelog-tag changelog-tag-update">Update</span></a>
+
+  Базовая комиссия OT Swap обновлена до **1%** — распределяется между Project Reserve (0.50%), LP Provider (0.25%) и Areal Treasury (0.25%).
+
+</div>

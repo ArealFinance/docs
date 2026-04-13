@@ -1,0 +1,325 @@
+---
+title: Legal Architecture
+description: How Areal approaches legal structuring, liability isolation, and risk mitigation — as an infrastructure protocol, not an asset manager
+---
+
+<Warning>
+  This document is provided for **informational and educational purposes only**. It does not constitute legal, financial, regulatory, tax, or professional advice. DAO structuring, token classification, and regulatory compliance are complex, jurisdiction-specific matters. All participants should consult qualified legal and tax professionals in their respective jurisdictions before engaging with the protocol or forming any legal entities.
+</Warning>
+
+## Core Approach
+
+**Areal is an infrastructure protocol.** It provides decentralized technology — smart contracts, a [native DEX](/architecture/liquidity-and-native-dex), [governance tools](/architecture/governance-and-futarchy), [yield distribution mechanisms](/architecture/yield-and-reward-distribution), and token standards — that third-party projects and communities may choose to use.
+
+Areal **does not tokenize real-world assets directly**. It does not acquire, hold, manage, or control any real-world assets on behalf of users or projects. It does not operate as a custodian, broker, fund manager, or financial intermediary.
+
+Instead, Areal provides:
+
+- **Technology infrastructure** — open-source smart contracts and protocols deployed on the Solana blockchain
+- **A conceptual framework** — a reference architecture for how real-world asset projects may structure their legal and economic operations
+- **Governance tooling** — [futarchy-based decision-making](/architecture/governance-and-futarchy) mechanisms that projects may adopt for their own governance needs
+
+Each project that uses Areal infrastructure independently determines its own legal structure, compliance obligations, and operational model — with guidance from its own qualified legal counsel.
+
+---
+
+## Legal Architecture: DAO Ownership Companies
+
+The Areal ecosystem is built around the concept of a **DAO Ownership Company** — a legally registered entity (such as a foundation, exempted company, or equivalent structure in an appropriate jurisdiction) that serves as the formal owner and controller of a project's assets.
+
+### How the structure is intended to work
+
+<Steps>
+  <Step title="Project forms a legal entity">
+    A real-world asset project independently engages qualified legal counsel and registers a DAO Ownership Company in an appropriate jurisdiction. The entity is structured to recognize token holders as members or participants in accordance with its constitutional documents.
+  </Step>
+  <Step title="Assets are assigned to the entity">
+    All project assets — tangible and intangible — are legally assigned to the DAO Ownership Company. The entity becomes the formal owner of these assets under applicable law.
+  </Step>
+  <Step title="Governance is integrated">
+    The entity's constitutional documents are designed to integrate with on-chain governance, enabling token holders to participate in decision-making through [futarchy](/architecture/governance-and-futarchy) or other governance mechanisms adopted by the project.
+  </Step>
+  <Step title="Tokens represent participation">
+    [Ownership Tokens](/economics/ownership-tokens) issued by the project are designed to represent membership or participation rights in the DAO Ownership Company — as defined by its constitutional documents and applicable law.
+  </Step>
+</Steps>
+
+### Key structural principles
+
+<CardGroup cols={2}>
+  <Card title="Legal personality" icon="building">
+    The DAO Ownership Company is a legally recognized entity — capable of holding assets, entering contracts, and operating within established legal frameworks.
+  </Card>
+  <Card title="Limited liability" icon="shield-check">
+    Members (token holders) are intended to benefit from the limited liability protections provided by the entity's jurisdiction and structure, subject to applicable law.
+  </Card>
+  <Card title="Asset segregation" icon="layer-group">
+    Each project operates through its own independent legal entity — isolating assets, liabilities, and risks from other projects and from the Areal protocol itself.
+  </Card>
+  <Card title="Governance integration" icon="scale-balanced">
+    On-chain governance decisions are designed to be recognized and enforceable through the entity's constitutional framework, bridging blockchain and legal systems.
+  </Card>
+</CardGroup>
+
+<Note>
+  The specific legal structure, jurisdiction, and constitutional framework for each DAO Ownership Company is determined by the respective project and its legal counsel. Areal provides a conceptual reference architecture, but does not provide legal advice or guarantee any particular legal outcome. The suitability, enforceability, and regulatory compliance of any legal structure depends on the specific facts, jurisdiction, and applicable law.
+</Note>
+
+---
+
+## Areal's Role vs. Project Responsibility
+
+A clear delineation of responsibilities is fundamental to the Areal architecture. Understanding who is responsible for what is critical for all ecosystem participants.
+
+### What Areal provides
+
+| Layer | Areal's role |
+|---|---|
+| **Smart contracts** | Develops and deploys open-source protocol contracts on Solana |
+| **DEX infrastructure** | Operates the [native DEX](/architecture/liquidity-and-native-dex) — pool creation, trading, fee distribution |
+| **Governance tooling** | Provides [futarchy-based governance](/architecture/governance-and-futarchy) mechanisms |
+| **Yield distribution** | Provides [yield distribution contracts](/architecture/yield-and-reward-distribution) that projects may use |
+| **Token standards** | Defines the technical standards for RWT and Ownership Tokens |
+| **Reference architecture** | Publishes a conceptual framework for legal and economic structuring |
+
+### What each project is independently responsible for
+
+| Layer | Project's responsibility |
+|---|---|
+| **Legal entity** | Forming and maintaining its own DAO Ownership Company with qualified legal counsel |
+| **Asset management** | Acquiring, maintaining, and managing real-world assets through its legal entity |
+| **Regulatory compliance** | Ensuring compliance with all applicable laws and regulations in relevant jurisdictions |
+| **Tax obligations** | Meeting all tax reporting and payment requirements |
+| **Operational management** | Running day-to-day business operations of the underlying assets |
+| **Investor communications** | Providing accurate information to token holders about the project's status |
+| **KYC/AML** | Implementing any required Know Your Customer or Anti-Money Laundering procedures |
+
+<Info>
+  Areal does not control, direct, or supervise the operations of any project-level DAO Ownership Company. Each project is an independent entity that bears full responsibility for its own legal, regulatory, and operational compliance.
+</Info>
+
+---
+
+## Liability Isolation
+
+The Areal architecture is designed to isolate risk and liability at multiple levels, reducing the potential for cascading failures or cross-contamination between ecosystem participants.
+
+### Entity-level isolation
+
+Each DAO Ownership Company is a **separate legal entity** with its own assets, liabilities, and governance. This means:
+
+- A failure or legal issue at one project does not directly affect other projects
+- Areal protocol's own DAO Ownership Company is separate from project-level entities
+- Token holders of one project have no automatic exposure to other projects' liabilities
+- Creditors of one entity generally cannot reach assets held by a different entity
+
+### Protocol-level isolation
+
+The Areal protocol itself operates as infrastructure:
+
+- Protocol smart contracts execute deterministically based on their code
+- The protocol does not hold custody of project assets
+- Fee revenue flows are governed by immutable or governance-controlled parameters
+- The [Treasury](/economics/treasury) is managed through governance-controlled parameters
+
+### Important limitations
+
+Liability isolation depends on proper structuring, adequate substance, and compliance with applicable law. Isolation structures may not protect participants in all circumstances. Among other factors:
+
+- Courts in certain jurisdictions may disregard entity boundaries under specific conditions (commonly known as "veil piercing")
+- Inadequate substance, formality, or governance within a legal entity may weaken its protections
+- Cross-border transactions may create unexpected legal obligations
+- Regulatory actions may affect multiple related entities simultaneously
+
+Participants should consult qualified legal counsel regarding the protections and limitations applicable to their specific circumstances.
+
+---
+
+## Risk Categories
+
+### Regulatory and classification risk
+
+The classification of digital tokens varies across jurisdictions and is subject to ongoing regulatory development worldwide. Tokens that are classified as utility instruments in one jurisdiction may be classified differently in another.
+
+**Relevant considerations:**
+
+- Token classification (utility, security, commodity, payment instrument) depends on applicable law and may change over time
+- Regulatory frameworks for digital assets are evolving rapidly and may impose new requirements
+- Projects operating across multiple jurisdictions may face conflicting or overlapping regulatory obligations
+- The legal enforceability of on-chain governance through off-chain legal entities is an emerging area of law with limited precedent
+
+**How the architecture addresses this:**
+
+- DAO Ownership Companies provide a recognized legal entity that can engage with regulators
+- On-chain governance is designed to be integrated with enforceable constitutional documents
+- The modular architecture allows projects to adapt their legal structure to their specific regulatory environment
+- Separation between protocol infrastructure and project-level operations reduces cross-contamination of regulatory risk
+
+### Howey Test Analysis — Why Areal is Not a Broker
+
+The U.S. Supreme Court's **Howey Test** identifies a security as an "investment of money in a common enterprise with an expectation of profits derived from the efforts of others." Areal's architecture is specifically designed to address each prong of this test.
+
+<Steps>
+  <Step title="Investment of Money">
+    Users do not "invest" in Areal. They interact with on-chain smart contracts — minting tokens, providing liquidity, or participating in governance. Areal does not solicit investment, does not pool funds, and does not offer returns on capital. Each project independently structures its own token offerings through its own DAO Ownership Company.
+  </Step>
+  <Step title="Common Enterprise">
+    There is no common enterprise. Each project operates through a **separate, independent legal entity** (DAO Ownership Company / SPV). Assets, liabilities, revenue, and governance are fully isolated per entity. Areal is infrastructure — like Ethereum or Solana — not a fund or enterprise that pools resources.
+  </Step>
+  <Step title="Expectation of Profits">
+    Ownership Tokens represent **membership or participation rights** in an independent legal entity, not shares in a common investment scheme. Token holders participate in governance and may receive yield distributions — but these come from real-world asset operations of the specific project entity, not from Areal protocol itself.
+  </Step>
+  <Step title="Efforts of Others">
+    Returns (if any) are generated by the **project's own operations** — managed by its independent legal entity, governed by its own token holders via futarchy. Areal protocol does not manage assets, make investment decisions, or control project operations. The protocol is deterministic infrastructure — it executes code, not business strategy.
+  </Step>
+</Steps>
+
+### Platform of SPVs — Not a Broker
+
+Areal operates as a **technology platform for independent Special Purpose Vehicles (SPVs)**, not as a broker, dealer, or investment intermediary.
+
+<CardGroup cols={2}>
+  <Card title="What Areal IS" icon="server">
+    **Infrastructure platform** — provides smart contracts, DEX, governance tooling, and yield distribution technology that independent legal entities (SPVs) may choose to use.
+  </Card>
+  <Card title="What Areal is NOT" icon="ban">
+    **Not a broker** — does not solicit, recommend, arrange, or facilitate the purchase or sale of securities. Does not hold customer funds, execute trades on behalf of clients, or provide investment advice.
+  </Card>
+</CardGroup>
+
+**Key distinctions from broker/dealer activity:**
+
+| Broker/Dealer | Areal |
+|---|---|
+| Solicits investors and recommends securities | Provides open-source code — projects independently launch tokens |
+| Holds custody of client assets | No custody — assets are held by independent SPV entities or in self-custodial wallets |
+| Executes trades on behalf of clients | DEX is permissionless — users trade peer-to-pool, no intermediary |
+| Pools investor funds into common vehicles | Each project is an isolated SPV with its own assets and governance |
+| Receives transaction-based compensation for facilitating sales | Protocol fees are automated, immutable smart contract parameters — not sales commissions |
+| Provides personalized investment advice | No advice — provides technology infrastructure only |
+
+### Ownership Tokens Are Not Equity Shares
+
+Ownership Tokens represent **membership or participation rights** in a DAO Ownership Company — they are **not equity shares** in a corporation:
+
+- **No dividends** — yield distributions are operational returns from real-world assets, governed by token holders via futarchy, not declared by a board of directors
+- **No corporate governance rights** — governance is on-chain via futarchy, not through shareholder votes, proxy statements, or board elections
+- **No centralized management** — the SPV is governed by its token holders through smart contract-enforced governance, not by executive officers
+- **No transferable equity interest** — the token represents participation in a decentralized governance structure, not an ownership stake in a traditional corporate entity
+- **Asset-level isolation** — each OT is tied to a specific, independent SPV with segregated assets, unlike shares in a holding company
+
+<Note>
+  This analysis is provided for informational purposes only and does not constitute a legal opinion. Token classification is jurisdiction-specific and fact-dependent. Projects and participants should obtain qualified legal advice regarding the regulatory status of tokens in their specific circumstances.
+</Note>
+
+---
+
+### Legal structure risk
+
+Even with proper legal structuring, risks remain:
+
+- The legal entity may not perform as intended if constitutional documents are poorly drafted
+- Governance integration between on-chain and off-chain systems requires careful legal engineering
+- Asset assignment to the legal entity must be properly executed under applicable property law
+- Changes in law may affect the validity or enforceability of existing structures
+- The entity must maintain adequate substance and governance to preserve its legal protections
+
+### Smart contract and technical risk
+
+- All smart contract code may contain vulnerabilities, bugs, or logical errors despite auditing
+- The protocol operates on the Solana blockchain, which may experience validator failures, network congestion, or protocol upgrades
+- Interactions between multiple smart contracts may produce unexpected results
+- Oracle and data feed dependencies may introduce accuracy or timeliness risks
+
+**Mitigations:** modular architecture, external security audits, formal verification, and minimized trust assumptions.
+
+### Asset and operational risk
+
+Real-world assets managed by project-level DAO Ownership Companies are subject to:
+
+- Market value fluctuations and economic cycles
+- Physical damage, deterioration, or obsolescence
+- Operational disruptions, force majeure events, and natural disasters
+- Tenant, counterparty, or service provider defaults
+- Changes in local regulations affecting asset operations
+- Management quality and human error at the project level
+
+Areal protocol does not control these risks — they are managed by each project independently.
+
+### Liquidity and market risk
+
+- Token prices are determined by market supply and demand and may be volatile
+- Liquidity pools may experience periods of low depth or high slippage
+- The relationship between token market price and underlying asset value may diverge
+- Large transactions may significantly impact market prices in lower-liquidity conditions
+
+Automatic rebalancing mechanisms and [Treasury](/economics/treasury)-funded safety measures are designed to mitigate but cannot eliminate these risks.
+
+### Governance risk
+
+- Futarchy markets, like any market mechanism, may produce suboptimal outcomes
+- Low participation may concentrate decision-making influence
+- Market-based governance may be subject to strategic behavior or manipulation
+- Governance decisions affecting capital allocation carry inherent economic risk
+
+---
+
+## Jurisdictional Considerations
+
+The Areal ecosystem is designed to be **jurisdiction-neutral** at the protocol level. However, all participants — projects, users, and token holders — are subject to the laws and regulations of their respective jurisdictions.
+
+**Key considerations:**
+
+- Legal classification of tokens may differ between jurisdictions, potentially affecting the rights and obligations of holders
+- Tax treatment of token holdings, transactions, and yield distributions varies by jurisdiction and personal circumstances
+- Some jurisdictions may restrict or prohibit participation in decentralized protocols or token-based systems
+- Cross-border transactions may trigger reporting obligations or regulatory requirements in multiple jurisdictions
+
+**All participants are strongly advised to:**
+
+- Obtain qualified legal and tax advice in their own jurisdiction before participating
+- Understand their own regulatory obligations and restrictions
+- Monitor changes in applicable law that may affect their participation
+- Maintain appropriate records for tax and regulatory purposes
+
+---
+
+## Evolving Regulatory Landscape
+
+The regulatory framework for digital assets, decentralized governance, and tokenized real-world assets is evolving globally. Areal's architecture is designed with adaptability in mind:
+
+- **Modular legal structure** — projects can adapt their DAO Ownership Company structure as regulations develop, without requiring protocol-level changes
+- **Governance flexibility** — protocol parameters and operational models can be adjusted through [futarchy](/architecture/governance-and-futarchy) in response to regulatory developments
+- **Progressive compliance** — the architecture supports the gradual adoption of compliance measures as standards crystallize
+- **Jurisdictional optionality** — the framework is compatible with multiple jurisdictional approaches, allowing projects to select structures appropriate for their regulatory environment
+
+Areal is committed to operating responsibly within the evolving legal landscape and aims to align with regulatory expectations as they develop. However, no guarantee can be made regarding future regulatory treatment or compliance status.
+
+---
+
+## Summary
+
+<CardGroup cols={3}>
+  <Card title="Infrastructure, not tokenization" icon="server" color="#a56eff">
+    Areal provides protocol technology and a conceptual framework — it does not tokenize, hold, or manage real-world assets directly
+  </Card>
+  <Card title="Independent legal entities" icon="building" color="#a56eff">
+    Each project independently forms its own DAO Ownership Company with qualified legal counsel, bearing its own compliance obligations
+  </Card>
+  <Card title="Liability isolation" icon="shield-check" color="#a56eff">
+    Separate legal entities at project and protocol levels are designed to isolate risks and limit cross-contamination of liabilities
+  </Card>
+  <Card title="Comprehensive risk disclosure" icon="triangle-exclamation" color="#a56eff">
+    Regulatory, legal, technical, operational, market, and governance risks are identified and addressed through architectural mitigations
+  </Card>
+  <Card title="Jurisdiction-neutral design" icon="globe" color="#a56eff">
+    Protocol-level neutrality with project-level flexibility to adapt to specific regulatory environments and jurisdictions
+  </Card>
+  <Card title="Adaptive architecture" icon="arrows-rotate" color="#a56eff">
+    Modular structure designed to evolve with the regulatory landscape — supporting progressive compliance as standards develop
+  </Card>
+</CardGroup>
+
+<Warning>
+  This document does not constitute legal, financial, or regulatory advice. The information presented describes the intended design of the Areal protocol architecture and is subject to change. Actual legal outcomes depend on specific facts, jurisdictions, and applicable law. All participants should seek independent professional advice before engaging with the protocol.
+</Warning>

@@ -1,0 +1,618 @@
+---
+title: "RWT Engine"
+description: "Индексный токен, обеспеченный позициями OT с ценообразованием на основе NAV"
+---
+
+# RWT Engine
+
+<Card title="✅ Готов к разработке" icon="check" color="#48bb78">
+  Спецификация контракта прошла аудит бизнес-логики, техническую проверку, проверку кросс-программной интеграции и стандартизацию именования. Разработчик может реализовать контракт по этому документу.
+</Card>
+
+RWT (Real World Token) — единый индексный токен, обеспеченный диверсифицированным портфелем позиций OT. Пользователи вносят USDC для минта RWT по текущей цене NAV. Менеджер активно торгует позициями OT для роста портфеля. Доходность от OT-холдингов реинвестируется обратно в хранилище.
+
+<Warning>
+  **Обновляемый контракт.** Право на обновление программы = Team Multisig (Squads). Право обновления отделено от права управления и права приостановки.
+</Warning>
+
+## Ключевые концепции
+
+<CardGroup cols={3}>
+  <Card title="12 инструкций" icon="code">
+    Минт, административный минт, корректировка капитала, сбор доходности, свопы, управление authority/менеджером/конфигурацией, приостановка
+  </Card>
+  <Card title="2 стейт-аккаунта" icon="database">
+    RwtVault, RwtDistributionConfig
+  </Card>
+  <Card title="2 PDA-сида" icon="key">
+    rwt_vault, dist_config_rwt
+  </Card>
+</CardGroup>
+
+## Ценообразование NAV
+
+```
+NAV = total_invested_capital * 1,000,000 / total_rwt_supply
+```
+
+Результат в USDC лампортах за RWT (6 десятичных знаков). Пример: капитал=$100, эмиссия=100 RWT → NAV = 100_000_000 * 1_000_000 / 100_000_000 = 1_000_000 ($1.00).
+
+- `total_invested_capital` — сумма всех депозитов USDC + стоимость позиций OT (в эквиваленте USDC, 6 десятичных знаков)
+- `total_rwt_supply` — общее количество RWT токенов в обращении
+- Начальный NAV = $1.00 (1,000,000 лампортов)
+- NAV автоматически пересчитывается после каждой операции, изменяющей состояние (минт, сбор доходности, корректировка)
+- **Защита:** если `total_rwt_supply == 0`, NAV = INITIAL_NAV (предотвращает деление на ноль)
+- **Защита:** `adjust_capital` не может уменьшить `total_invested_capital` ниже `MIN_CAPITAL_FLOOR` (1 лампорт) для предотвращения NAV = 0 при supply > 0
+- NAV может уменьшаться только через `adjust_capital` (списание). Увеличение происходит от доходности (claim_yield) и комиссий минта
+- **Рост NAV от комиссии минта:** 0.5% комиссии хранилища от каждого минта идёт в аккумулятор капитала, увеличивая total_invested_capital, в то время как пользователь получает RWT, рассчитанный только от net_deposit. Это означает, что NAV немного растёт с каждым минтом — что выгодно существующим холдерам
+- **Нет выкупа/сжигания.** RWT нельзя обменять обратно на USDC через контракт. Пользователи продают RWT на DEX. Это проектное решение — капитал хранилища остаётся задействованным
+- **Балансовая стоимость, а не рыночная.** NAV отражает бухгалтерскую стоимость, а не рыночные цены в реальном времени. `vault_swap` не изменяет total_invested_capital (своп нейтрален по стоимости в бухгалтерском учёте). Расхождение рыночной цены корректируется через `adjust_capital` (списание), инициируемое управлением на основе офчейн-анализа цен
+
+## Цикл составного роста
+
+<Steps>
+  <Step title="Позиции OT приносят доходность">
+    OT-токены, удерживаемые хранилищем, получают доходность через потоки Yield Distribution. Выручка OT (USDC) конвертируется в **RWT** контрактом YD (свопом на DEX + минт по NAV), затем распределяется как потоки RWT. Хранилище является OT-холдером, как и любой другой кошелёк.
+  </Step>
+  <Step title="Получение RWT из YD">
+    Безразрешительный крэнк вызывает `claim_yield`. PDA хранилища подписывает merkle-клейм → получает RWT.
+  </Step>
+  <Step title="Разделение полученных RWT">
+    70% остаётся в хранилище (рост NAV). 15% → ARL Treasury. 15% → Liquidity Nexus.
+
+    Увеличение NAV: `total_invested_capital += book_value_share * nav_book_value / 1,000,000`
+  </Step>
+  <Step title="Менеджер реинвестирует">
+    Менеджер продаёт RWT за USDC через `vault_swap`, затем покупает больше OT. Больше OT = больше доходности в следующем цикле.
+  </Step>
+</Steps>
+
+## Три роли
+
+<CardGroup cols={3}>
+  <Card title="🏛️ Authority" icon="landmark">
+    **Team Multisig** (после бутстрапа)
+
+    - `admin_mint_rwt` — минт, обеспеченный OT
+    - `adjust_capital` — уменьшение NAV
+    - `update_vault_manager` — смена менеджера
+    - `update_distribution_config` — изменение разделения доходности
+    - `propose_authority_transfer`
+  </Card>
+  <Card title="🤖 Manager" icon="robot">
+    **Кошелёк AI-агента** (автоматизированный торговый бот)
+
+    - `vault_swap` — свопы любых токенов через DEX
+
+    Менеджер — доверенная роль, может выполнять любые свопы с активами хранилища. В продакшене это AI-агент, автономно управляющий портфелем OT. Меняется только authority через `update_vault_manager`.
+  </Card>
+  <Card title="🛑 Pause Authority" icon="shield">
+    **Team Multisig** (Squads)
+
+    - `pause_mint` — экстренная остановка
+    - `unpause_mint` — возобновление
+
+    Неизменяемый — устанавливается при инициализации, меняется только через обновление программы
+  </Card>
+</CardGroup>
+
+## Инструкции
+
+### Инициализация
+
+<AccordionGroup>
+  <Accordion title="initialize_vault">
+    Создаёт хранилище RWT со всеми необходимыми аккаунтами. Вызывается один раз.
+
+    **Параметры:**
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `initial_authority` | `Pubkey` | Начальный управляющий (деплоер, затем передаётся Team Multisig) |
+    | `pause_authority` | `Pubkey` | Подписант экстренной приостановки (Team Multisig, неизменяемый) |
+    | `areal_fee_destination` | `Pubkey` | Куда идёт 0.5% комиссии минта — Areal Finance (статический, неизменяемый) |
+    | `liquidity_destination` | `Pubkey` | Куда идёт 15% доходности (RWT ATA крэнка — крэнк затем направляет в Nexus через `nexus_deposit`) |
+    | `protocol_revenue_destination` | `Pubkey` | Куда идёт 15% доходности (ARL Treasury ATA) |
+
+    **Вызывающий:** Деплоер (однократно)
+
+    **Аккаунты:**
+    - `deployer` (signer, mut) — оплачивает создание всех аккаунтов
+    - `rwt_vault` (init) — PDA seed: `["rwt_vault"]`
+    - `dist_config` (init) — PDA seed: `["dist_config_rwt"]`
+    - `rwt_mint` (init) — новый SPL token mint, authority = rwt_vault PDA
+    - `capital_accumulator_ata` (init) — USDC ATA, authority = rwt_vault PDA
+    - `usdc_mint` (readonly) — адрес минта USDC (для создания Capital Accumulator ATA)
+    - `token_program`, `system_program`, `associated_token_program`
+
+    **Создаёт:**
+    - `RwtVault` PDA — основное состояние хранилища, mint authority для RWT
+    - `RwtDistributionConfig` PDA — конфигурация разделения доходности
+    - RWT SPL Token Mint — токен RWT (6 десятичных знаков), mint authority = RwtVault PDA
+    - Capital Accumulator ATA — USDC ATA, принадлежащий RwtVault PDA
+
+    **Начальное состояние:**
+    - `nav_book_value = 1,000,000` ($1.00)
+    - `total_invested_capital = 0`
+    - `total_rwt_supply = 0`
+    - `mint_paused = false`
+    - Распределение: 70% балансовая стоимость / 15% ликвидность / 15% протокольная выручка
+  </Accordion>
+</AccordionGroup>
+
+### Пользовательский минт
+
+<AccordionGroup>
+  <Accordion title="mint_rwt">
+    Пользователь вносит USDC и получает RWT по текущей цене NAV. Комиссия 1% делится: 0.5% остаётся в хранилище (увеличивает NAV), 0.5% идёт в areal_fee_destination (Areal Finance).
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount` | `u64` | Сумма USDC для депозита (6 десятичных знаков) |
+
+    **Вызывающий:** Безразрешительный — любой может минтить
+
+    **Аккаунты:**
+    - `user` (signer) — депозитор
+    - `rwt_vault` (mut) — обновляет эмиссию, капитал, NAV
+    - `rwt_mint` (mut) — минт RWT, authority = vault PDA
+    - `user_deposit` (mut) — USDC ATA пользователя, constraint: `owner == user`, `mint == usdc_mint` (захардкоженный минт USDC)
+    - `user_rwt` (mut) — RWT ATA пользователя, constraint: `mint == vault.rwt_mint`
+    - `capital_acc` (mut) — USDC ATA хранилища, constraint: `key == vault.capital_accumulator_ata`
+    - `dao_fee_account` (mut) — constraint: `key == vault.areal_fee_destination`
+
+    **Валидация:**
+    - `amount > 0`
+    - `mint_paused == false`
+
+    **Логика:**
+    1. Расчёт комиссии: `fee_total = amount * 100 / 10,000` (1%)
+    2. `dao_fee = fee_total / 2` (0.5% в Areal Finance)
+    3. `vault_fee = fee_total - dao_fee` (0.5% остаётся в хранилище)
+    4. `net_deposit = amount - fee_total`
+    5. `rwt_out = net_deposit * 1,000,000 / nav_book_value`
+    6. Перевод `net_deposit + vault_fee` → capital_acc
+    7. Перевод `dao_fee` → dao_fee_account
+    8. Минт `rwt_out` RWT пользователю (vault PDA подписывает как mint authority)
+    9. Обновление: `total_invested_capital += net_deposit + vault_fee`
+    10. Обновление: `total_rwt_supply += rwt_out`
+    11. Пересчёт NAV
+    12. Эмит `RwtMinted`
+  </Accordion>
+</AccordionGroup>
+
+### Операции Authority
+
+<AccordionGroup>
+  <Accordion title="admin_mint_rwt">
+    Минт RWT, обеспеченного позициями OT, уже находящимися в хранилище. Депозит USDC не требуется — используется, когда хранилище приобретает OT другими способами (например, решение управления об обеспечении RWT существующими OT).
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `rwt_amount` | `u64` | Количество RWT-токенов для минта |
+    | `backing_capital_usd` | `u64` | USD-стоимость обеспечения (6 десятичных знаков) |
+
+    **Вызывающий:** Authority (Team Multisig)
+
+    **Аккаунты:**
+    - `authority` (signer) — должен совпадать с `vault.authority`
+    - `rwt_vault` (mut)
+    - `rwt_mint` (mut) — constraint: `key == vault.rwt_mint`
+    - `recipient_rwt` (mut) — constraint: `mint == vault.rwt_mint`
+
+    **Валидация:**
+    - `rwt_amount > 0`
+    - `backing_capital_usd > 0` (первый admin_mint должен установить начальный NAV — предотвращает NAV = 0 при supply > 0)
+
+    **Эффект:** Минтит RWT, добавляет backing_capital_usd к total_invested_capital, пересчитывает NAV. Эмитит `RwtMinted`.
+
+    <Note>
+      **Первый минт:** Когда `total_rwt_supply == 0`, защита NAV возвращает `INITIAL_NAV` ($1.00). После `admin_mint_rwt` NAV = `backing_capital_usd * 1,000,000 / rwt_amount`. Authority должен установить `backing_capital_usd / rwt_amount ≈ $1.00` для соответствия начальному NAV.
+    </Note>
+
+    <Warning>
+      **Нет ончейн-верификации обеспечения.** `backing_capital_usd` НЕ проверяется на соответствие реальным позициям OT, удерживаемым хранилищем. Authority (Team Multisig) должен проверить офчейн, что заявленная USD-стоимость соответствует фактическим OT-холдингам перед вызовом. Завышенный `backing_capital_usd` искусственно повысит NAV, навредив будущим минтерам. Все административные минты аудируемы ончейн через события `RwtMinted(is_admin=true)`.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="adjust_capital">
+    Уменьшение total_invested_capital (списание, амортизация, признание убытков). NAV уменьшается пропорционально. Разрешены только уменьшения — ручное повышение невозможно.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `writedown_amount` | `u64` | USDC-стоимость для вычитания из капитала (6 десятичных знаков) |
+
+    **Вызывающий:** Authority (Team Multisig)
+
+    **Аккаунты:**
+    - `authority` (signer) — должен совпадать с `vault.authority`
+    - `rwt_vault` (mut)
+
+    **Валидация:**
+    - `writedown_amount > 0`
+    - `writedown_amount ≤ total_invested_capital - MIN_CAPITAL_FLOOR`
+
+    **Эффект:** `total_invested_capital -= writedown_amount`, пересчитывает NAV. Эмитит `CapitalAdjusted`.
+  </Accordion>
+
+  <Accordion title="update_vault_manager">
+    Смена кошелька менеджера, который может выполнять vault_swap.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `new_manager` | `Pubkey` | Новый кошелёк менеджера |
+
+    **Вызывающий:** Authority (Team Multisig)
+
+    **Аккаунты:**
+    - `authority` (signer) — должен совпадать с `vault.authority`
+    - `rwt_vault` (mut)
+
+    **Эффект:** Устанавливает `vault.manager = new_manager`. Эмитит `VaultManagerUpdated`.
+  </Accordion>
+
+  <Accordion title="update_distribution_config">
+    Изменение пропорций разделения доходности и/или адресов назначения.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `book_value_bps` | `u16` | % роста NAV |
+    | `liquidity_bps` | `u16` | % в Nexus |
+    | `protocol_revenue_bps` | `u16` | % в ARL Treasury |
+    | `liquidity_destination` | `Pubkey` | RWT ATA крэнка (крэнк направляет в Nexus через `nexus_deposit`) |
+    | `protocol_revenue_destination` | `Pubkey` | RWT ATA ARL Treasury |
+
+    **Вызывающий:** Authority (Team Multisig)
+
+    **Аккаунты:**
+    - `authority` (signer) — должен совпадать с `vault.authority`
+    - `rwt_vault` — для верификации authority
+    - `dist_config` (mut) — перезаписывается новыми значениями
+
+    **Валидация:**
+    - `book_value_bps + liquidity_bps + protocol_revenue_bps == 10,000`
+
+    **Эффект:** Полностью перезаписывает RwtDistributionConfig новыми значениями. Эмитит `DistributionConfigUpdated`.
+  </Accordion>
+</AccordionGroup>
+
+### Передача Authority
+
+Двухэтапная передача управления. Тот же паттерн propose+accept, как в контракте OT, но authority хранится непосредственно в RwtVault (а не в отдельном PDA, как OtGovernance). Это связано с тем, что RwtVault — синглтон: хранилище только одно, поэтому отдельный PDA для управления не добавляет ценности.
+
+<AccordionGroup>
+  <Accordion title="propose_authority_transfer">
+    Шаг 1: Текущий authority предлагает нового authority.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `new_authority` | `Pubkey` | Предлагаемый новый authority |
+
+    **Вызывающий:** Текущий authority
+
+    **Аккаунты:**
+    - `authority` (signer) — должен совпадать с `vault.authority`
+    - `rwt_vault` (mut)
+
+    **Валидация:** `new_authority ≠ current authority` (передача самому себе запрещена)
+
+    **Эффект:** Устанавливает `vault.pending_authority = Some(new_authority)`. Эмитит `AuthorityTransferProposed`.
+
+    <Note>
+      Повторный вызов **перезаписывает** существующий pending_authority. Предыдущий предложенный authority теряет возможность принять передачу.
+    </Note>
+  </Accordion>
+
+  <Accordion title="accept_authority_transfer">
+    Шаг 2: Предложенный authority принимает передачу.
+
+    **Вызывающий:** Предложенный новый authority (должен подписать)
+
+    **Аккаунты:**
+    - `new_authority` (signer) — должен совпадать с `vault.pending_authority`
+    - `rwt_vault` (mut)
+
+    **Валидация:** `signer == vault.pending_authority`
+
+    **Эффект:** Устанавливает `authority = new_authority`, очищает `pending_authority`. Эмитит `AuthorityTransferAccepted`.
+  </Accordion>
+</AccordionGroup>
+
+### Операции менеджера
+
+<AccordionGroup>
+  <Accordion title="vault_swap">
+    Свопы любых токенов хранилища через Native DEX. PDA хранилища подписывает как пользователь свопа. Менеджер определяет направление, сумму и допустимое проскальзывание.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount_in` | `u64` | Сумма входного токена |
+    | `min_amount_out` | `u64` | Минимальный выход (защита от проскальзывания) |
+    | `a_to_b` | `bool` | Направление свопа в пуле DEX |
+
+    **Вызывающий:** Только менеджер
+
+    **Аккаунты:**
+    - `manager` (signer) — должен совпадать с `vault.manager`
+    - `rwt_vault` — PDA, подписывает CPI-своп
+    - `vault_token_in` (mut) — исходный ATA, constraint: `owner == rwt_vault.key()`
+    - `vault_token_out` (mut) — целевой ATA, constraint: `owner == rwt_vault.key()`
+    - Аккаунты DEX CPI (все UncheckedAccount — валидируются программой DEX внутренне):
+      - `pool_state` (mut) — DEX PoolState PDA для пары свопа `["pool", token_a_mint, token_b_mint]`
+      - `dex_config` — глобальная конфигурация DEX `["dex_config"]`
+      - `vault_in` (mut) — токен-аккаунт пула для входной стороны (authority = pool_state PDA)
+      - `vault_out` (mut) — токен-аккаунт пула для выходной стороны (authority = pool_state PDA)
+      - `areal_fee_account` (mut) — `dex_config.areal_fee_destination` DEX (RWT ATA, получает протокольную комиссию)
+      - `bin_array` (mut, optional) — требуется только для Concentrated-пулов `["bins", pool_state]`
+    - `dex_program` — constraint: `key == DEX_PROGRAM_ID` (захардкожен, предотвращает подмену программы)
+    - `token_program`
+
+    <Note>
+      **CPI-подпись:** PDA хранилища подписывает своп DEX, используя сиды `[b"rwt_vault", &[vault.bump]]`. Программа DEX видит `rwt_vault` как пользователя свопа. Порядок аккаунтов должен точно совпадать с инструкцией DEX `swap` — см. спецификацию Native DEX для канонической раскладки аккаунтов.
+    </Note>
+
+    **Валидация:**
+    - `amount_in > 0`
+    - `min_amount_out > 0` (защита от проскальзывания обязательна)
+
+    **Эффект:** CPI к `native_dex::swap`. PDA хранилища подписывает через сиды. Эмитит `VaultSwapExecuted`.
+
+    **Сценарии использования (каждый — один вызов vault_swap):**
+    - USDC → OT (инвестирование капитала в реальные активы)
+    - OT → USDC (выход из позиции)
+    - RWT → USDC (продажа полученной доходности)
+    - USDC → OT (покупка OT на полученные средства)
+
+    Мульти-хоп (например, RWT → USDC → OT) требует **два вызова vault_swap** в одной транзакции.
+  </Accordion>
+</AccordionGroup>
+
+### Сбор доходности
+
+<AccordionGroup>
+  <Accordion title="claim_yield">
+    Получение RWT-вознаграждений из merkle-потока Yield Distribution с последующим разделением согласно конфигурации распределения. PDA хранилища подписывает CPI-клейм YD.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `cumulative_amount` | `u64` | Кумулятивная сумма клейма (из листа merkle-дерева) |
+    | `proof` | `Vec<[u8; 32]>` | Путь merkle-доказательства |
+
+    **Вызывающий:** Безразрешительный (крэнк)
+
+    **Аккаунты:**
+    - `crank` (signer, mut) — оплачивает инициализацию ClaimStatus при первом клейме
+    - `rwt_vault` (mut) — подписывает CPI-клейм YD, обновляет капитал/NAV
+    - `dist_config` — чтение пропорций разделения доходности
+    - `rwt_claim_ata` (mut) — RWT ATA, принадлежащий хранилищу (получает полученные токены)
+    - `liquidity_dest` (mut) — constraint: `key == dist_config.liquidity_destination`
+    - `protocol_revenue_dest` (mut) — constraint: `key == dist_config.protocol_revenue_destination`
+    - Аккаунты YD CPI: `yd_distributor`, `yd_claim_status`, `yd_reward_vault` (все UncheckedAccount)
+    - `yield_distribution_program` — constraint: `key == YD_PROGRAM_ID` (захардкожен, предотвращает подмену программы)
+    - `token_program`, `system_program`
+
+    **Логика:**
+    1. Снапшот `rwt_claim_ata.amount` до клейма
+    2. CPI → `yield_distribution::claim(cumulative_amount, proof)` с PDA хранилища как клеймер
+    3. Перезагрузка `rwt_claim_ata`, расчёт `claimed = new_balance - old_balance`
+    4. Если claimed == 0, возврат (нечего распределять)
+    5. Расчёт долей (в токенах RWT):
+       - `book_value_share = claimed * book_value_bps / 10,000` (остаётся в хранилище)
+       - `liquidity_share = claimed * liquidity_bps / 10,000` (→ liquidity_dest, затем направляется в Nexus через `nexus_deposit`)
+       - `protocol_revenue_share = claimed - book_value_share - liquidity_share` (→ ARL Treasury, рассчитывается как **остаток** — не из `protocol_revenue_bps` — для предотвращения потери пыли от целочисленного деления. Хранимый `protocol_revenue_bps` используется только для валидации в `update_distribution_config` и для отображения.)
+    6. Перевод `liquidity_share` RWT → liquidity_dest (PDA хранилища подписывает)
+    7. Перевод `protocol_revenue_share` RWT → protocol_revenue_dest (PDA хранилища подписывает)
+    8. Конвертация book_value_share в USD: `usd_value = (book_value_share as u128) * (nav_book_value as u128) / 1,000,000` (приведение к u128 перед умножением для предотвращения переполнения)
+    9. `total_invested_capital += usd_value`
+    10. Пересчёт NAV
+    11. Эмит `YieldDistributed`
+
+    **Разделение по умолчанию:** 70% рост NAV / 15% Nexus / 15% ARL Treasury
+  </Accordion>
+</AccordionGroup>
+
+### Экстренные операции
+
+<AccordionGroup>
+  <Accordion title="pause_mint">
+    Экстренная приостановка — останавливает весь пользовательский минт. НЕ влияет на свопы менеджера, сбор доходности или операции authority.
+
+    **Вызывающий:** Только Pause Authority (Team Multisig)
+
+    **Аккаунты:**
+    - `pause_authority` (signer) — должен совпадать с `vault.pause_authority`
+    - `rwt_vault` (mut)
+
+    **Эффект:** Устанавливает `vault.mint_paused = true`. Эмитит `MintPauseToggled(true)`.
+  </Accordion>
+
+  <Accordion title="unpause_mint">
+    Возобновление минта после экстренной приостановки.
+
+    **Вызывающий:** Только Pause Authority (Team Multisig)
+
+    **Аккаунты:**
+    - `pause_authority` (signer) — должен совпадать с `vault.pause_authority`
+    - `rwt_vault` (mut)
+
+    **Эффект:** Устанавливает `vault.mint_paused = false`. Эмитит `MintPauseToggled(false)`.
+  </Accordion>
+</AccordionGroup>
+
+## Стейт-аккаунты
+
+### RwtVault
+
+Основное состояние хранилища. Является mint authority для RWT SPL Mint. Подписывает CPI-свопы и YD-клеймы через PDA-сиды.
+
+| Field | Type | Description |
+|---|---|---|
+| `total_invested_capital` | `u128` | Общий капитал в эквиваленте USDC (6 десятичных знаков) |
+| `total_rwt_supply` | `u64` | Общее количество RWT-токенов в обращении |
+| `nav_book_value` | `u64` | NAV за RWT: `capital * 1,000,000 / supply` |
+| `capital_accumulator_ata` | `Pubkey` | USDC ATA, принадлежащий хранилищу (создаётся при инициализации) |
+| `rwt_mint` | `Pubkey` | Минт SPL-токена RWT |
+| `authority` | `Pubkey` | Управляющий (Team Multisig) |
+| `pending_authority` | `Option<Pubkey>` | Целевой адрес ожидающей передачи authority |
+| `manager` | `Pubkey` | Кошелёк менеджера (может выполнять vault_swap) |
+| `pause_authority` | `Pubkey` | Подписант экстренной приостановки (Team Multisig, неизменяемый) |
+| `mint_paused` | `bool` | Флаг приостановки минта |
+| `areal_fee_destination` | `Pubkey` | Куда идёт 0.5% комиссии минта (статический, неизменяемый) |
+| `bump` | `u8` | Bump-сид PDA |
+
+**PDA Seed:** `["rwt_vault"]`
+
+<Note>
+  RwtVault не хранит балансы отдельных позиций OT. OT ATA создаются динамически, когда менеджер покупает OT. Токен-холдинги хранилища считываются из ончейн-балансов ATA при запросе.
+</Note>
+
+### RwtDistributionConfig
+
+Настраивает разделение полученной доходности RWT.
+
+| Field | Type | Description |
+|---|---|---|
+| `book_value_bps` | `u16` | % остающийся в хранилище для роста NAV (по умолчанию: 7,000 = 70%) |
+| `liquidity_bps` | `u16` | % отправляемый в Liquidity Nexus (по умолчанию: 1,500 = 15%) |
+| `protocol_revenue_bps` | `u16` | % отправляемый в ARL Treasury (по умолчанию: 1,500 = 15%) |
+| `liquidity_destination` | `Pubkey` | RWT ATA крэнка (крэнк направляет в Nexus через `nexus_deposit` для отслеживания основного долга) |
+| `protocol_revenue_destination` | `Pubkey` | Адрес RWT ATA ARL Treasury |
+| `bump` | `u8` | Bump-сид PDA |
+
+**PDA Seed:** `["dist_config_rwt"]`
+
+<Note>
+  BPS всегда должны суммироваться до 10,000. `update_distribution_config` валидирует это.
+</Note>
+
+## PDA-сиды
+
+| Account | Seeds | Description |
+|---|---|---|
+| RwtVault | `"rwt_vault"` | Основное состояние хранилища, mint authority для RWT |
+| RwtDistributionConfig | `"dist_config_rwt"` | Конфигурация разделения доходности |
+
+<Note>
+  Оба PDA являются глобальными синглтонами (без деривации по проекту). Существует ровно одно хранилище RWT на деплоймент протокола.
+</Note>
+
+## Константы
+
+| Constant | Value | Description |
+|---|---|---|
+| `BPS_DENOMINATOR` | `10,000` | 100% в базисных пунктах |
+| `MINT_FEE_BPS` | `100` | 1% общая комиссия на пользовательский минт |
+| `DEFAULT_BOOK_VALUE_BPS` | `7,000` | 70% доходности → рост NAV |
+| `DEFAULT_LIQUIDITY_BPS` | `1,500` | 15% доходности → Liquidity Nexus |
+| `DEFAULT_PROTOCOL_REVENUE_BPS` | `1,500` | 15% доходности → ARL Treasury |
+| `INITIAL_NAV` | `1,000,000` | $1.00 в лампортах USDC (6 десятичных знаков) |
+| `MIN_CAPITAL_FLOOR` | `1` | Минимальный total_invested_capital (1 лампорт, предотвращает NAV = 0) |
+| `RWT_DECIMALS` | `6` | Десятичные знаки токена RWT (совпадает с USDC) |
+| `YD_PROGRAM_ID` | hardcoded | ID программы Yield Distribution (валидируется в claim_yield) |
+| `DEX_PROGRAM_ID` | hardcoded | ID программы Native DEX (валидируется в vault_swap) |
+
+## События
+
+| Event | Fields | When |
+|---|---|---|
+| `VaultInitialized` | authority, rwt_mint, nav, timestamp | Хранилище создано |
+| `RwtMinted` | user, deposit_amount, rwt_amount, fee_vault, fee_dao, nav_after, is_admin, timestamp | Пользователь или админ минтит RWT (is_admin различает оба случая) |
+| `YieldDistributed` | total_yield, book_value_share, liquidity_share, protocol_revenue_share, nav_after, timestamp | Доходность получена и распределена |
+| `CapitalAdjusted` | old_capital, new_capital, writedown_amount, old_nav, new_nav, timestamp | Списание NAV |
+| `VaultSwapExecuted` | token_in_mint, token_out_mint, amount_in, amount_out, timestamp | Менеджер выполнил своп |
+| `VaultManagerUpdated` | old_manager, new_manager, timestamp | Менеджер изменён |
+| `DistributionConfigUpdated` | book_value_bps, liquidity_bps, protocol_revenue_bps, timestamp | Разделение доходности изменено |
+| `AuthorityTransferProposed` | current_authority, pending_authority, timestamp | Передача предложена |
+| `AuthorityTransferAccepted` | old_authority, new_authority, timestamp | Передача принята |
+| `MintPauseToggled` | paused, timestamp | Состояние приостановки изменено |
+
+## Коды ошибок
+
+| Error | Description |
+|---|---|
+| `Unauthorized` | Подписант не является требуемым authority/менеджером/pause_authority |
+| `MintPaused` | Минт приостановлен (экстренная ситуация) |
+| `ZeroAmount` | Сумма должна быть > 0 |
+| `ZeroSlippage` | min_amount_out должен быть > 0 (защита от проскальзывания обязательна) |
+| `MathOverflow` | Арифметическое переполнение |
+| `InsufficientCapital` | Списание уменьшит капитал ниже MIN_CAPITAL_FLOOR |
+| `InvalidDistributionRatios` | BPS не суммируются до 10,000 |
+| `SelfTransfer` | Нельзя передать authority самому себе |
+| `NoPendingAuthority` | Нет ожидающей передачи authority для принятия |
+| `InvalidPendingAuthority` | Подписант ≠ pending_authority |
+
+## Архитектура и руководство по интеграции
+
+### Кросс-программная интеграция
+
+<AccordionGroup>
+  <Accordion title="→ Yield Distribution (получение доходности RWT)">
+    - Выручка OT (USDC) поступает в YD → YD конвертирует USDC в **RWT** (своп + минт) → создаёт merkle-потоки
+    - `claim_yield` делает CPI к `yield_distribution::claim` для получения **RWT**
+    - PDA хранилища является листом в merkle-дереве YD (удерживает OT-токены = имеет право на доходность)
+    - Полученные **RWT** разделяются: 70% NAV / 15% Nexus / 15% ARL Treasury
+    - Крэнк должен предоставить валидное merkle-доказательство из последнего опубликованного корня
+  </Accordion>
+
+  <Accordion title="→ Native DEX (свопы менеджера)">
+    - `vault_swap` делает CPI к `native_dex::swap`
+    - PDA хранилища подписывает как пользователь свопа
+    - Менеджер контролирует направление и проскальзывание
+    - Поддерживает любой пул: RWT/USDC, OT/RWT, OT/USDC
+  </Accordion>
+
+  <Accordion title="→ Ownership Token (удержание позиций OT)">
+    - Хранилище покупает OT через свопы DEX
+    - Баланс OT в хранилище вносит вклад в NAV
+    - Больше OT = больше доходности от YD = составной рост
+  </Accordion>
+
+  <Accordion title="→ Team Multisig (протокольный authority)">
+    - Authority = Team Multisig после бутстрапа
+    - admin_mint, adjust_capital, update_manager, update_config контролируются командой напрямую
+    - НЕ управляется через Futarchy — протокольная инфраструктура управляется командой
+  </Accordion>
+</AccordionGroup>
+
+### Допущения о доверии
+
+<Warning>
+  **Доверие к менеджеру:** Кошелёк менеджера имеет полный контроль над операциями свопа хранилища. Злонамеренный или скомпрометированный менеджер может выполнять невыгодные свопы, опустошая стоимость хранилища. Митигация: authority (Team Multisig) может заменить менеджера в любой момент через `update_vault_manager`. В продакшене менеджер — это AI-агент с автоматизированной торговой логикой, а не человек.
+</Warning>
+
+<Warning>
+  **Доверие к authority:** `admin_mint_rwt` позволяет минтить RWT с произвольным backing_capital_usd. Authority может раздуть NAV, заявив больше обеспечения, чем существует. Митигация: authority = Team Multisig, требующий нескольких подписантов. Все административные минты видны ончейн через события `RwtMinted`.
+</Warning>
+
+### Чеклист деплоя
+
+**Пререквизиты:** Контракт OT должен быть задеплоен первым (предоставляет адрес OT Treasury). Nexus управляется командой отдельно.
+
+1. **Вызов `initialize_vault`** с параметрами:
+   - `pause_authority` = адрес Team Multisig
+   - `areal_fee_destination` = USDC ATA Areal Finance (**тот же адрес**, что и `areal_fee_destination` контракта OT)
+   - `liquidity_destination` = RWT ATA кошелька крэнка (крэнк направляет в Nexus через `nexus_deposit`)
+   - `protocol_revenue_destination` = RWT ATA ARL Treasury (контракт OT)
+2. **Административный минт начальных RWT** через `admin_mint_rwt`, обеспеченных начальными позициями OT
+3. **Передача authority** в **Team Multisig** через `propose_authority_transfer` + `accept_authority_transfer`
+
+<Warning>
+  Шаг 2 должен быть выполнен ДО шага 3. После передачи authority только Team Multisig может выполнять административный минт или корректировку капитала.
+</Warning>
+
+<Note>
+  Authority RWT Engine = **Team Multisig** (протокольные операции). RWT — это актив протокольного уровня, управляемый командой напрямую, а не через предложения Futarchy.
+</Note>
+
+### Сводка потоков токенов
+
+| From | To | Mechanism | Who triggers |
+|------|-----|-----------|-------------|
+| USDC пользователя | Capital Accumulator ATA (99.5%) | mint_rwt (net_deposit + vault_fee) | Пользователь |
+| USDC пользователя | Areal Fee (0.5%) | mint_rwt (dao_fee) | Пользователь |
+| Vault PDA | RWT ATA пользователя | mint_rwt (минтит RWT) | Пользователь |
+| YD Stream | Vault RWT Claim ATA | claim_yield (CPI claim) | Крэнк |
+| Vault RWT | RWT ATA крэнка (15%) → Nexus через `nexus_deposit` | claim_yield + nexus_deposit | Крэнк |
+| Vault RWT | ARL Treasury ATA (15%) | claim_yield | Крэнк |
+| Vault any token | Vault any token | vault_swap (CPI DEX) | Менеджер |
+| Authority | Vault state | admin_mint_rwt, adjust_capital | Team Multisig |

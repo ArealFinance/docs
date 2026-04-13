@@ -1,0 +1,154 @@
+---
+title: "LP Fee Reward Model — Auto-Compound → Per-Pool Fee Vault"
+description: "LP swap fees are no longer auto-compounded. They are now collected in a per-pool fee vault with instant on-chain claiming."
+hidePagination: true
+---
+
+<div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "1.5rem" }}>
+  <span className="changelog-tag changelog-tag-breaking">Breaking</span>
+  <span className="changelog-date">April 13, 2026</span>
+</div>
+
+## Overview
+
+LP swap fees are no longer auto-compounded into pool reserves. Instead, the LP fee portion is transferred to the **Yield Distribution reward vault** during each swap. LP holders accumulate rewards in their active rewards wallet and **claim them manually** — the same flow used for OT token yield.
+
+This change ensures that pool capitalization is never diluted by fee extraction, and provides LP holders with a unified, transparent reward experience.
+
+## What Changed
+
+### Before (Auto-Compound Model)
+
+```
+fee_lp → stays in pool reserves (auto-compounds)
+         LP holders benefit passively via increased reserve value
+         No explicit claim needed
+
+reserve_in  += amount_in - fee_protocol - ot_treasury_fee  (if input=RWT)
+reserve_out -= amount_out + fee_protocol + ot_treasury_fee
+// LP fee stayed in reserves — not subtracted
+```
+
+**Problems:**
+- LP fee was invisible to the user — no explicit reward tracking
+- Fee extraction from swap amount reduced effective pool depth
+- No unified reward experience — OT yield claimed separately from LP income
+
+### After (Per-Pool Fee Vault, Instant Claim)
+
+```
+fee_lp → transferred to pool's fee_vault (RWT account owned by pool PDA)
+         LP holders claim proportionally via claim_lp_fees
+         No vesting, no merkle proof, no off-chain server
+
+// Fees charged ON TOP — pool reserves stay intact:
+reserve_in  += amount_in   (full amount enters pool)
+reserve_out -= amount_out_gross  (full gross amount leaves pool)
+// All fees are external to reserves
+```
+
+**Benefits:**
+- Pool capitalization is never reduced by fees
+- LP holders see explicit, growing reward balance — claimable instantly
+- Simple on-chain accounting: `cumulative_fees_per_share` (O(1) per holder)
+- No off-chain dependency — fully on-chain fee distribution
+- OT yield continues to auto-compound into pool reserves (deeper liquidity)
+
+## Fee Flow by Swap Direction
+
+### User Sells RWT (input = RWT)
+
+Fees are charged **on top** of the swap amount. User's wallet is debited for `amount_in + fee_total + ot_treasury_fee`.
+
+```
+fee_total       = amount_in × fee_bps / 10,000
+fee_lp          = fee_total × lp_fee_share_bps / 10,000
+fee_protocol    = fee_total - fee_lp
+ot_treasury_fee = amount_in × OT_TREASURY_FEE_BPS / 10,000  (OT pairs only)
+
+user_total_debit = amount_in + fee_total + ot_treasury_fee
+amount_out       = constant_product(amount_in)  // full amount_in used
+```
+
+| Token flow | Amount | Destination |
+|---|---|---|
+| User RWT → Pool vault | `amount_in` | Pool reserves (full, no deduction) |
+| User RWT → Pool fee_vault | `fee_lp` | Claimable by LP holders via `claim_lp_fees` |
+| User RWT → Areal Finance | `fee_protocol` | Protocol revenue |
+| User RWT → OT Treasury | `ot_treasury_fee` | Project treasury (OT pairs only) |
+| Pool vault → User | `amount_out` | User receives output token |
+
+### User Buys RWT (input = OT/USDC)
+
+Fees are deducted from gross RWT output. User receives net amount after all fees.
+
+```
+amount_out_gross = constant_product(amount_in)
+fee_total        = amount_out_gross × fee_bps / 10,000
+fee_lp           = fee_total × lp_fee_share_bps / 10,000
+fee_protocol     = fee_total - fee_lp
+ot_treasury_fee  = amount_out_gross × OT_TREASURY_FEE_BPS / 10,000  (OT pairs only)
+
+amount_out = amount_out_gross - fee_total - ot_treasury_fee
+```
+
+| Token flow | Amount | Destination |
+|---|---|---|
+| User → Pool vault | `amount_in` | Pool reserves |
+| Pool vault → Pool fee_vault | `fee_lp` | Claimable by LP holders via `claim_lp_fees` |
+| Pool vault → Areal Finance | `fee_protocol` | Protocol revenue |
+| Pool vault → OT Treasury | `ot_treasury_fee` | Project treasury (OT pairs only) |
+| Pool vault → User | `amount_out` | User receives net RWT |
+
+## LP Reward Claim Flow
+
+LP fee rewards use a **per-pool fee vault** with `cumulative_fees_per_share` accounting — fully on-chain, no off-chain dependencies:
+
+<Steps>
+  <Step title="Swap Occurs">
+    During each swap, `fee_lp` (in RWT) is transferred to the pool's `fee_vault`. The contract updates: `cumulative_fees_per_share += fee_lp × PRECISION / total_lp_shares`.
+  </Step>
+  <Step title="Instant Availability">
+    Rewards are available immediately after each swap. No vesting, no merkle tree rebuild, no off-chain server. Fully on-chain O(1) accounting.
+  </Step>
+  <Step title="User Claims">
+    LP holder calls `claim_lp_fees` on the DEX contract. Claimable amount: `shares × cumulative_fees_per_share / PRECISION - fees_claimed`. RWT transferred from fee_vault to holder's RWT ATA.
+  </Step>
+</Steps>
+
+**Two reward streams for LP holders:**
+
+| Stream | Source | Mechanism | Availability |
+|---|---|---|---|
+| LP Swap Fees | Per-pool fee vault | `claim_lp_fees` (on-chain accounting) | Instant |
+| OT Yield | Yield Distribution | `compound_yield` (auto-compounds into reserves) | Passive (increases LP value) |
+
+## Nexus (Areal Finance LP) Changes
+
+The Nexus PDA — Areal Finance's internal LP management — is simplified:
+
+| Before | After |
+|---|---|
+| `nexus_withdraw_profits` — principal tracking, profit = ATA balance - principal | `nexus_claim_rewards` — claims LP fees from pool fee vault to Areal Treasury |
+| `principal_usdc`, `principal_rwt` state fields | `total_deposited_usdc`, `total_deposited_rwt` (tracking only) |
+| Principal permanently locked, only profit withdrawable | LP fee rewards claimed via `cumulative_fees_per_share`, no principal locking needed |
+
+## Reserve Impact
+
+| Metric | Before | After |
+|---|---|---|
+| Pool reserves after swap | Reduced by protocol + OT treasury fees | **Unchanged** — all fees external |
+| LP fee in reserves | Yes (auto-compound) | No — sent to YD |
+| Pool capitalization | Affected by fee extraction | **Preserved** — fees on top |
+| LP reward visibility | Implicit (higher reserve value) | **Explicit** (claimable balance) |
+
+## Related Contracts
+
+<CardGroup cols={2}>
+  <Card title="Native DEX" icon="file-code" href="/contracts/native-dex">
+    Full contract documentation with updated fee architecture.
+  </Card>
+  <Card title="Yield Distribution" icon="file-code" href="/contracts/yield-distribution">
+    Reward vault, merkle claims, and vesting mechanics.
+  </Card>
+</CardGroup>

@@ -1,0 +1,618 @@
+---
+title: "RWT Engine"
+description: "Index token backed by OT positions with NAV-based pricing"
+---
+
+# RWT Engine
+
+<Card title="✅ Ready to Dev" icon="check" color="#48bb78">
+  This contract specification has passed business logic audit, technical review, cross-program integration check, and naming standardization. A developer can implement from this document.
+</Card>
+
+RWT (Real World Token) is a single index token backed by a diversified portfolio of OT positions. Users deposit USDC to mint RWT at the current NAV price. A manager actively trades OT positions to grow the portfolio. Yield from OT holdings compounds back into the vault.
+
+<Warning>
+  **Upgradeable contract.** Program upgrade authority = Team Multisig (Squads). Upgrade authority is separate from governance authority and pause authority.
+</Warning>
+
+## Key Concepts
+
+<CardGroup cols={3}>
+  <Card title="12 Instructions" icon="code">
+    Mint, admin mint, adjust capital, claim yield, swap, authority/manager/config management, pause
+  </Card>
+  <Card title="2 State Accounts" icon="database">
+    RwtVault, RwtDistributionConfig
+  </Card>
+  <Card title="2 PDA Seeds" icon="key">
+    rwt_vault, dist_config_rwt
+  </Card>
+</CardGroup>
+
+## NAV Pricing
+
+```
+NAV = total_invested_capital * 1,000,000 / total_rwt_supply
+```
+
+Result is in USDC lamports per RWT (6 decimals). Example: capital=$100, supply=100 RWT → NAV = 100_000_000 * 1_000_000 / 100_000_000 = 1_000_000 ($1.00).
+
+- `total_invested_capital` — sum of all USDC deposited + OT position values (in USDC equivalent, 6 decimals)
+- `total_rwt_supply` — total RWT tokens in circulation
+- Initial NAV = $1.00 (1,000,000 lamports)
+- NAV recalculates automatically after every state-changing operation (mint, claim, adjust)
+- **Guard:** if `total_rwt_supply == 0`, NAV = INITIAL_NAV (prevents division by zero)
+- **Guard:** `adjust_capital` cannot reduce `total_invested_capital` below `MIN_CAPITAL_FLOOR` (1 lamport) to prevent NAV = 0 with supply > 0
+- NAV can only decrease via `adjust_capital` (writedown). Increases come from yield (claim_yield) and mint fees
+- **Mint fee NAV boost:** 0.5% vault fee from each mint goes to capital accumulator, increasing total_invested_capital while the user receives RWT calculated on net_deposit only. This means NAV increases slightly with every mint — benefiting existing holders
+- **No redeem/burn.** RWT cannot be redeemed back to USDC via the contract. Users sell RWT on the DEX. This is a design decision — vault capital stays deployed
+- **Book value, not market value.** NAV reflects accounting value, not real-time market prices. `vault_swap` does not change total_invested_capital (swap is value-neutral in accounting). Market price divergence is corrected via `adjust_capital` (writedown) triggered by governance based on off-chain price analysis
+
+## Compound Growth Loop
+
+<Steps>
+  <Step title="OT Positions Earn Yield">
+    OT tokens held by vault receive yield via Yield Distribution streams. OT revenue (USDC) is converted to **RWT** by the YD contract (swap on DEX + mint at NAV), then distributed as RWT streams. Vault is an OT holder like any other wallet.
+  </Step>
+  <Step title="Claim RWT from YD">
+    Permissionless crank calls `claim_yield`. Vault PDA signs merkle claim → receives RWT.
+  </Step>
+  <Step title="Split Claimed RWT">
+    70% stays in vault (NAV growth). 15% → ARL Treasury. 15% → Liquidity Nexus.
+
+    NAV increase: `total_invested_capital += book_value_share * nav_book_value / 1,000,000`
+  </Step>
+  <Step title="Manager Reinvests">
+    Manager sells RWT for USDC via `vault_swap`, then buys more OT. More OT = more yield next cycle.
+  </Step>
+</Steps>
+
+## Three Roles
+
+<CardGroup cols={3}>
+  <Card title="🏛️ Authority" icon="landmark">
+    **Team Multisig** (after bootstrap)
+
+    - `admin_mint_rwt` — mint backed by OT
+    - `adjust_capital` — decrease NAV
+    - `update_vault_manager` — change manager
+    - `update_distribution_config` — change yield split
+    - `propose_authority_transfer`
+  </Card>
+  <Card title="🤖 Manager" icon="robot">
+    **AI Agent wallet** (automated trading bot)
+
+    - `vault_swap` — swap any token via DEX
+
+    Manager is a trusted role — can execute any swap with vault funds. In production, this is an AI agent that autonomously manages the OT portfolio. Changed only by authority via `update_vault_manager`.
+  </Card>
+  <Card title="🛑 Pause Authority" icon="shield">
+    **Team Multisig** (Squads)
+
+    - `pause_mint` — emergency stop
+    - `unpause_mint` — resume
+
+    Immutable — set at init, changed only via program upgrade
+  </Card>
+</CardGroup>
+
+## Instructions
+
+### Initialization
+
+<AccordionGroup>
+  <Accordion title="initialize_vault">
+    Create the RWT vault with all required accounts. Called once.
+
+    **Parameters:**
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `initial_authority` | `Pubkey` | Initial governance authority (deployer, then transferred to Team Multisig) |
+    | `pause_authority` | `Pubkey` | Emergency pause signer (Team Multisig, immutable) |
+    | `areal_fee_destination` | `Pubkey` | Where 0.5% mint fee goes — Areal Finance (static, immutable) |
+    | `liquidity_destination` | `Pubkey` | Where 15% yield goes (crank RWT ATA — crank then routes to Nexus via `nexus_deposit`) |
+    | `protocol_revenue_destination` | `Pubkey` | Where 15% yield goes (ARL Treasury ATA) |
+
+    **Caller:** Deployer (one-time)
+
+    **Accounts:**
+    - `deployer` (signer, mut) — pays for all account creation
+    - `rwt_vault` (init) — PDA seed: `["rwt_vault"]`
+    - `dist_config` (init) — PDA seed: `["dist_config_rwt"]`
+    - `rwt_mint` (init) — new SPL token mint, authority = rwt_vault PDA
+    - `capital_accumulator_ata` (init) — USDC ATA, authority = rwt_vault PDA
+    - `usdc_mint` (readonly) — USDC mint address (for creating Capital Accumulator ATA)
+    - `token_program`, `system_program`, `associated_token_program`
+
+    **Creates:**
+    - `RwtVault` PDA — main vault state, mint authority for RWT
+    - `RwtDistributionConfig` PDA — yield split configuration
+    - RWT SPL Token Mint — the RWT token (6 decimals), mint authority = RwtVault PDA
+    - Capital Accumulator ATA — USDC ATA owned by RwtVault PDA
+
+    **Initial state:**
+    - `nav_book_value = 1,000,000` ($1.00)
+    - `total_invested_capital = 0`
+    - `total_rwt_supply = 0`
+    - `mint_paused = false`
+    - Distribution: 70% book value / 15% liquidity / 15% protocol revenue
+  </Accordion>
+</AccordionGroup>
+
+### User Minting
+
+<AccordionGroup>
+  <Accordion title="mint_rwt">
+    User deposits USDC and receives RWT at the current NAV price. 1% fee is split: 0.5% stays in vault (increases NAV), 0.5% goes to areal_fee_destination (Areal Finance).
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount` | `u64` | USDC amount to deposit (6 decimals) |
+
+    **Caller:** Permissionless — anyone can mint
+
+    **Accounts:**
+    - `user` (signer) — depositor
+    - `rwt_vault` (mut) — updates supply, capital, NAV
+    - `rwt_mint` (mut) — RWT mint, authority = vault PDA
+    - `user_deposit` (mut) — user's USDC ATA, constraint: `owner == user`, `mint == usdc_mint` (hardcoded USDC mint)
+    - `user_rwt` (mut) — user's RWT ATA, constraint: `mint == vault.rwt_mint`
+    - `capital_acc` (mut) — vault's USDC ATA, constraint: `key == vault.capital_accumulator_ata`
+    - `dao_fee_account` (mut) — constraint: `key == vault.areal_fee_destination`
+
+    **Validation:**
+    - `amount > 0`
+    - `mint_paused == false`
+
+    **Logic:**
+    1. Calculate fee: `fee_total = amount * 100 / 10,000` (1%)
+    2. `dao_fee = fee_total / 2` (0.5% to Areal Finance)
+    3. `vault_fee = fee_total - dao_fee` (0.5% stays in vault)
+    4. `net_deposit = amount - fee_total`
+    5. `rwt_out = net_deposit * 1,000,000 / nav_book_value`
+    6. Transfer `net_deposit + vault_fee` → capital_acc
+    7. Transfer `dao_fee` → dao_fee_account
+    8. Mint `rwt_out` RWT to user (vault PDA signs as mint authority)
+    9. Update: `total_invested_capital += net_deposit + vault_fee`
+    10. Update: `total_rwt_supply += rwt_out`
+    11. Recalculate NAV
+    12. Emit `RwtMinted`
+  </Accordion>
+</AccordionGroup>
+
+### Authority Operations
+
+<AccordionGroup>
+  <Accordion title="admin_mint_rwt">
+    Mint RWT backed by OT positions already in the vault. No USDC deposit required — used when vault acquires OT through other means (e.g., governance decision to back RWT with existing OT).
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `rwt_amount` | `u64` | RWT tokens to mint |
+    | `backing_capital_usd` | `u64` | USD value of backing (6 decimals) |
+
+    **Caller:** Authority (Team Multisig)
+
+    **Accounts:**
+    - `authority` (signer) — must match `vault.authority`
+    - `rwt_vault` (mut)
+    - `rwt_mint` (mut) — constraint: `key == vault.rwt_mint`
+    - `recipient_rwt` (mut) — constraint: `mint == vault.rwt_mint`
+
+    **Validation:**
+    - `rwt_amount > 0`
+    - `backing_capital_usd > 0` (first admin_mint must establish initial NAV — prevents NAV = 0 with supply > 0)
+
+    **Effect:** Mints RWT, adds backing_capital_usd to total_invested_capital, recalculates NAV. Emits `RwtMinted`.
+
+    <Note>
+      **First mint:** When `total_rwt_supply == 0`, the NAV guard returns `INITIAL_NAV` ($1.00). After `admin_mint_rwt`, NAV = `backing_capital_usd * 1,000,000 / rwt_amount`. Authority should set `backing_capital_usd / rwt_amount ≈ $1.00` to match initial NAV.
+    </Note>
+
+    <Warning>
+      **No on-chain backing verification.** `backing_capital_usd` is NOT validated against real OT positions held by the vault. Authority (Team Multisig) must verify off-chain that the claimed USD value matches actual OT holdings before calling. Inflated `backing_capital_usd` would artificially boost NAV, harming future minters. All admin mints are auditable on-chain via `RwtMinted(is_admin=true)` events.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="adjust_capital">
+    Decrease total_invested_capital (writedown, amortization, loss recognition). NAV decreases proportionally. Only decreases allowed — no manual appreciation.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `writedown_amount` | `u64` | USDC value to subtract from capital (6 decimals) |
+
+    **Caller:** Authority (Team Multisig)
+
+    **Accounts:**
+    - `authority` (signer) — must match `vault.authority`
+    - `rwt_vault` (mut)
+
+    **Validation:**
+    - `writedown_amount > 0`
+    - `writedown_amount ≤ total_invested_capital - MIN_CAPITAL_FLOOR`
+
+    **Effect:** `total_invested_capital -= writedown_amount`, recalculates NAV. Emits `CapitalAdjusted`.
+  </Accordion>
+
+  <Accordion title="update_vault_manager">
+    Change the manager wallet that can execute vault_swap.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `new_manager` | `Pubkey` | New manager wallet |
+
+    **Caller:** Authority (Team Multisig)
+
+    **Accounts:**
+    - `authority` (signer) — must match `vault.authority`
+    - `rwt_vault` (mut)
+
+    **Effect:** Sets `vault.manager = new_manager`. Emits `VaultManagerUpdated`.
+  </Accordion>
+
+  <Accordion title="update_distribution_config">
+    Change yield split ratios and/or destinations.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `book_value_bps` | `u16` | NAV growth % |
+    | `liquidity_bps` | `u16` | Nexus % |
+    | `protocol_revenue_bps` | `u16` | ARL Treasury % |
+    | `liquidity_destination` | `Pubkey` | Crank RWT ATA (crank routes to Nexus via `nexus_deposit`) |
+    | `protocol_revenue_destination` | `Pubkey` | ARL Treasury RWT ATA |
+
+    **Caller:** Authority (Team Multisig)
+
+    **Accounts:**
+    - `authority` (signer) — must match `vault.authority`
+    - `rwt_vault` — for authority verification
+    - `dist_config` (mut) — overwritten with new values
+
+    **Validation:**
+    - `book_value_bps + liquidity_bps + protocol_revenue_bps == 10,000`
+
+    **Effect:** Overwrites entire RwtDistributionConfig with new values. Emits `DistributionConfigUpdated`.
+  </Accordion>
+</AccordionGroup>
+
+### Authority Transfer
+
+Two-step governance authority handoff. Same propose+accept pattern as OT contract, but authority is stored directly in RwtVault (not a separate PDA like OtGovernance). This is because RwtVault is a singleton — there's only one vault, so a separate governance PDA adds no value.
+
+<AccordionGroup>
+  <Accordion title="propose_authority_transfer">
+    Step 1: Current authority proposes a new authority.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `new_authority` | `Pubkey` | Proposed new authority |
+
+    **Caller:** Current authority
+
+    **Accounts:**
+    - `authority` (signer) — must match `vault.authority`
+    - `rwt_vault` (mut)
+
+    **Validation:** `new_authority ≠ current authority` (no self-transfer)
+
+    **Effect:** Sets `vault.pending_authority = Some(new_authority)`. Emits `AuthorityTransferProposed`.
+
+    <Note>
+      Calling again **overwrites** any existing pending_authority. The previous proposed authority loses their ability to accept.
+    </Note>
+  </Accordion>
+
+  <Accordion title="accept_authority_transfer">
+    Step 2: Proposed authority accepts the transfer.
+
+    **Caller:** The proposed new authority (must sign)
+
+    **Accounts:**
+    - `new_authority` (signer) — must match `vault.pending_authority`
+    - `rwt_vault` (mut)
+
+    **Validation:** `signer == vault.pending_authority`
+
+    **Effect:** Sets `authority = new_authority`, clears `pending_authority`. Emits `AuthorityTransferAccepted`.
+  </Accordion>
+</AccordionGroup>
+
+### Manager Operations
+
+<AccordionGroup>
+  <Accordion title="vault_swap">
+    Swap any token held by the vault through Native DEX. Vault PDA signs as the swap user. Manager decides direction, amount, and slippage tolerance.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount_in` | `u64` | Input token amount |
+    | `min_amount_out` | `u64` | Minimum output (slippage protection) |
+    | `a_to_b` | `bool` | Swap direction in the DEX pool |
+
+    **Caller:** Manager only
+
+    **Accounts:**
+    - `manager` (signer) — must match `vault.manager`
+    - `rwt_vault` — PDA, signs CPI swap
+    - `vault_token_in` (mut) — source ATA, constraint: `owner == rwt_vault.key()`
+    - `vault_token_out` (mut) — destination ATA, constraint: `owner == rwt_vault.key()`
+    - DEX CPI accounts (all UncheckedAccount — validated by DEX program internally):
+      - `pool_state` (mut) — DEX PoolState PDA for the swap pair `["pool", token_a_mint, token_b_mint]`
+      - `dex_config` — DEX global config `["dex_config"]`
+      - `vault_in` (mut) — pool's token account for input side (authority = pool_state PDA)
+      - `vault_out` (mut) — pool's token account for output side (authority = pool_state PDA)
+      - `areal_fee_account` (mut) — DEX's `dex_config.areal_fee_destination` (RWT ATA, receives protocol fee)
+      - `bin_array` (mut, optional) — required only for Concentrated pools `["bins", pool_state]`
+    - `dex_program` — constraint: `key == DEX_PROGRAM_ID` (hardcoded, prevents fake program)
+    - `token_program`
+
+    <Note>
+      **CPI signing:** Vault PDA signs the DEX swap using seeds `[b"rwt_vault", &[vault.bump]]`. DEX program sees `rwt_vault` as the swap user. Account order must match DEX `swap` instruction exactly — see Native DEX specification for canonical account layout.
+    </Note>
+
+    **Validation:**
+    - `amount_in > 0`
+    - `min_amount_out > 0` (slippage protection required)
+
+    **Effect:** CPI to `native_dex::swap`. Vault PDA signs via seeds. Emits `VaultSwapExecuted`.
+
+    **Use cases (each is a single vault_swap call):**
+    - USDC → OT (invest capital into real-world assets)
+    - OT → USDC (divest position)
+    - RWT → USDC (sell claimed yield)
+    - USDC → OT (buy OT with proceeds)
+
+    Multi-hop (e.g., RWT → USDC → OT) requires **two vault_swap calls** in one transaction.
+  </Accordion>
+</AccordionGroup>
+
+### Yield Collection
+
+<AccordionGroup>
+  <Accordion title="claim_yield">
+    Claim RWT rewards from a Yield Distribution merkle stream, then split according to distribution config. Vault PDA signs the YD claim CPI.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `cumulative_amount` | `u64` | Cumulative claim amount (from merkle leaf) |
+    | `proof` | `Vec<[u8; 32]>` | Merkle proof path |
+
+    **Caller:** Permissionless (crank)
+
+    **Accounts:**
+    - `crank` (signer, mut) — pays for ClaimStatus init if first claim
+    - `rwt_vault` (mut) — signs YD claim CPI, updates capital/NAV
+    - `dist_config` — read yield split ratios
+    - `rwt_claim_ata` (mut) — RWT ATA owned by vault (receives claimed tokens)
+    - `liquidity_dest` (mut) — constraint: `key == dist_config.liquidity_destination`
+    - `protocol_revenue_dest` (mut) — constraint: `key == dist_config.protocol_revenue_destination`
+    - YD CPI accounts: `yd_distributor`, `yd_claim_status`, `yd_reward_vault` (all UncheckedAccount)
+    - `yield_distribution_program` — constraint: `key == YD_PROGRAM_ID` (hardcoded, prevents fake program)
+    - `token_program`, `system_program`
+
+    **Logic:**
+    1. Snapshot `rwt_claim_ata.amount` before
+    2. CPI → `yield_distribution::claim(cumulative_amount, proof)` with vault PDA as claimant
+    3. Reload `rwt_claim_ata`, calculate `claimed = new_balance - old_balance`
+    4. If claimed == 0, return (nothing to distribute)
+    5. Calculate splits (in RWT tokens):
+       - `book_value_share = claimed * book_value_bps / 10,000` (stays in vault)
+       - `liquidity_share = claimed * liquidity_bps / 10,000` (→ liquidity_dest, then routed to Nexus via `nexus_deposit`)
+       - `protocol_revenue_share = claimed - book_value_share - liquidity_share` (→ ARL Treasury, calculated as **remainder** — not from `protocol_revenue_bps` — to prevent dust loss from integer division. The stored `protocol_revenue_bps` is used only for validation in `update_distribution_config` and for display.)
+    6. Transfer `liquidity_share` RWT → liquidity_dest (vault PDA signs)
+    7. Transfer `protocol_revenue_share` RWT → protocol_revenue_dest (vault PDA signs)
+    8. Convert book_value_share to USD: `usd_value = (book_value_share as u128) * (nav_book_value as u128) / 1,000,000` (cast to u128 before multiply to prevent overflow)
+    9. `total_invested_capital += usd_value`
+    10. Recalculate NAV
+    11. Emit `YieldDistributed`
+
+    **Default split:** 70% NAV growth / 15% Nexus / 15% ARL Treasury
+  </Accordion>
+</AccordionGroup>
+
+### Emergency
+
+<AccordionGroup>
+  <Accordion title="pause_mint">
+    Emergency pause — stops all user minting. Does NOT affect manager swaps, yield claims, or authority operations.
+
+    **Caller:** Pause Authority only (Team Multisig)
+
+    **Accounts:**
+    - `pause_authority` (signer) — must match `vault.pause_authority`
+    - `rwt_vault` (mut)
+
+    **Effect:** Sets `vault.mint_paused = true`. Emits `MintPauseToggled(true)`.
+  </Accordion>
+
+  <Accordion title="unpause_mint">
+    Resume minting after emergency pause.
+
+    **Caller:** Pause Authority only (Team Multisig)
+
+    **Accounts:**
+    - `pause_authority` (signer) — must match `vault.pause_authority`
+    - `rwt_vault` (mut)
+
+    **Effect:** Sets `vault.mint_paused = false`. Emits `MintPauseToggled(false)`.
+  </Accordion>
+</AccordionGroup>
+
+## State Accounts
+
+### RwtVault
+
+Main vault state. Is mint authority for RWT SPL Mint. Signs CPI swaps and YD claims via PDA seeds.
+
+| Field | Type | Description |
+|---|---|---|
+| `total_invested_capital` | `u128` | Total capital in USDC equivalent (6 decimals) |
+| `total_rwt_supply` | `u64` | Total RWT tokens in circulation |
+| `nav_book_value` | `u64` | NAV per RWT: `capital * 1,000,000 / supply` |
+| `capital_accumulator_ata` | `Pubkey` | USDC ATA owned by vault (created at init) |
+| `rwt_mint` | `Pubkey` | RWT SPL token mint |
+| `authority` | `Pubkey` | Governance authority (Team Multisig) |
+| `pending_authority` | `Option<Pubkey>` | Pending authority transfer target |
+| `manager` | `Pubkey` | Manager wallet (can execute vault_swap) |
+| `pause_authority` | `Pubkey` | Emergency pause signer (Team Multisig, immutable) |
+| `mint_paused` | `bool` | Minting paused flag |
+| `areal_fee_destination` | `Pubkey` | Where 0.5% mint fee goes (static, immutable) |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["rwt_vault"]`
+
+<Note>
+  RwtVault does not store individual OT position balances. OT ATAs are created dynamically when manager buys OT. Vault token holdings are read from on-chain ATA balances at query time.
+</Note>
+
+### RwtDistributionConfig
+
+Configures how claimed RWT yield is split.
+
+| Field | Type | Description |
+|---|---|---|
+| `book_value_bps` | `u16` | % that stays in vault for NAV growth (default: 7,000 = 70%) |
+| `liquidity_bps` | `u16` | % sent to Liquidity Nexus (default: 1,500 = 15%) |
+| `protocol_revenue_bps` | `u16` | % sent to ARL Treasury (default: 1,500 = 15%) |
+| `liquidity_destination` | `Pubkey` | Crank RWT ATA (crank routes to Nexus via `nexus_deposit` for principal tracking) |
+| `protocol_revenue_destination` | `Pubkey` | ARL Treasury RWT ATA address |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["dist_config_rwt"]`
+
+<Note>
+  BPS must always sum to 10,000. `update_distribution_config` validates this.
+</Note>
+
+## PDA Seeds
+
+| Account | Seeds | Description |
+|---|---|---|
+| RwtVault | `"rwt_vault"` | Main vault state, RWT mint authority |
+| RwtDistributionConfig | `"dist_config_rwt"` | Yield split configuration |
+
+<Note>
+  Both PDAs are global singletons (no per-project derivation). There is exactly one RWT vault per protocol deployment.
+</Note>
+
+## Constants
+
+| Constant | Value | Description |
+|---|---|---|
+| `BPS_DENOMINATOR` | `10,000` | 100% in basis points |
+| `MINT_FEE_BPS` | `100` | 1% total fee on user mints |
+| `DEFAULT_BOOK_VALUE_BPS` | `7,000` | 70% of yield → NAV growth |
+| `DEFAULT_LIQUIDITY_BPS` | `1,500` | 15% of yield → Liquidity Nexus |
+| `DEFAULT_PROTOCOL_REVENUE_BPS` | `1,500` | 15% of yield → ARL Treasury |
+| `INITIAL_NAV` | `1,000,000` | $1.00 in USDC lamports (6 decimals) |
+| `MIN_CAPITAL_FLOOR` | `1` | Minimum total_invested_capital (1 lamport, prevents NAV = 0) |
+| `RWT_DECIMALS` | `6` | RWT token decimals (matches USDC) |
+| `YD_PROGRAM_ID` | hardcoded | Yield Distribution program ID (validated in claim_yield) |
+| `DEX_PROGRAM_ID` | hardcoded | Native DEX program ID (validated in vault_swap) |
+
+## Events
+
+| Event | Fields | When |
+|---|---|---|
+| `VaultInitialized` | authority, rwt_mint, nav, timestamp | Vault created |
+| `RwtMinted` | user, deposit_amount, rwt_amount, fee_vault, fee_dao, nav_after, is_admin, timestamp | User or admin mints RWT (is_admin distinguishes the two) |
+| `YieldDistributed` | total_yield, book_value_share, liquidity_share, protocol_revenue_share, nav_after, timestamp | Yield claimed and split |
+| `CapitalAdjusted` | old_capital, new_capital, writedown_amount, old_nav, new_nav, timestamp | NAV writedown |
+| `VaultSwapExecuted` | token_in_mint, token_out_mint, amount_in, amount_out, timestamp | Manager executed swap |
+| `VaultManagerUpdated` | old_manager, new_manager, timestamp | Manager changed |
+| `DistributionConfigUpdated` | book_value_bps, liquidity_bps, protocol_revenue_bps, timestamp | Yield split changed |
+| `AuthorityTransferProposed` | current_authority, pending_authority, timestamp | Transfer proposed |
+| `AuthorityTransferAccepted` | old_authority, new_authority, timestamp | Transfer accepted |
+| `MintPauseToggled` | paused, timestamp | Pause state changed |
+
+## Error Codes
+
+| Error | Description |
+|---|---|
+| `Unauthorized` | Signer is not the required authority/manager/pause_authority |
+| `MintPaused` | Minting is paused (emergency) |
+| `ZeroAmount` | Amount must be > 0 |
+| `ZeroSlippage` | min_amount_out must be > 0 (slippage protection required) |
+| `MathOverflow` | Arithmetic overflow |
+| `InsufficientCapital` | Writedown would reduce capital below MIN_CAPITAL_FLOOR |
+| `InvalidDistributionRatios` | BPS don't sum to 10,000 |
+| `SelfTransfer` | Cannot transfer authority to yourself |
+| `NoPendingAuthority` | No pending authority transfer to accept |
+| `InvalidPendingAuthority` | Signer ≠ pending_authority |
+
+## Architecture & Integration Guide
+
+### Cross-Program Integration
+
+<AccordionGroup>
+  <Accordion title="→ Yield Distribution (claims RWT yield)">
+    - OT revenue (USDC) flows to YD → YD converts USDC to **RWT** (swap + mint) → creates merkle streams
+    - `claim_yield` CPIs to `yield_distribution::claim` to receive **RWT**
+    - Vault PDA is a leaf in YD merkle tree (holds OT tokens = eligible for yield)
+    - Claimed **RWT** split: 70% NAV / 15% Nexus / 15% ARL Treasury
+    - Crank must provide valid merkle proof from latest published root
+  </Accordion>
+
+  <Accordion title="→ Native DEX (manager swaps)">
+    - `vault_swap` CPIs to `native_dex::swap`
+    - Vault PDA signs as swap user
+    - Manager controls direction and slippage
+    - Supports any pool: RWT/USDC, OT/RWT, OT/USDC
+  </Accordion>
+
+  <Accordion title="→ Ownership Token (holds OT positions)">
+    - Vault buys OT via DEX swaps
+    - OT balance in vault contributes to NAV
+    - More OT = more yield from YD = compound growth
+  </Accordion>
+
+  <Accordion title="→ Team Multisig (protocol authority)">
+    - Authority = Team Multisig after bootstrap
+    - admin_mint, adjust_capital, update_manager, update_config controlled by team directly
+    - NOT governed by Futarchy — protocol infrastructure managed by team
+  </Accordion>
+</AccordionGroup>
+
+### Trust Assumptions
+
+<Warning>
+  **Manager trust:** The manager wallet has full control over vault swap operations. A malicious or compromised manager could execute unfavorable swaps, draining vault value. Mitigation: authority (Team Multisig) can replace manager at any time via `update_vault_manager`. In production, manager is an AI agent with automated trading logic — not a human.
+</Warning>
+
+<Warning>
+  **Authority trust:** `admin_mint_rwt` allows minting RWT with arbitrary backing_capital_usd. Authority could inflate NAV by claiming more backing than exists. Mitigation: authority = Team Multisig, requiring multiple signers. All admin mints are visible on-chain via `RwtMinted` events.
+</Warning>
+
+### Deployment Checklist
+
+**Prerequisites:** OT contract must be deployed first (provides OT Treasury address). Nexus managed separately by team.
+
+1. **Call `initialize_vault`** with:
+   - `pause_authority` = Team Multisig address
+   - `areal_fee_destination` = Areal Finance USDC ATA (**same address** as OT contract's `areal_fee_destination`)
+   - `liquidity_destination` = Crank wallet RWT ATA (crank routes to Nexus via `nexus_deposit`)
+   - `protocol_revenue_destination` = ARL Treasury RWT ATA (OT contract)
+2. **Admin mint initial RWT** via `admin_mint_rwt` backed by initial OT positions
+3. **Transfer authority** to **Team Multisig** via `propose_authority_transfer` + `accept_authority_transfer`
+
+<Warning>
+  Step 2 must come BEFORE step 3. After authority transfer, only Team Multisig can admin mint or adjust capital.
+</Warning>
+
+<Note>
+  RWT Engine authority = **Team Multisig** (protocol operations). RWT is a protocol-level asset managed by the team directly, not through Futarchy proposals.
+</Note>
+
+### Token Flow Summary
+
+| From | To | Mechanism | Who triggers |
+|------|-----|-----------|-------------|
+| User USDC | Capital Accumulator ATA (99.5%) | mint_rwt (net_deposit + vault_fee) | User |
+| User USDC | Areal Fee (0.5%) | mint_rwt (dao_fee) | User |
+| Vault PDA | User RWT ATA | mint_rwt (mints RWT) | User |
+| YD Stream | Vault RWT Claim ATA | claim_yield (CPI claim) | Crank |
+| Vault RWT | Crank RWT ATA (15%) → Nexus via `nexus_deposit` | claim_yield + nexus_deposit | Crank |
+| Vault RWT | ARL Treasury ATA (15%) | claim_yield | Crank |
+| Vault any token | Vault any token | vault_swap (CPI DEX) | Manager |
+| Authority | Vault state | admin_mint_rwt, adjust_capital | Team Multisig |

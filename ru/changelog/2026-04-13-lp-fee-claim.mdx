@@ -1,0 +1,98 @@
+---
+title: "LP Fee Reward Model — Auto-Compound → Per-Pool Fee Vault"
+description: "LP-комиссии больше не авто-компаундятся. Теперь они собираются в per-pool fee vault с мгновенным on-chain клеймом."
+hidePagination: true
+---
+
+<div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "1.5rem" }}>
+  <span className="changelog-tag changelog-tag-breaking">Breaking</span>
+  <span className="changelog-date">13 апреля 2026</span>
+</div>
+
+## Обзор
+
+LP-комиссии больше не авто-компаундятся в резервы пула. Вместо этого доля LP-комиссий переводится в **reward vault Yield Distribution** при каждом свопе. LP-холдеры накапливают награды в своём кошельке активных наград и **клеймят их вручную** — тот же flow, что и для доходности OT-токенов.
+
+Это изменение гарантирует, что капитализация пула никогда не размывается извлечением комиссий, и обеспечивает LP-холдерам единый, прозрачный опыт получения наград.
+
+## Что изменилось
+
+### До (Auto-Compound модель)
+
+```
+fee_lp → остаётся в резервах пула (авто-компаунд)
+         LP-холдеры получают выгоду пассивно через рост резервов
+         Не требует явного клейма
+```
+
+### После (Клейминг через Yield Distribution)
+
+```
+fee_lp → переводится в YD reward vault через CPI
+         LP-холдеры видят награды в кошельке активных наград
+         Клеймятся вместе с OT yield через merkle proof
+
+// Комиссии взимаются ПОВЕРХ свопа — резервы пула нетронуты:
+reserve_in  += amount_in       // полная сумма входит в пул
+reserve_out -= amount_out_gross // полная gross сумма выходит из пула
+```
+
+## Направления свопа
+
+### Продажа RWT (input = RWT)
+
+Комиссии взимаются **поверх** суммы свопа. Кошелёк пользователя дебетуется на `amount_in + fee_total + ot_treasury_fee`.
+
+| Поток | Сумма | Получатель |
+|---|---|---|
+| User RWT → Pool vault | `amount_in` | Резервы пула (полностью, без вычетов) |
+| User RWT → YD reward vault | `fee_lp` | Клеймится LP-холдерами |
+| User RWT → Areal Finance | `fee_protocol` | Доход протокола |
+| User RWT → OT Treasury | `ot_treasury_fee` | Казна проекта (только OT-пары) |
+| Pool vault → User | `amount_out` | Пользователь получает выходной токен |
+
+### Покупка RWT (input = OT/USDC)
+
+Комиссии вычитаются из gross RWT output. Пользователь получает чистую сумму.
+
+| Поток | Сумма | Получатель |
+|---|---|---|
+| User → Pool vault | `amount_in` | Резервы пула |
+| Pool vault → YD reward vault | `fee_lp` | Клеймится LP-холдерами |
+| Pool vault → Areal Finance | `fee_protocol` | Доход протокола |
+| Pool vault → OT Treasury | `ot_treasury_fee` | Казна проекта (только OT-пары) |
+| Pool vault → User | `amount_out` | Пользователь получает net RWT |
+
+## Flow клейма LP-наград
+
+LP-награды используют **per-pool fee vault** с `cumulative_fees_per_share` учётом — полностью on-chain, без off-chain зависимостей:
+
+<Steps>
+  <Step title="Своп происходит">
+    При каждом свопе `fee_lp` (в RWT) переводится в `fee_vault` пула. Контракт обновляет: `cumulative_fees_per_share += fee_lp × PRECISION / total_lp_shares`.
+  </Step>
+  <Step title="Мгновенная доступность">
+    Награды доступны сразу после каждого свопа. Без вестинга, без merkle tree, без off-chain сервера. Полностью on-chain O(1) учёт.
+  </Step>
+  <Step title="Пользователь клеймит">
+    LP-холдер вызывает `claim_lp_fees` на DEX контракте. Клеймабельная сумма: `shares × cumulative_fees_per_share / PRECISION - fees_claimed`. RWT переводится из fee_vault в RWT ATA холдера.
+  </Step>
+</Steps>
+
+**Два потока наград для LP-холдеров:**
+
+| Поток | Источник | Механизм | Доступность |
+|---|---|---|---|
+| LP Swap Fees | Per-pool fee vault | `claim_lp_fees` (on-chain учёт) | Мгновенно |
+| OT Yield | Yield Distribution | `compound_yield` (авто-компаунд в резервы) | Пассивно (увеличивает стоимость LP) |
+
+## Связанные контракты
+
+<CardGroup cols={2}>
+  <Card title="Native DEX" icon="file-code" href="/contracts/native-dex">
+    Полная документация контракта с обновлённой fee-архитектурой.
+  </Card>
+  <Card title="Yield Distribution" icon="file-code" href="/contracts/yield-distribution">
+    Reward vault, merkle claims и механика вестинга.
+  </Card>
+</CardGroup>

@@ -1,0 +1,110 @@
+---
+title: Токены
+description: Обзор токен-примитивов протокола Areal
+---
+
+Areal использует **мульти-токен архитектуру**, где каждый токен имеет чётко определённую роль, область применения и экономическую функцию. Ни один токен не призван решать все задачи системы — вместо этого токены дополняют друг друга на разных уровнях.
+
+<CardGroup cols={3}>
+  <Card title="RWT" icon="coins" color="#a56eff" href="/ru/economics/rwt-real-world-token">
+    Базовый токен доходности и ликвидности — агрегирует реальную доходность в один унифицированный актив
+  </Card>
+  <Card title="Ownership Tokens" icon="key" color="#10b981" href="/ru/economics/ownership-tokens">
+    Проектные токены владения — представляют реальные, юридически подкреплённые права на RWA-проекты
+  </Card>
+  <Card title="ARL" icon="crown" color="#3b82f6" href="/ru/economics/arl-protocol-token">
+    Governance-токен протокола — управляет Areal через futarchy-модель принятия решений
+  </Card>
+</CardGroup>
+
+<Info>
+  Каждый токен работает на своём уровне системы. Вместе они формируют замкнутый экономический цикл: Ownership Tokens генерируют доходность от реальных активов → RWT агрегирует эту доходность в единую ликвидность → ARL управляет правилами, которые связывают всё воедино.
+</Info>
+
+---
+
+## RWT — Real World Token
+
+<Tooltip tip="Real World Token — основной утилитарный токен протокола Areal для унифицированной ликвидности и агрегации доходности">**RWT**</Tooltip> — базовый токен протокола, созданный для решения проблемы **фрагментированной ликвидности** на рынке RWA.
+
+Вместо распыления капитала по десяткам изолированных пулов, Areal агрегирует доходность от множества реальных активов в один токен. RWT накапливает диверсифицированную RWA-доходность через <Tooltip tip="Ownership Token — токенизированное представление конкретного реального актива в протоколе Areal">Ownership Tokens</Tooltip>, хранящиеся в его vault, становясь единой точкой доступа ко всему портфелю протокола.
+
+<CardGroup cols={2}>
+  <Card title="Природа flatcoin" icon="chart-line">
+    Цена RWT привязана к динамически растущей **NAV Book Value** — не фиксирована на $1, а стабильно растёт по мере поступления реальной доходности в vault
+  </Card>
+  <Card title="Permissionless-минтинг" icon="unlock">
+    Любой может создать RWT в любое время по текущей NAV Book Value — без вайтлистов, без гейткиперов, без одобрений
+  </Card>
+</CardGroup>
+
+<Card title="Подробнее: Real World Token" icon="arrow-right" href="/ru/economics/rwt-real-world-token">
+  Механика vault, NAV Book Value, master-пулы, permissionless-минтинг и полная архитектура ликвидности
+</Card>
+
+---
+
+## Ownership Tokens
+
+<Tooltip tip="Ownership Token — представляет реальное, юридически закреплённое владение конкретным реальным активом в Areal">**Ownership Tokens (OTs)**</Tooltip> представляют **реальное, юридически закреплённое владение** материальными и нематериальными активами в экосистеме Areal.
+
+Каждый Ownership Token привязан к **DAO Ownership Company** — юридическому лицу, которое официально владеет всеми активами проекта. Держатели токенов имеют реальные права на реальную стоимость, а не просто спекулятивный цифровой актив.
+
+<CardGroup cols={2}>
+  <Card title="Генерирует доход" icon="money-bill-trend-up">
+    Активы приносят реальную доходность — аренду, сборы, роялти, проценты — которая распределяется между держателями через governance
+  </Card>
+  <Card title="Свободно торгуемый" icon="arrow-right-arrow-left">
+    OT свободно торгуются на открытом рынке, обеспечивая ликвидность и прозрачное ценообразование для каждого проекта
+  </Card>
+</CardGroup>
+
+<Card title="Подробнее: Ownership Tokens" icon="arrow-right" href="/ru/economics/ownership-tokens">
+  DAO Ownership Companies, юридическая структура, распределение дохода и futarchy-governance на уровне проекта
+</Card>
+
+---
+
+## ARL — Токен протокола
+
+<Tooltip tip="ARL — governance- и ownership-токен протокола Areal, подкреплённый DAO Ownership Company">**ARL**</Tooltip> — это <Tooltip tip="Ownership Token — представляет реальное, юридически закреплённое владение конкретным реальным активом в Areal">Ownership Token</Tooltip> **самого протокола Areal**.
+
+Как любой Ownership Token представляет реальное владение конкретным RWA-проектом, так ARL представляет владение протоколом Areal — включая всю интеллектуальную собственность, продукты, инфраструктуру и экономические потоки. Держатели ARL коллективно управляют протоколом через [futarchy](/ru/architecture/governance-and-futarchy).
+
+<CardGroup cols={2}>
+  <Card title="Четыре источника дохода" icon="chart-mixed">
+    Комиссии DEX, RWT Engine, комиссии за распределение доходности и операции казначейства финансируют Areal DAO
+  </Card>
+  <Card title="Governance протокола" icon="sliders">
+    Держатели ARL устанавливают все ключевые параметры — комиссии минтинга, комиссии DEX, правила распределения, лимиты риска
+  </Card>
+</CardGroup>
+
+<Card title="Подробнее: ARL — Токен протокола" icon="arrow-right" href="/ru/economics/arl-protocol-token">
+  Источники дохода, governance протокола, операции казначейства и связь ARL с Ownership Tokens
+</Card>
+
+---
+
+## Итого
+
+<CardGroup cols={3}>
+  <Card title="Мульти-токен дизайн" icon="diagram-project" color="#a56eff">
+    Три отдельных токена — каждый с определённой ролью, областью и экономической функцией
+  </Card>
+  <Card title="Реальная доходность" icon="building-columns" color="#a56eff">
+    Доход от реальных активов проходит через систему — не спекуляции, а реальный заработок
+  </Card>
+  <Card title="Единая ликвидность" icon="droplet" color="#a56eff">
+    RWT решает фрагментацию, агрегируя доходность всех проектов в один глубокий рынок
+  </Card>
+  <Card title="Юридическое владение" icon="file-contract" color="#a56eff">
+    Ownership Tokens подкреплены DAO Ownership Companies — реальными юридическими лицами с реальными активами
+  </Card>
+  <Card title="Рыночное governance" icon="scale-balanced" color="#a56eff">
+    ARL управляет через futarchy — решения оцениваются по результатам, а не по мнениям
+  </Card>
+  <Card title="Замкнутый экономический цикл" icon="arrows-rotate" color="#a56eff">
+    Уровни доходности, ликвидности и governance усиливают друг друга в самоподдерживающейся системе
+  </Card>
+</CardGroup>

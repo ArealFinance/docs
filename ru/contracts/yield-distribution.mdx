@@ -1,0 +1,717 @@
+---
+title: "Распределение доходности"
+description: "Перманентные потоки доходности RWT на основе дерева Меркла с вестингом для каждого получателя"
+---
+
+# Распределение доходности (Yield Distribution)
+
+<Card title="✅ Готово к разработке" icon="check" color="#48bb78">
+  Данная спецификация контракта прошла аудит бизнес-логики, техническое ревью, проверку кросс-программной интеграции (OT + RWT Engine), верификацию математики вестинга и стандартизацию именования. Разработчик может реализовать контракт по этому документу.
+</Card>
+
+Распределяет доходность в RWT держателям OT пропорционально их балансу токенов. Каждый OT-проект имеет **один перманентный дистрибьютор** — пополняется ежемесячно в RWT, вестинг линейный на протяжении 365 дней. Держатели могут клеймить в любое время; UI показывает баланс, растущий в реальном времени.
+
+<Warning>
+  **Обновляемый контракт.** Полномочия на обновление программы = Team Multisig (Squads). Отделены от config authority и publish authority.
+</Warning>
+
+## Ключевые концепции
+
+<CardGroup cols={3}>
+  <Card title="11 инструкций" icon="code">
+    Конфигурация, создание/закрытие дистрибьютора, конвертация, пополнение, публикация корня, клейм, управление полномочиями
+  </Card>
+  <Card title="4 аккаунта состояния" icon="database">
+    DistributionConfig, MerkleDistributor, Accumulator, ClaimStatus
+  </Card>
+  <Card title="4 PDA Seeds" icon="key">
+    dist_config, merkle_dist, accumulator, claim_status
+  </Card>
+</CardGroup>
+
+## Как это работает
+
+<Steps>
+  <Step title="Поступление дохода OT (ежемесячно)">
+    Контракт OT через `distribute_revenue` отправляет 70% USDC в **Accumulator PDA** дистрибьютора (USDC ATA, принадлежащий контракту). Внешние кошельки не нужны.
+  </Step>
+  <Step title="Конвертация USDC → RWT + пополнение (атомарно)">
+    Крэнк вызывает `convert_to_rwt` — контракт обменивает USDC на DEX по цене до NAV, минтит остаток по NAV, депонирует RWT в reward vault и обновляет состояние вестинга. Всё в одной атомарной инструкции. Ранее завестированная сумма фиксируется, новые RWT начинают вестинг с текущего момента.
+  </Step>
+  <Step title="Публикация корня Меркла (каждые 10 мин)">
+    Publish authority (серверный кошелёк) сканирует держателей OT офф-чейн, строит дерево Меркла, публикует корень он-чейн через `publish_root`. Держатели с балансом менее $100 исключаются; их доля → ARL Treasury (доход протокола).
+  </Step>
+  <Step title="Держатели клеймят (в любое время)">
+    Держатель вызывает `claim` с доказательством Меркла. Контракт вычисляет завестированную сумму для данного получателя и переводит RWT. Можно клеймить сколько угодно часто — вестинг начисляется каждую секунду.
+  </Step>
+</Steps>
+
+## Модель вестинга
+
+**Перманентный дистрибьютор с инкрементальным пополнением.** И `convert_to_rwt`, и `fund_distributor` используют идентичную логику вестинга при добавлении RWT:
+
+```
+// All vesting calculations cast to u128 BEFORE multiply to prevent overflow
+
+On fund (either convert_to_rwt or fund_distributor):
+  elapsed = now - last_fund_ts
+  locked_vested += (total_funded - locked_vested) * min(elapsed, period) / period  // u128
+  total_funded += new_amount (net after protocol fee)
+  last_fund_ts = now
+
+On claim:
+  new_portion = total_funded - locked_vested
+  new_vested = new_portion * min(now - last_fund_ts, period) / period
+  total_vested = min(locked_vested + new_vested, max_total_claim)
+  
+  my_share = total_vested * my_cumulative_amount / max_total_claim
+  claimable = my_share - already_claimed
+```
+
+<Note>
+  **UX:** UI вычисляет `total_vested` на стороне клиента каждую секунду, чтобы показывать баланс, растущий в реальном времени. Фактический перевод он-чейн происходит только когда держатель нажимает «Клеймить». Это стандартный паттерн в DeFi (Jito, Marinade и др.).
+</Note>
+
+<Note>
+  **Минимум $100 в портфеле:** Только держатели с суммарным балансом ≥ $100 по всем позициям OT + RWT имеют право на доходность. Доля неподходящих держателей направляется в **ARL Treasury** (= ARL OtTreasury PDA `["ot_treasury", arl_ot_mint]`) как лист дерева Меркла. Это доход протокола — Areal Finance получает доходность, на которую мелкие держатели не имеют права. Клеймится через OT `claim_yd_for_treasury` на инстансе ARL OT.
+</Note>
+
+## Три роли
+
+<CardGroup cols={3}>
+  <Card title="🏛️ Config Authority" icon="landmark">
+    **Team Multisig** (после бутстрапа)
+
+    - `create_distributor` — новый OT-проект
+    - `close_distributor` — закрытие проекта
+    - `update_config` — изменение комиссий, лимитов
+    - `update_publish_authority` — смена серверного кошелька
+    - `propose_authority_transfer`
+  </Card>
+  <Card title="📡 Publish Authority" icon="tower-broadcast">
+    **Серверный кошелёк** (крэнк-бот на VPS)
+
+    - `publish_root` — каждые 10 минут
+
+    Горячий кошелёк, строящий деревья Меркла офф-чейн и публикующий корни. При компрометации config authority может его заменить. НЕ контролирует средства.
+  </Card>
+  <Card title="🌐 Без ограничений доступа" icon="globe">
+    **Любой кошелёк / Крэнк-бот**
+
+    - `convert_to_rwt` — конвертация USDC→RWT
+    - `fund_distributor` — депозит RWT
+    - `claim` — клейм доходности держателем
+  </Card>
+</CardGroup>
+
+## Инструкции
+
+### Инициализация
+
+<AccordionGroup>
+  <Accordion title="initialize_config">
+    Создание глобальной конфигурации распределения. Вызывается один раз при деплое протокола.
+
+    **Параметры:**
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `protocol_fee_bps` | `u16` | Комиссия на депозиты (по умолчанию: 25 = 0.25%) |
+    | `min_distribution_amount` | `u64` | Минимальная сумма пополнения (по умолчанию: эквивалент $100) |
+    | `areal_fee_destination` | `Pubkey` | Куда направляются комиссии — **RWT ATA** Areal Finance (статичный, неизменяемый). Примечание: это RWT-аккаунт, не USDC — комиссия протокола YD удерживается в RWT после конвертации. |
+    | `publish_authority` | `Pubkey` | Серверный кошелёк для publish_root |
+
+    **Вызывающий:** Деплоер (однократно)
+
+    **Аккаунты:**
+    - `deployer` (signer, mut) — оплачивает создание аккаунта
+    - `config` (init) — PDA seed: `["dist_config"]`
+    - `system_program`
+
+    **Создаёт:**
+    - `DistributionConfig` PDA — глобальный синглтон
+
+    **Начальное состояние:**
+    - `authority = deployer` (передаётся Team Multisig после бутстрапа)
+    - `publish_authority = publish_authority param`
+    - `is_active = true`
+  </Accordion>
+</AccordionGroup>
+
+### Жизненный цикл дистрибьютора
+
+<AccordionGroup>
+  <Accordion title="create_distributor">
+    Создание перманентного дистрибьютора для OT-проекта. Один на OT mint, существует бессрочно. Также создаёт Accumulator PDA, куда поступает USDC-доход.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `vesting_period_secs` | `i64` | Период вестинга (по умолчанию: 31 536 000 = 365 дней) |
+
+    **Вызывающий:** Authority (Team Multisig)
+
+    **Аккаунты:**
+    - `authority` (signer) — должен совпадать с `config.authority`
+    - `config` — проверка authority, is_active
+    - `ot_mint` — OT, который обслуживает данный дистрибьютор
+    - `distributor` (init) — PDA seed: `["merkle_dist", ot_mint]`
+    - `reward_vault` (init) — RWT-аккаунт, authority = distributor PDA
+    - `accumulator` (init) — PDA seed: `["accumulator", ot_mint]`
+    - `accumulator_usdc_ata` (init) — USDC ATA, authority = accumulator PDA
+    - `rwt_mint` — минт токена RWT
+    - `usdc_mint` — минт USDC (для accumulator ATA)
+    - `token_program`, `system_program`, `associated_token_program`
+
+    **Создаёт:**
+    - `MerkleDistributor` PDA — состояние перманентного дистрибьютора
+    - Reward Vault — RWT ATA, принадлежащий distributor PDA
+    - `Accumulator` PDA — получает USDC от дохода OT
+    - Accumulator USDC ATA — аккаунт хранения USDC
+
+    **Начальное состояние:**
+    - `total_funded = 0`, `total_claimed = 0`
+    - `locked_vested = 0`, `last_fund_ts = now`
+    - `merkle_root = [0; 32]`, `epoch = 0`
+    - `is_active = true`
+
+    **Валидация:**
+    - `vesting_period_secs > 0`
+  </Accordion>
+
+  <Accordion title="close_distributor">
+    Окончательное закрытие дистрибьютора. Переводит все невостребованные RWT на указанный адрес.
+
+    **Вызывающий:** Authority (Team Multisig)
+
+    **Аккаунты:**
+    - `authority` (signer) — должен совпадать с `config.authority`
+    - `config`
+    - `distributor` (mut)
+    - `reward_vault` (mut) — RWT для перевода
+    - `unclaimed_destination` (mut) — получает оставшиеся RWT (обычно ARL Treasury ATA)
+    - `token_program`
+
+    **Валидация:**
+    - `distributor.is_active == true` (нельзя закрыть повторно)
+
+    **Эффект:** Переводит все оставшиеся RWT → unclaimed_destination. Устанавливает `distributor.is_active = false`. Эмитирует `DistributorClosed`.
+
+    <Warning>
+      Закрытие дистрибьютора немедленно прекращает все клеймы. Держатели с незавестированными наградами теряют их. Authority должен убедиться, что весь вестинг завершён, или заранее предупредить о закрытии. Рекомендуется дождаться `total_vested ≈ total_funded` перед закрытием.
+    </Warning>
+  </Accordion>
+</AccordionGroup>
+
+### Пополнение
+
+<AccordionGroup>
+  <Accordion title="convert_to_rwt">
+    Конвертация накопленных USDC в RWT. Два шага: обмен на DEX по цене до NAV, минтинг остатка по NAV через RWT Engine. Accumulator PDA подписывает все переводы — внешние ключи не нужны.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `max_swap_amount` | `u64` | Максимум USDC для обмена на DEX (остаток минтится по NAV) |
+    | `min_rwt_out` | `u64` | Минимум RWT к получению (защита от проскальзывания против сэндвич-атак при обмене на DEX) |
+
+    **Вызывающий:** Permissionless (крэнк)
+
+    **Аккаунты:**
+    - `crank` (signer, mut)
+    - `config` — чтение protocol_fee_bps, areal_fee_destination
+    - `distributor` (mut) — обновление locked_vested, total_funded, last_fund_ts
+    - `accumulator` — PDA, подписывает переводы USDC и RWT через seeds
+    - `fee_account` (mut) — constraint: `key == config.areal_fee_destination` (получает комиссию протокола в RWT)
+    - `accumulator_usdc_ata` (mut) — источник USDC, constraint: `owner == accumulator.key()`
+    - `accumulator_rwt_ata` (mut) — промежуточный RWT ATA, constraint: `owner == accumulator.key()`, `mint == rwt_mint` (получает RWT от обмена на DEX/минтинга через RWT Engine, затем переводит в reward_vault). Создаётся крэнком при необходимости через `init_if_needed`.
+    - `reward_vault` (mut) — конечное назначение для RWT
+    - Аккаунты DEX: `pool_state`, `dex_config`, `vault_in`, `vault_out`, `dao_fee_account`
+    - `dex_program` — constraint: `key == DEX_PROGRAM_ID`
+    - Аккаунты CPI к RWT Engine (должны точно соответствовать layout инструкции `mint_rwt`):
+      - `rwt_vault` (mut) — RWT Engine vault PDA `["rwt_vault"]`, получает депозит USDC
+      - `rwt_mint` (mut) — минт токена RWT, authority = rwt_vault PDA
+      - `capital_acc` (mut) — USDC ATA, принадлежащий rwt_vault (`vault.capital_accumulator_ata`)
+      - `rwt_engine_fee_account` (mut) — `vault.areal_fee_destination` (получает комиссию 0.5% за минт)
+      - Accumulator PDA подписывает как `user` (депозитор) в CPI mint_rwt
+    - `rwt_engine_program` — constraint: `key == RWT_ENGINE_PROGRAM_ID`
+    - `token_program`
+
+    **Логика:**
+    1. Чтение баланса USDC аккумулятора. Если 0, возврат.
+    2. Расчёт цены пула DEX vs NAV RWT
+    3. Если цена пула < NAV: CPI-обмен `min(max_swap_amount, balance)` USDC → RWT на DEX
+    4. Если USDC остались: CPI к `rwt_engine::mint_rwt` по NAV (accumulator PDA подписывает как user)
+    5. **Запасной путь:** Если пул DEX не существует или имеет нулевую ликвидность: минтить ВСЁ по NAV через RWT Engine. В этом случае весь объём USDC обходит DEX — комиссии LP не генерируются, объёма свопов нет. Это ожидаемо при бутстрапе (до создания пулов), но не должно происходить в нормальном режиме.
+    6. Расчёт комиссии протокола на полученные RWT: `fee = rwt_acquired * protocol_fee_bps / 10,000`
+    7. Перевод `fee` RWT → fee_account (accumulator PDA подписывает)
+    8. Перевод `rwt_acquired - fee` → reward_vault (accumulator PDA подписывает)
+    9. Фиксация вестинга: `locked_vested += (total_funded - locked_vested) * min(elapsed, period) / period` (приведение к u128)
+    10. `total_funded += rwt_acquired - fee`
+    11. `last_fund_ts = now`
+    12. Валидация: `rwt_acquired >= min_rwt_out` (проверка проскальзывания — откат при сэндвич-атаке с невыгодным обменом)
+    13. Эмитирование `StreamConverted`
+
+    **Эффект:** USDC конвертированы в RWT **и депонированы** в reward vault в одной атомарной операции. Обновляет состояние вестинга дистрибьютора. Отдельный вызов `fund_distributor` для сконвертированных средств не нужен.
+
+    <Note>
+      Эта инструкция объединяет конвертацию + пополнение в одну атомарную операцию. Accumulator PDA подписывает и обмен/минт USDC, и перевод RWT в reward vault. Нет промежуточного состояния, где RWT «висят» между аккаунтами.
+    </Note>
+
+    <Warning>
+      **Циклическая зависимость:** YD вызывает `rwt_engine::mint_rwt`, а RWT Engine вызывает `yd::claim` (через `claim_yield`). Чтобы избежать циклических импортов крейтов Anchor, YD использует raw `invoke_signed` для CPI к RWT Engine. Дискриминатор: `sha256("global:mint_rwt")[..8]`. Layout аккаунтов должен точно соответствовать инструкции `mint_rwt` RWT Engine.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="fund_distributor">
+    Депозит RWT в reward vault дистрибьютора. Фиксирует ранее завестированную сумму и начинает вестинг новой порции с текущего момента.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount` | `u64` | Сумма RWT для депозита |
+
+    **Вызывающий:** Permissionless — пополнить может любой
+
+    **Аккаунты:**
+    - `depositor` (signer)
+    - `config` — проверка is_active
+    - `distributor` (mut) — обновление locked_vested, total_funded, last_fund_ts
+    - `reward_vault` (mut) — получает RWT
+    - `depositor_token` (mut) — исходный RWT ATA, constraint: `owner == depositor`
+    - `fee_account` (mut) — constraint: `key == config.areal_fee_destination`
+    - `token_program`
+
+    **Валидация:**
+    - `amount > 0`
+    - `amount >= config.min_distribution_amount` (по умолчанию эквивалент $100)
+    - `distributor.is_active == true`
+
+    **Логика:**
+    1. Расчёт комиссии протокола: `fee = amount * protocol_fee_bps / 10,000`
+    2. Перевод fee → fee_account
+    3. Перевод `amount - fee` → reward_vault
+    4. Фиксация вестинга: `locked_vested += (total_funded - locked_vested) * min(elapsed, period) / period` (приведение к u128 перед умножением)
+    5. `total_funded += amount - fee`
+    6. `last_fund_ts = now`
+    7. Эмитирование `DistributorFunded`
+
+    <Note>
+      Расчёт locked_vested сохраняет уже заработанную доходность при поступлении новых средств. Без этого добавление средств разбавляло бы прогресс вестинга существующих депозитов.
+    </Note>
+  </Accordion>
+</AccordionGroup>
+
+### Распределение
+
+<AccordionGroup>
+  <Accordion title="publish_root">
+    Публикация нового корня Меркла, представляющего текущие веса держателей OT. Вызывается каждые 10 минут publish authority (серверным кошельком).
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `merkle_root` | `[u8; 32]` | Хеш корня дерева Меркла |
+    | `max_total_claim` | `u64` | Должен равняться текущему `total_funded` |
+
+    **Вызывающий:** Publish authority (серверный кошелёк)
+
+    **Аккаунты:**
+    - `publish_authority` (signer) — должен совпадать с `config.publish_authority`
+    - `config` — проверка publish_authority, is_active
+    - `distributor` (mut) — обновление merkle_root, epoch
+
+    **Валидация:**
+    - `max_total_claim > 0` (предотвращает деление на ноль в `claim` — нельзя публиковать корень для непополненного дистрибьютора)
+    - `max_total_claim == distributor.total_funded`
+    - `max_total_claim >= distributor.total_claimed`
+
+    **Формат листа Меркла:** `sha256(claimant_pubkey_bytes || cumulative_amount_le_bytes)`
+
+    Где `cumulative_amount` = пропорциональная доля держателя от `total_funded`:
+    ```
+    cumulative_amount = total_funded * holder_ot_balance / total_ot_supply
+    ```
+
+    **Эффект:** Инкрементирует `epoch`, сохраняет новый корень. Эмитирует `RootPublished`.
+
+    **Рекомендуемая частота:** Каждые 10 минут (офф-чейн крэнк). Обеспечивает отражение изменений баланса в течение 10 мин. Также должен вызываться сразу после каждого `fund_distributor`, чтобы новые средства стали доступны для клейма. Стоимость: ~$2.60/месяц на OT-проект.
+  </Accordion>
+
+  <Accordion title="claim">
+    Клейм завестированных наград в RWT. Может вызываться в любое время, сколько угодно часто. Вестинг начисляется каждую секунду.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `cumulative_amount` | `u64` | Кумулятивная доля держателя (из листа Меркла) |
+    | `proof` | `Vec<[u8; 32]>` | Путь доказательства Меркла (макс. 20 узлов) |
+
+    **Вызывающий:** Держатель (или PDA через CPI — напр., RWT Vault, ARL Treasury)
+
+    **Аккаунты:**
+    - `claimant` (signer) — кошелёк держателя или PDA
+    - `payer` (signer, mut) — оплачивает ренту за инициализацию ClaimStatus при первом клейме
+    - `distributor` — чтение состояния вестинга, merkle_root
+    - `claim_status` (init_if_needed) — PDA seed: `["claim_status", distributor, claimant]`
+    - `reward_vault` (mut) — источник RWT
+    - `claimant_token` (mut) — RWT ATA держателя, constraint: `mint == reward_vault.mint`
+    - `token_program`, `system_program`
+
+    **Валидация:**
+    - `distributor.is_active == true` (нельзя клеймить из закрытого дистрибьютора)
+    - Доказательство Меркла: `verify(proof, root, sha256(claimant || cumulative_amount))`
+    - `proof.len() <= MAX_PROOF_LEN` (20)
+    - `epoch > 0` (корень должен быть опубликован)
+
+    **Логика:**
+    1. Верификация доказательства Меркла
+    2. Инициализация ClaimStatus при первом клейме (claimant, distributor, claimed_amount=0)
+    3. Расчёт total_vested (приведение к u128 **до** умножения, аналогично логике fund):
+       ```
+       new_portion = total_funded - locked_vested
+       new_vested = (new_portion as u128) * (min(now - last_fund_ts, vesting_period) as u128) / (vesting_period as u128)
+       total_vested = locked_vested + new_vested as u64
+       ```
+    4. Ограничение опубликованным корнем: `total_vested = min(total_vested, max_total_claim)` (предотвращает избыточный клейм, если fund произошёл после последнего publish_root)
+    5. Минимальный вестинг: `total_vested = max(total_vested, min(MIN_VESTED_AMOUNT, max_total_claim))`
+    6. Персональная доля: `my_vested = (total_vested as u128) * cumulative_amount / max_total_claim`
+    7. `claimable = my_vested - claim_status.claimed_amount`
+    8. Если claimable == 0, возврат
+    9. Перевод `claimable` RWT: reward_vault → claimant_token (distributor PDA подписывает)
+    10. `claim_status.claimed_amount += claimable`
+    11. `distributor.total_claimed += claimable`
+    12. Эмитирование `RewardsClaimed`
+  </Accordion>
+</AccordionGroup>
+
+### Конфигурация и полномочия
+
+<AccordionGroup>
+  <Accordion title="update_config">
+    Обновление глобальной конфигурации распределения.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `protocol_fee_bps` | `u16` | Новая комиссия в BPS |
+    | `min_distribution_amount` | `u64` | Новый минимум |
+    | `is_active` | `bool` | Глобальный флаг активности |
+
+    **Вызывающий:** Authority (Team Multisig)
+
+    **Аккаунты:**
+    - `authority` (signer) — должен совпадать с `config.authority`
+    - `config` (mut)
+
+    **Эффект:** Перезаписывает значения конфигурации. Эмитирует `ConfigUpdated`.
+
+    <Note>
+      `areal_fee_destination` является неизменяемым — устанавливается при инициализации, изменить нельзя. Только обновление программы может его модифицировать.
+    </Note>
+  </Accordion>
+
+  <Accordion title="update_publish_authority">
+    Смена серверного кошелька, который может вызывать publish_root.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `new_publish_authority` | `Pubkey` | Новый серверный кошелёк |
+
+    **Вызывающий:** Authority (Team Multisig)
+
+    **Аккаунты:**
+    - `authority` (signer) — должен совпадать с `config.authority`
+    - `config` (mut)
+
+    **Эффект:** Устанавливает `config.publish_authority = new_publish_authority`. Эмитирует `PublishAuthorityUpdated`.
+  </Accordion>
+
+  <Accordion title="propose_authority_transfer">
+    Шаг 1: Текущий authority предлагает нового config authority.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `new_authority` | `Pubkey` | Предлагаемый новый authority |
+
+    **Вызывающий:** Текущий authority
+
+    **Аккаунты:**
+    - `authority` (signer) — должен совпадать с `config.authority`
+    - `config` (mut)
+
+    **Валидация:** `new_authority ≠ current authority` (нельзя передать самому себе)
+
+    **Эффект:** Устанавливает `config.pending_authority = Some(new_authority)`. Эмитирует `AuthorityTransferProposed`.
+
+    <Note>
+      Повторный вызов **перезаписывает** существующий pending_authority. Предыдущий предложенный authority теряет возможность принять передачу.
+    </Note>
+  </Accordion>
+
+  <Accordion title="accept_authority_transfer">
+    Шаг 2: Предложенный authority принимает передачу полномочий.
+
+    **Вызывающий:** Предложенный новый authority (должен подписать)
+
+    **Аккаунты:**
+    - `new_authority` (signer) — должен совпадать с `config.pending_authority`
+    - `config` (mut)
+
+    **Валидация:** `signer == config.pending_authority`
+
+    **Эффект:** Устанавливает `authority = new_authority`, очищает `pending_authority`. Эмитирует `AuthorityTransferAccepted`.
+  </Accordion>
+</AccordionGroup>
+
+## Аккаунты состояния
+
+### DistributionConfig
+
+Глобальный синглтон. Один на деплой протокола.
+
+| Field | Type | Description |
+|---|---|---|
+| `authority` | `Pubkey` | Config authority (Team Multisig после бутстрапа) |
+| `pending_authority` | `Option<Pubkey>` | Целевой адрес ожидающей передачи полномочий |
+| `publish_authority` | `Pubkey` | Серверный кошелёк для publish_root (изменяемый authority) |
+| `protocol_fee_bps` | `u16` | Комиссия на fund_distributor (по умолчанию: 25 = 0.25%) |
+| `min_distribution_amount` | `u64` | Минимальная сумма пополнения |
+| `areal_fee_destination` | `Pubkey` | **RWT ATA** Areal Finance — получает комиссию протокола в RWT (статичный, неизменяемый) |
+| `is_active` | `bool` | Глобальный аварийный выключатель |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["dist_config"]`
+
+### MerkleDistributor
+
+Один на OT-проект, перманентный (никогда не пересоздаётся).
+
+| Field | Type | Description |
+|---|---|---|
+| `ot_mint` | `Pubkey` | OT, который обслуживает данный дистрибьютор |
+| `reward_vault` | `Pubkey` | RWT-аккаунт (authority = distributor PDA) |
+| `accumulator` | `Pubkey` | Accumulator PDA для данного OT (USDC поступают сюда) |
+| `merkle_root` | `[u8; 32]` | Текущий корень Меркла весов держателей |
+| `max_total_claim` | `u64` | Равен total_funded (предохранительный лимит) |
+| `total_claimed` | `u64` | Кумулятивно заклеймленные RWT по всем держателям |
+| `total_funded` | `u64` | Кумулятивно депонированные RWT (растёт с каждым пополнением) |
+| `locked_vested` | `u64` | RWT с гарантированным вестингом (фиксируется при каждом пополнении) |
+| `last_fund_ts` | `i64` | Временная метка последнего вызова fund_distributor |
+| `vesting_period_secs` | `i64` | Длительность вестинга (по умолчанию: 365 дней) |
+| `epoch` | `u64` | Счётчик publish_root |
+| `is_active` | `bool` | Флаг активности (false после close_distributor) |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["merkle_dist", ot_mint]`
+
+<Note>
+  Нет `stream_id` в seed — один дистрибьютор на OT mint. Это ключевое упрощение по сравнению с архитектурой множественных потоков.
+</Note>
+
+### Accumulator
+
+Аккаунт приёма USDC для каждого OT. Принадлежит контракту — внешние ключи не нужны. OT `distribute_revenue` отправляет USDC сюда. `convert_to_rwt` тратит отсюда.
+
+| Field | Type | Description |
+|---|---|---|
+| `ot_mint` | `Pubkey` | OT, который обслуживает данный аккумулятор |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["accumulator", ot_mint]`
+
+<Note>
+  Accumulator не хранит баланс USDC в состоянии. Баланс считывается из USDC ATA, принадлежащего этому PDA. PDA подписывает переводы USDC в `convert_to_rwt` через seeds.
+</Note>
+
+### ClaimStatus
+
+Трекинг для каждой пары (distributor, claimant). Создаётся при первом клейме через `init_if_needed`.
+
+| Field | Type | Description |
+|---|---|---|
+| `claimant` | `Pubkey` | Кошелёк держателя или PDA |
+| `distributor` | `Pubkey` | К какому дистрибьютору относится |
+| `claimed_amount` | `u64` | Кумулятивно заклеймленные RWT |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["claim_status", distributor, claimant]`
+
+## PDA Seeds
+
+| Account | Seeds | Description |
+|---|---|---|
+| DistributionConfig | `"dist_config"` | Глобальный синглтон конфигурации |
+| MerkleDistributor | `"merkle_dist"`, `ot_mint` | Перманентный дистрибьютор для каждого OT |
+| Accumulator | `"accumulator"`, `ot_mint` | Приёмник USDC для каждого OT (принадлежит контракту) |
+| ClaimStatus | `"claim_status"`, `distributor`, `claimant` | Трекинг клеймов для каждого держателя |
+
+## Константы
+
+| Constant | Value | Description |
+|---|---|---|
+| `BPS_DENOMINATOR` | `10,000` | 100% в базисных пунктах |
+| `DEFAULT_PROTOCOL_FEE_BPS` | `25` | Комиссия 0.25% на fund_distributor |
+| `DEFAULT_MIN_DISTRIBUTION` | `100,000,000` | Эквивалент $100 (6 десятичных знаков) |
+| `DEFAULT_VESTING_PERIOD` | `31,536,000` | 365 дней в секундах |
+| `MAX_PROOF_LEN` | `20` | Максимальная глубина доказательства Меркла (~1 млн держателей) |
+| `MIN_VESTED_AMOUNT` | `1,000,000` | Минимум 1 RWT завестирован (предотвращает зависание на нуле) |
+| `RWT_ENGINE_PROGRAM_ID` | hardcoded | Валидируется в convert_to_rwt |
+| `DEX_PROGRAM_ID` | hardcoded | Валидируется в convert_to_rwt |
+
+## События
+
+| Event | Fields | When |
+|---|---|---|
+| `ConfigInitialized` | authority, publish_authority, protocol_fee_bps, timestamp | Конфигурация создана |
+| `DistributorCreated` | ot_mint, reward_vault, accumulator, vesting_period_secs, timestamp | Дистрибьютор создан |
+| `DistributorFunded` | ot_mint, amount, protocol_fee, total_funded, locked_vested, timestamp | RWT депонированы |
+| `StreamConverted` | ot_mint, usdc_swapped, rwt_minted, total_rwt, timestamp | Конвертация USDC→RWT |
+| `RootPublished` | ot_mint, epoch, merkle_root, max_total_claim, timestamp | Новый корень опубликован |
+| `RewardsClaimed` | claimant, ot_mint, amount, cumulative_claimed, timestamp | Держатель заклеймил RWT |
+| `ConfigUpdated` | protocol_fee_bps, min_distribution_amount, is_active, timestamp | Конфигурация изменена |
+| `PublishAuthorityUpdated` | old_publish_authority, new_publish_authority, timestamp | Серверный кошелёк изменён |
+| `AuthorityTransferProposed` | current_authority, pending_authority, timestamp | Передача предложена |
+| `AuthorityTransferAccepted` | old_authority, new_authority, timestamp | Передача принята |
+| `DistributorClosed` | ot_mint, unclaimed_swept, timestamp | Дистрибьютор закрыт |
+
+## Коды ошибок
+
+| Error | Description |
+|---|---|
+| `Unauthorized` | Подписант не является требуемым authority |
+| `SystemPaused` | Глобальная конфигурация is_active = false |
+| `DistributorNotActive` | Дистрибьютор закрыт |
+| `ZeroAmount` | Сумма должна быть > 0 |
+| `BelowMinDistribution` | Сумма пополнения ниже min_distribution_amount |
+| `RootNotPublished` | Нельзя клеймить до первого publish_root (epoch = 0) |
+| `InvalidProof` | Верификация доказательства Меркла не пройдена |
+| `NothingToClaim` | Доступная для клейма сумма = 0 |
+| `ProofTooLong` | Доказательство превышает MAX_PROOF_LEN (20) |
+| `ExceedsMaxClaim` | total_claimed превысит max_total_claim |
+| `SlippageExceeded` | rwt_acquired < min_rwt_out (защита от сэндвич-атак) |
+| `MathOverflow` | Арифметическое переполнение |
+| `InvalidVestingPeriod` | vesting_period_secs должен быть > 0 |
+| `SelfTransfer` | Нельзя передать полномочия самому себе |
+| `NoPendingAuthority` | Нет ожидающей передачи для принятия |
+| `InvalidPendingAuthority` | Подписант ≠ pending_authority |
+
+## Архитектура и руководство по интеграции
+
+### Кросс-программная интеграция
+
+<AccordionGroup>
+  <Accordion title="← Ownership Token (получает 70% дохода в USDC)">
+    - OT `distribute_revenue` отправляет 70% **USDC** на USDC ATA Accumulator PDA
+    - Адрес Accumulator PDA вычисляется: `["accumulator", ot_mint]`
+    - Конфигурация назначения OT указывает на этот ATA
+    - Поток: Доход OT → Accumulator USDC ATA → `convert_to_rwt` (атомарно: конвертация USDC→RWT + депозит в vault)
+  </Accordion>
+
+  <Accordion title="→ RWT Engine (конвертация USDC → RWT)">
+    - `convert_to_rwt` вызывает CPI к `native_dex::swap` (покупка RWT ниже NAV)
+    - Если USDC остались: CPI к `rwt_engine::mint_rwt` (минт по NAV)
+    - Accumulator PDA подписывает как user/depositor
+    - Использует raw `invoke_signed` для CPI к RWT Engine (обход циклической зависимости)
+  </Accordion>
+
+  <Accordion title="→ RWT Engine (vault клеймит доходность)">
+    - RWT Vault является держателем OT → имеет лист в дереве Меркла
+    - RWT Engine `claim_yield` вызывает CPI к `yield_distribution::claim`
+    - Vault PDA подписывает как claimant
+  </Accordion>
+
+  <Accordion title="→ Ownership Token (ARL Treasury клеймит долю неподходящих держателей)">
+    - Доля неподходящих держателей со ВСЕХ OT-проектов → лист **ARL OtTreasury PDA** в дереве Меркла (доход протокола)
+    - OT `claim_yd_for_treasury` (вызывается на инстансе ARL OT) делает CPI к `yield_distribution::claim`
+    - ARL OtTreasury PDA подписывает как claimant (контракт OT подписывает через PDA seeds)
+    - ARL Treasury = `["ot_treasury", arl_ot_mint]` — тот же PDA, что и у treasury любого другого OT, только для проекта ARL
+  </Accordion>
+
+  <Accordion title="→ Team Multisig (config authority)">
+    - Config authority = Team Multisig после бутстрапа
+    - create/close distributor, update_config, update_publish_authority контролируются командой
+  </Accordion>
+</AccordionGroup>
+
+### Модель полномочий
+
+<CardGroup cols={3}>
+  <Card title="🔧 Обновление программы" icon="wrench">
+    **Team Multisig (Squads)**
+
+    Может деплоить новые версии контракта.
+  </Card>
+  <Card title="🏛️ Config Authority" icon="landmark">
+    **Team Multisig** (после бутстрапа)
+
+    - `create_distributor` / `close_distributor`
+    - `update_config`
+    - `update_publish_authority`
+    - `propose_authority_transfer`
+  </Card>
+  <Card title="📡 Publish Authority" icon="tower-broadcast">
+    **Серверный кошелёк** (крэнк-бот на VPS)
+
+    - `publish_root` (каждые 10 мин)
+
+    Строит дерево Меркла офф-чейн, публикует корень. Заменяемый config authority.
+  </Card>
+</CardGroup>
+
+<Warning>
+  **Неизменяемый после инициализации:** `areal_fee_destination` нельзя изменить. Только обновление программы может его модифицировать.
+</Warning>
+
+<Warning>
+  **Доверие к publish authority:** Если серверный кошелёк скомпрометирован, злоумышленник может опубликовать поддельный корень Меркла и заклеймить доходность на свои кошельки.
+
+  **Он-чейн защита:**
+  - `ClaimStatus` отслеживает `cumulative_claimed` для каждого claimant — после клейма держатель не может повторно заклеймить ту же сумму даже под новым корнем. Злоумышленник не может украсть уже заклеймленные средства.
+  - `max_total_claim == total_funded` — ограничивает общую сумму клеймов фактическим количеством RWT в vault, предотвращая атаки инфляции.
+  - `config.is_active` аварийный выключатель — Team Multisig может немедленно приостановить все клеймы через `update_config(is_active: false)`.
+  - `update_publish_authority` — Team Multisig мгновенно заменяет скомпрометированный кошелёк.
+
+  **Офф-чейн защита:**
+  - Все публикации корней видны он-чейн через события `RootPublished` — мониторинг неожиданных корней.
+  - Автоматическое оповещение при публикации корня неожиданным кошельком или с необычной частотой.
+
+  **Ограничение:** Нет механизма истории или инвалидации корней. Поддельный корень действителен до перезаписи следующим `publish_root`. Окно уязвимости = время между обнаружением компрометации и `update_publish_authority` + новый `publish_root`.
+</Warning>
+
+### Чек-лист деплоя
+
+**Предварительные требования:** RWT Engine и Native DEX должны быть задеплоены (необходимы для CPI convert_to_rwt).
+
+1. **Вызвать `initialize_config`** с areal_fee_destination, publish_authority (серверный кошелёк)
+2. **Создать дистрибьютор** для каждого OT-проекта через `create_distributor` (также создаёт Accumulator PDA)
+3. **Настроить назначение дохода OT** на USDC ATA Accumulator
+4. **Передать config authority** Team Multisig через `propose_authority_transfer` + `accept_authority_transfer`
+5. **Запустить крэнк-бот** — publish_root каждые 10 минут, convert_to_rwt после каждого распределения дохода OT
+
+<Warning>
+  Шаги 2 и 3 должны быть выполнены до первого распределения дохода OT. Иначе USDC некуда будет отправить.
+</Warning>
+
+### Сводка потоков токенов
+
+| From | To | Mechanism | Who triggers |
+|------|-----|-----------|-------------|
+| Доход OT (USDC) | Accumulator USDC ATA | OT distribute_revenue | Крэнк |
+| Accumulator USDC | Reward vault RWT (через DEX + минт) | convert_to_rwt (атомарно: конвертация + пополнение) | Крэнк |
+| Внешние RWT | Reward vault | fund_distributor (прямой депозит RWT) | Любой |
+| Reward vault | RWT ATA держателя | claim (вестинг для каждого получателя) | Держатель |
+| Reward vault | RWT Vault ATA | claim (через CPI RWT Engine) | Крэнк |
+| Reward vault | ARL OtTreasury RWT ATA | claim (через OT `claim_yd_for_treasury` на инстансе ARL) | Крэнк |
+| Reward vault | Назначение (при закрытии) | close_distributor | Authority |
+
+### Построение дерева Меркла (офф-чейн)
+
+Дерево Меркла строится офф-чейн сервером publish authority каждые 10 минут:
+
+1. Сканирование всех токен-аккаунтов для OT mint (`getParsedProgramAccounts`). Включает обычные кошельки И он-чейн PDA, которые держат OT: **RWT Vault PDA** (держит OT как обеспечение портфеля), **PDA пулов DEX** (vault-ы пулов держат OT с PDA пула как authority), и **OtTreasury PDA** (может держать OT от управления).
+2. Фильтрация: только держатели с суммарным балансом ≥ $100 по протоколу
+3. Расчёт cumulative_amount для каждого держателя: `total_funded * holder_balance / total_eligible_supply`
+4. Доля неподходящих → кошелёк **ARL Treasury** как лист (доход протокола — Areal Finance получает доходность от держателей ниже порога $100)
+5. Построение дерева: лист = `sha256(address_bytes || cumulative_amount_le_bytes)`
+6. Публикация корня он-чейн через `publish_root`
+
+**Рекомендуемая частота:** Каждые 10 минут. Стоимость: ~$2.60/месяц на OT-проект. Офф-чейн вычисления: ~300 мс на OT (10К держателей). Инфраструктура: VPS ($10/месяц) + бесплатный RPC-тариф.
+
+<Note>
+  Контракт только верифицирует доказательства — он не сканирует держателей и не вычисляет веса. Всё построение дерева происходит офф-чейн.
+</Note>

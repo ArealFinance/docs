@@ -1,0 +1,174 @@
+---
+title: Risk Disclosure
+description: Specific risk categories relevant to the Areal ecosystem — technological, economic, operational, governance, and systemic
+---
+
+<Warning>
+  This document is provided for **informational purposes only** and does not constitute financial, legal, or investment advice. All participants should conduct their own due diligence and consult qualified professionals before interacting with the protocol.
+</Warning>
+
+## Overview
+
+Any decentralized system connected to real-world assets carries inherent risks. Areal is designed to mitigate these risks through its [legal architecture](/security/legal-architecture), modular smart contract design, and governance mechanisms — but cannot eliminate them entirely.
+
+This page details specific risk categories that participants should understand before engaging with the Areal ecosystem.
+
+---
+
+## Technological Risks
+
+<CardGroup cols={2}>
+  <Card title="Smart contract vulnerabilities" icon="bug">
+    Any code may contain bugs, logical errors, or unforeseen attack vectors — even after auditing. Exploits may result in loss of funds or disruption of protocol operations.
+  </Card>
+  <Card title="Blockchain network risks" icon="network-wired">
+    Areal operates on Solana. Validator failures, network congestion, consensus issues, or protocol upgrades may temporarily affect availability and transaction processing.
+  </Card>
+  <Card title="Oracle and data feed risks" icon="database">
+    The protocol relies on external data sources for asset pricing, yield calculations, and NAV Book Value updates. Delayed, inaccurate, or manipulated data feeds may affect protocol operations.
+  </Card>
+  <Card title="Cross-contract interactions" icon="code-branch">
+    Interactions between multiple smart contracts — including third-party integrations — may produce unexpected results not anticipated during design or auditing.
+  </Card>
+</CardGroup>
+
+### Mitigations
+
+- Modular contract architecture with minimized trust assumptions between components
+- External security audits by independent firms
+- Formal verification of critical protocol logic
+- [Treasury](/economics/treasury)-funded safety measures to absorb the impact of unforeseen events
+- Open-source codebase enabling community review and scrutiny
+
+---
+
+## Economic and Market Risks
+
+### Token price volatility
+
+All tokens in the Areal ecosystem are subject to market forces:
+
+- **ARL** trades on the [Native DEX](/architecture/liquidity-and-native-dex) in a standard curve pool — its price is determined by supply and demand on the open market and may diverge from the underlying value of [Treasury](/economics/treasury) assets
+- **RWT** follows a [flatcoin model](/economics/rwt-real-world-token) anchored to NAV Book Value, but its market price may temporarily deviate from the book value
+- **Ownership Tokens** reflect both current asset value and future yield expectations — these expectations may change unpredictably
+
+### Liquidity risks
+
+Even with the [automatic rebalancing](/economics/rwt-real-world-token) of master pools and Areal DAO acting as [primary LP](/economics/treasury):
+
+- Periods of low trading activity may result in higher slippage
+- Large orders may significantly impact market prices
+- Temporary imbalances between pools may occur during volatile market conditions
+- New Ownership Token pools may initially have shallow liquidity
+
+### Yield variability
+
+Real-world asset yield is inherently variable:
+
+- Changes in economic conditions, interest rates, or occupancy may reduce asset revenue
+- Lower yield reduces [NAV Book Value](/economics/rwt-real-world-token) growth rate
+- [Treasury](/economics/treasury) revenue may decline proportionally
+- Individual project performance may differ significantly from expectations
+
+---
+
+## Operational Risks
+
+Real-world assets managed by project-level [DAO Ownership Companies](/economics/ownership-tokens) are subject to off-chain risks that the Areal protocol cannot control:
+
+<CardGroup cols={2}>
+  <Card title="Asset performance" icon="building">
+    Physical assets may suffer damage, deterioration, vacancy, or obsolescence. Revenue generation depends on real-world market conditions and operational quality.
+  </Card>
+  <Card title="Management quality" icon="users">
+    Each project is responsible for its own asset management. Poor decisions, mismanagement, or negligence at the project level may result in reduced yield or asset value loss.
+  </Card>
+  <Card title="Counterparty risk" icon="handshake">
+    Projects rely on tenants, service providers, contractors, and other counterparties. Defaults, breaches, or failures by these parties may affect project operations.
+  </Card>
+  <Card title="Force majeure" icon="cloud-bolt">
+    Natural disasters, geopolitical events, pandemics, regulatory actions, or other extraordinary circumstances may disrupt asset operations or entire markets.
+  </Card>
+</CardGroup>
+
+<Note>
+  Areal provides [infrastructure](/security/legal-architecture) — it does not manage, control, or supervise project-level assets or operations. Each project and its DAO Ownership Company bears full responsibility for its own operational performance.
+</Note>
+
+---
+
+## Governance Risks
+
+### Futarchy limitations
+
+[Futarchy governance](/architecture/governance-and-futarchy) uses market-based evaluation to make decisions. While this approach reduces subjective bias, it carries its own risks:
+
+- Prediction markets may produce suboptimal outcomes, especially under high uncertainty or with novel decision types
+- Low participation may concentrate decision-making influence among a small number of active participants
+- Markets may be subject to strategic behavior, short-term manipulation, or coordinated actions
+- The effectiveness of futarchy depends on sufficient market liquidity and informed participants
+
+### Capital allocation risk
+
+Governance decisions affecting [Treasury](/economics/treasury) allocation and protocol configuration carry inherent economic risk. Poor capital allocation decisions reduce ARL value and may weaken the protocol's economic position.
+
+---
+
+## User-Related Risks
+
+<CardGroup cols={2}>
+  <Card title="Wallet security" icon="key">
+    As a non-custodial system, Areal does not hold user funds. Users are solely responsible for securing their seed phrases, private keys, and devices. Lost access cannot be recovered.
+  </Card>
+  <Card title="Protocol complexity" icon="graduation-cap">
+    Areal is a complex system with multiple interacting components — RWT, OTs, ARL, DEX pools, yield distribution, governance. Misunderstanding these mechanics may lead to incorrect expectations or unintended outcomes.
+  </Card>
+  <Card title="Transaction finality" icon="lock">
+    On-chain transactions are irreversible. Errors in token transfers, swap parameters, or governance votes cannot be undone after execution.
+  </Card>
+  <Card title="Regulatory exposure" icon="gavel">
+    Participants may face tax obligations, reporting requirements, or regulatory restrictions in their own jurisdictions. Each user is responsible for understanding and complying with applicable law.
+  </Card>
+</CardGroup>
+
+---
+
+## Systemic Risks
+
+While unlikely, the following scenarios may impact the entire ecosystem:
+
+- **Complete blockchain failure** — a prolonged Solana network outage or critical vulnerability could temporarily or permanently affect protocol operations
+- **Severe real-sector disruption** — industry-wide shutdowns, systemic financial crises, or geopolitical conflicts may simultaneously affect multiple projects and asset classes
+- **Cascading failures** — unexpected interactions between protocol modules, external integrations, or market conditions may produce systemic effects not anticipated during design
+- **Regulatory action** — coordinated regulatory action across jurisdictions could affect the viability of decentralized protocols or token-based systems broadly
+
+---
+
+## How Areal Mitigates Risk
+
+Areal implements architectural and operational protections at every level:
+
+<CardGroup cols={3}>
+  <Card title="Legal isolation" icon="building" color="#a56eff">
+    Separate [DAO Ownership Companies](/security/legal-architecture) for each project and the protocol — isolating liabilities and risks between entities
+  </Card>
+  <Card title="Modular contracts" icon="cubes" color="#a56eff">
+    Minimized blast radius — a failure in one module does not cascade to others. Each component is independently auditable and upgradeable.
+  </Card>
+  <Card title="Security audits" icon="magnifying-glass" color="#a56eff">
+    External audits by independent security firms, formal verification of critical logic, and open-source code for community review
+  </Card>
+  <Card title="Treasury safety buffer" icon="shield-check" color="#a56eff">
+    [Areal Treasury](/economics/treasury) absorbs protocol revenue and provides a safety buffer for ecosystem resilience
+  </Card>
+  <Card title="Futarchy governance" icon="scale-balanced" color="#a56eff">
+    [Market-driven governance](/architecture/governance-and-futarchy) that evaluates decisions by expected outcomes — reducing subjective bias and political influence
+  </Card>
+  <Card title="Automatic mechanisms" icon="arrows-rotate" color="#a56eff">
+    Auto-rebalancing of liquidity pools, NAV-anchored pricing, and yield pass-through — reducing manual intervention and human error
+  </Card>
+</CardGroup>
+
+<Warning>
+  Risk mitigations reduce but do not eliminate risk. All participation in the Areal protocol is at the user's own risk. Participants should never allocate more than they can afford to lose and should consult qualified professionals before making any decisions.
+</Warning>

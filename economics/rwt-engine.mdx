@@ -1,0 +1,163 @@
+---
+title: RWT Engine
+description: The operational and accounting layer for the RWT product
+---
+
+## Overview
+
+**RWT Engine** is an isolated product execution layer of the Areal protocol.
+
+It operates **RWT as a standalone DAO product**, providing:
+
+- a dedicated asset domain,
+- controlled execution of product logic,
+- transparent accounting of product performance,
+- and a clean separation between **DAO governance** and **product operations**.
+
+RWT Engine is not a governance body and not a user-facing product. It is the **operational and accounting layer** through which the DAO runs and scales the RWT product.
+
+## Why the RWT Engine Exists
+
+RWT is a DAO-owned product that interacts with capital, liquidity, and markets.
+
+Without an isolated execution layer:
+
+- product economics would be mixed with general DAO treasury activity,
+- risk boundaries between products would be unclear,
+- accounting of product-level performance would be ambiguous,
+- audits and long-term governance would be harder.
+
+The RWT Engine exists to ensure that:
+
+- RWT has its **own balance sheet**,
+- product-level assets are **segregated**,
+- DAO-level decisions remain clean and accountable,
+- product performance can be measured independently.
+
+## RWT as a DAO Product
+
+RWT is treated as a **product operated by the DAO**, not as a passive protocol token.
+
+As a product, RWT:
+
+- accepts capital through minting mechanisms,
+- deploys capital according to defined rules,
+- generates product-level revenue,
+- transfers value to the DAO as the product owner.
+
+The RWT Engine is the mechanism that makes this product model enforceable onchain.
+
+## Responsibilities of the RWT Engine
+
+The RWT Engine is responsible for:
+
+- receiving capital associated with RWT operations (e.g. minting inputs),
+- holding and managing assets specific to the RWT product,
+- executing DAO-approved product strategies,
+- tracking product-level balances, reserves, and liabilities,
+- collecting product-generated revenue,
+- transferring net outcomes to the DAO treasury under predefined rules.
+
+The Engine **executes** product logic; it does not define strategy or policy.
+
+## Separation Between DAO and Product Operations
+
+A core design principle of the RWT Engine is **strict separation of roles**.
+
+### Areal DAO (Product Owner)
+
+The DAO:
+
+- defines the economic model of RWT,
+- approves strategies and risk parameters,
+- sets minting and pricing constraints,
+- determines how product revenue is captured and reinvested.
+
+### RWT Engine (Product Operator)
+
+The Engine:
+
+- enforces the rules defined by the DAO,
+- executes approved actions deterministically,
+- maintains isolated accounting,
+- prevents cross-contamination with other DAO assets.
+
+This separation allows the DAO to operate RWT as a **controlled economic system**, not an ad-hoc treasury function.
+
+## Product-Level Revenue and DAO Income
+
+RWT Engine enables RWT to generate **product-level revenue** for the DAO.
+
+Revenue sources may include:
+
+- minting and redemption fees,
+- protocol-level fees from RWT-based liquidity mechanisms,
+- returns from Engine-approved allocations,
+- other revenue explicitly tied to RWT product operations.
+
+All revenue is:
+
+- recorded at the product level,
+- subject to defined reserve and risk rules,
+- transferred to the DAO treasury as product income.
+
+Importantly, **RWT holders are not entitled to this revenue**. It accrues to the DAO as the owner and operator of the product.
+
+## Governance-Controlled Execution
+
+All actions executed by the RWT Engine are governed by Areal DAO decisions.
+
+Governance defines:
+
+- allowed asset types,
+- allocation limits,
+- risk thresholds,
+- reserve requirements,
+- conditions for capital deployment and withdrawal.
+
+The Engine enforces these parameters strictly and cannot act outside them.
+
+## Transparency and Accounting
+
+RWT Engine maintains a transparent and auditable record of:
+
+- assets held on behalf of the RWT product,
+- inflows and outflows,
+- reserves and liabilities,
+- revenue generated and transferred,
+- historical execution of governance decisions.
+
+This ensures:
+
+- clear product-level P&L,
+- objective evaluation of DAO strategy,
+- accountability of governance actions.
+
+## Security and Risk Boundaries
+
+RWT Engine enforces strict safety invariants:
+
+- no custody of user assets beyond defined product interactions,
+- no discretionary actions outside governance rules,
+- no implicit guarantees to RWT holders,
+- no cross-product asset mixing.
+
+All risk associated with the RWT product is explicit, bounded, and governed.
+
+## Relationship to Other Protocol Components
+
+- **RWT** is the interface and utility token of the product.
+- **RWT Engine** is the execution and accounting layer of the product.
+- **Areal DAO** is the owner, strategist, and value recipient.
+- **Governance (ARL)** defines and updates product rules.
+
+Each layer is modular and independently auditable.
+
+## Summary
+
+- **RWT Engine operates RWT as a DAO-owned product.**
+- It isolates product assets and execution from general DAO activity.
+- It enables RWT to generate revenue for the DAO.
+- It enforces clean accounting, risk boundaries, and governance discipline.
+- It allows Areal DAO to scale RWT as a sustainable economic product.
+

@@ -1,0 +1,22 @@
+---
+title: "Breaking Changes"
+description: "Критические изменения, требующие внимания"
+hidePagination: true
+---
+
+<div style={{ marginBottom: "1.5rem" }}>
+  <span className="changelog-tag changelog-tag-breaking" style={{ fontSize: "14px", padding: "4px 14px" }}>Breaking</span>
+</div>
+
+Критические изменения, которые могут потребовать действий от интеграторов или пользователей.
+
+---
+
+<div className="changelog-entry">
+  <div className="changelog-date">13 апреля 2026</div>
+
+  ### [LP Fee Reward Model — Per-Pool Fee Vault](/ru/changelog/2026-04-13-lp-fee-claim)
+
+  LP-комиссии больше не авто-компаундятся. Собираются в per-pool fee vault — LP-холдеры клеймят мгновенно через `claim_lp_fees`. Комиссии взимаются поверх свопов для сохранения капитализации пула.
+
+</div>

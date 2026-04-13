@@ -1,0 +1,485 @@
+---
+title: "Off-Chain Services"
+description: "Automated bots that keep the protocol running: rebalancing, publishing, cranking, and managing liquidity"
+---
+
+# Off-Chain Services
+
+<Card title="✅ Ready to Dev" icon="check" color="#48bb78">
+  These are off-chain service specifications, not smart contracts. A developer can implement from this document.
+</Card>
+
+Six bots that automate protocol operations. All run on a single VPS, share one RPC connection, and interact with on-chain contracts via signed transactions. No bot can extract funds — each has minimal, scoped permissions.
+
+<Note>
+  **Not smart contracts.** No PDAs, no on-chain state, no program deployment. Each bot is a server-side process with a dedicated wallet. All wallets are registered on-chain with specific roles.
+</Note>
+
+## Service Overview
+
+| Bot | Contract | Instruction | Frequency | Wallet Role |
+|-----|----------|-------------|-----------|-------------|
+| [Pool Rebalancer](#pool-rebalancer) | Native DEX | `shift_liquidity` | Every 60s (if deviation > 1%) | `dex_config.rebalancer` |
+| [Merkle Publisher](#merkle-publisher) | Yield Distribution | `publish_root` | Every 10 min | `config.publish_authority` |
+| [Revenue Crank](#revenue-crank) | Ownership Token | `distribute_revenue` | Every hour (if conditions met) | Permissionless |
+| [Convert & Fund Crank](#convert--fund-crank) | Yield Distribution | `convert_to_rwt` | After each revenue distribution | Permissionless |
+| [Yield Claim Crank](#yield-claim-crank) | RWT Engine + DEX + OT | `claim_yield` + `compound_yield` + `claim_yd_for_treasury` | Every 30 min | Permissionless |
+| [Nexus Manager](#nexus-manager) | Native DEX | `nexus_deposit`, `nexus_swap`, `nexus_add/remove_liquidity` | Strategy-based | `dex_config.nexus_manager` + Permissionless (deposit) |
+
+---
+
+## Pool Rebalancer
+
+Repositions concentrated liquidity bins in DEX pools to track the RWT NAV price. Reads on-chain NAV from RWT Engine, calculates target bin, calls `shift_liquidity` when deviation exceeds threshold.
+
+### How It Works
+
+<Steps>
+  <Step title="Read NAV">
+    Query RWT Engine on-chain: `rwt_vault.nav_book_value`. This is the target price for RWT.
+  </Step>
+  <Step title="Read Pool State">
+    For each concentrated pool: query `pool_state.active_bin_id` and `bin_array`. Calculate current pool price from active bin: `price = (1 + bin_step_bps/10000) ^ active_bin_id`.
+  </Step>
+  <Step title="Check Deviation">
+    `deviation = abs(pool_price - nav_price) / nav_price`. If `deviation > REBALANCE_THRESHOLD` → rebalance needed.
+  </Step>
+  <Step title="Calculate NAV Bin">
+    Convert NAV price to bin ID:
+    ```
+    nav_bin = log(nav_price) / log(1 + bin_step_bps/10000)
+    ```
+  </Step>
+  <Step title="Execute Shift">
+    Call `native_dex::shift_liquidity(nav_bin, TARGET_BIN_COUNT)`. Bot wallet signs as rebalancer. On-chain, DEX computes target pyramid distribution and diff-rebalances:
+    - Asymmetric pyramid (2:1 bid/ask centered on NAV)
+    - Moves tokens from excess bins → deficit bins (no full collect)
+    - `active_bin_id` NOT changed — only swaps move price
+    - Liquidity always present — no gap during rebalance
+  </Step>
+</Steps>
+
+### Configuration
+
+| Parameter | Default | Description |
+|---|---|---|
+| `REBALANCE_THRESHOLD` | `0.01` (1%) | Min NAV deviation to trigger rebalance |
+| `TARGET_BIN_COUNT` | `40` | Number of bins to concentrate around NAV |
+| `CHECK_INTERVAL_SECS` | `60` | How often to check deviation (seconds) |
+
+### On-Chain Interaction
+
+| Action | Instruction | Accounts |
+|--------|-------------|----------|
+| Read NAV | — | `rwt_vault` (read) |
+| Read bins | — | `pool_state`, `bin_array` (read) |
+| Shift | `native_dex::shift_liquidity` | `rebalancer` (signer), `dex_config`, `pool_state` (mut), `bin_array` (mut) |
+
+### Permissions
+
+- **CAN:** call `shift_liquidity` on any concentrated pool
+- **CANNOT:** swap, add/remove liquidity, change config, pause pools
+- **If compromised:** can only shift bins (no fund extraction). Team replaces via `update_dex_config(rebalancer: new_wallet)`
+
+### Skip Conditions
+
+- Pool is paused (`pool_state.is_active == false`)
+- Pool has no liquidity (`reserve_a == 0 || reserve_b == 0`)
+- Deviation below threshold
+- Last rebalance < 30 seconds ago (debounce)
+
+---
+
+## Merkle Publisher
+
+Builds merkle trees of OT holder weights off-chain and publishes roots on-chain. This is the core of the yield distribution system — without published roots, holders cannot claim.
+
+### How It Works
+
+<Steps>
+  <Step title="Scan Holders">
+    For each OT project: call `getParsedProgramAccounts` to get all token accounts for the OT mint. Includes regular wallets, RWT Vault PDA (holds OT as backing), DEX pool PDAs (hold OT in reserves), and OT Treasury PDA. Filter to holders with ≥ $100 total protocol holdings (OT + RWT combined).
+  </Step>
+  <Step title="Calculate Weights">
+    For each eligible holder (including PDAs):
+    ```
+    cumulative_amount = distributor.total_funded * holder_ot_balance / total_eligible_supply
+    ```
+    Non-eligible holders' share → **ARL OtTreasury PDA** `["ot_treasury", arl_ot_mint]` as a leaf in the tree (protocol revenue). Note: RWT Vault PDA, DEX pool PDAs are regular OT holders in the tree — they claim via their respective CPI instructions (`claim_yield`, `compound_yield`). ARL Treasury claims via `claim_yd_for_treasury` on the ARL OT instance.
+  </Step>
+  <Step title="Build Tree">
+    Construct merkle tree. Leaf format: `sha256(claimant_pubkey_bytes || cumulative_amount_le_bytes)`.
+  </Step>
+  <Step title="Publish Root">
+    Call `yield_distribution::publish_root(merkle_root, max_total_claim)`. Server wallet signs as publish authority.
+  </Step>
+  <Step title="Store Proofs">
+    Save full tree and proofs to database/file (needed for holder claim UIs and crank bots).
+  </Step>
+</Steps>
+
+### Configuration
+
+| Parameter | Default | Description |
+|---|---|---|
+| `PUBLISH_INTERVAL_SECS` | `600` (10 min) | How often to rebuild and publish |
+| `MIN_HOLDING_USD` | `100` | Minimum holding to be eligible ($100) |
+| `PROOF_STORAGE` | — | Path or DB where proofs are stored for claim UI |
+
+### On-Chain Interaction
+
+| Action | Instruction | Accounts |
+|--------|-------------|----------|
+| Read holders | — | OT token accounts (read via RPC) |
+| Read distributor | — | `merkle_distributor` (read) |
+| Publish | `yield_distribution::publish_root` | `publish_authority` (signer), `config`, `distributor` (mut) |
+
+### Permissions
+
+- **CAN:** call `publish_root` on any distributor
+- **CANNOT:** fund, claim, close distributors, update config
+- **If compromised:** attacker can publish fraudulent roots → drain reward vault via fake claims. Team immediately replaces via `update_publish_authority`. All publishes visible in `RootPublished` events.
+
+<Warning>
+  **Highest trust bot.** A compromised publish authority can redirect yield to attacker wallets. Secure the keypair and monitor `RootPublished` events.
+</Warning>
+
+### Cost
+
+~$2.60/month per OT project (144 publish_root TXs/day × 30 days × ~$0.0006/TX).
+
+---
+
+## Revenue Crank
+
+Triggers OT revenue distribution when conditions are met. Checks each OT project's RevenueAccount balance and calls `distribute_revenue` if the balance is above minimum and cooldown has passed.
+
+### How It Works
+
+<Steps>
+  <Step title="Check Balance">
+    For each OT project: read RevenueAccount ATA balance. If `balance < min_distribution_amount` ($100), skip.
+  </Step>
+  <Step title="Check Cooldown">
+    Read `revenue_config.last_distribution_ts`. If `now - last_distribution_ts < 604,800` (7 days), skip.
+  </Step>
+  <Step title="Distribute">
+    Call `ownership_token::distribute_revenue`. Permissionless — any wallet can call.
+    1. **Protocol fee deducted first:** 0.25% (25 bps) of total balance → `areal_fee_destination` (Areal Finance USDC ATA)
+    2. **Remainder split** proportionally to configured destinations (default):
+       - 70% (7,000 bps) → YD Accumulator (USDC)
+       - 20% (2,000 bps) → OT Treasury
+       - 10% (1,000 bps) → Crank USDC ATA → Nexus via `nexus_deposit`
+    
+    Example: $1,000 revenue → $2.50 Areal fee → $997.50 remainder → $698.25 YD / $199.50 Treasury / $99.75 Nexus
+  </Step>
+</Steps>
+
+### Configuration
+
+| Parameter | Default | Description |
+|---|---|---|
+| `CHECK_INTERVAL_SECS` | `3600` (1 hour) | How often to check each OT project |
+| `OT_PROJECTS` | — | List of OT mint addresses to monitor |
+
+### On-Chain Interaction
+
+| Action | Instruction | Accounts |
+|--------|-------------|----------|
+| Read balance | — | RevenueAccount ATA (read) |
+| Read cooldown | — | `revenue_config` (read) |
+| Distribute | `ownership_token::distribute_revenue` | `crank` (signer), `ot_config`, `revenue_config` (mut), `revenue_ata` (mut), destination ATAs (mut) |
+
+### Permissions
+
+- **Permissionless** — no special wallet role needed. Any wallet can trigger distribution.
+- **If compromised:** no risk — crank only triggers distribution to pre-configured on-chain destinations. Cannot change destinations or extract funds.
+
+---
+
+## Convert & Fund Crank
+
+Converts accumulated USDC in YD Accumulator PDAs to RWT and deposits into distributor reward vaults. Should run immediately after each revenue distribution to minimize time between USDC arrival and RWT availability for claims.
+
+### How It Works
+
+<Steps>
+  <Step title="Check Accumulator">
+    For each OT project: read Accumulator USDC ATA balance. If 0, skip.
+  </Step>
+  <Step title="Convert">
+    Call `yield_distribution::convert_to_rwt(max_swap_amount)`. Atomic instruction that:
+    1. Swaps USDC → RWT on DEX (up to NAV price)
+    2. Mints remainder at NAV via RWT Engine
+    3. Deducts 0.25% protocol fee in RWT
+    4. Deposits net RWT into reward vault
+    5. Updates vesting state (locks previously vested, starts new vesting)
+  </Step>
+</Steps>
+
+### Configuration
+
+| Parameter | Default | Description |
+|---|---|---|
+| `CHECK_INTERVAL_SECS` | `300` (5 min) | How often to check accumulators |
+| `MAX_SWAP_RATIO` | `0.5` | Max fraction of USDC to swap on DEX (rest minted at NAV) |
+
+### On-Chain Interaction
+
+| Action | Instruction | Accounts |
+|--------|-------------|----------|
+| Read balance | — | Accumulator USDC ATA (read) |
+| Convert + fund | `yield_distribution::convert_to_rwt` | `crank` (signer), `config`, `distributor` (mut), `accumulator`, ATAs, DEX accounts, RWT Engine accounts |
+
+### Permissions
+
+- **Permissionless** — any wallet can call. Accumulator PDA signs all internal transfers.
+- **If compromised:** no risk — instruction only converts USDC already in Accumulator to RWT in reward vault. Cannot redirect funds.
+
+### Trigger
+
+Ideally triggered immediately after Revenue Crank distributes USDC to an Accumulator. Can poll on interval as fallback.
+
+---
+
+## Yield Claim Crank
+
+Claims RWT yield from YD merkle streams on behalf of three types of on-chain PDAs:
+
+1. **RWT Vault PDA** — holds OT positions, earns yield as OT holder. Claimed RWT split: 70% NAV / 15% Nexus / 15% ARL Treasury.
+2. **DEX Pool PDAs** — OT/RWT pools hold OT in reserves, earning yield. Claimed RWT auto-compounds into pool reserves, benefiting all LP holders.
+3. **OT Treasury PDAs** — non-eligible holders' (< $100) yield share is allocated to OT Treasury PDA in the merkle tree. Claimed RWT stays in treasury.
+
+### How It Works
+
+<Steps>
+  <Step title="Get Proofs">
+    Read the latest merkle proofs from the Merkle Publisher's proof storage for:
+    - RWT Vault PDA (one per protocol)
+    - Each OT/RWT pool PDA that holds OT (one per pool)
+  </Step>
+  <Step title="Claim for RWT Vault">
+    Call `rwt_engine::claim_yield(cumulative_amount, proof)`. Permissionless instruction that:
+    1. CPIs to `yield_distribution::claim` with vault PDA as claimant
+    2. Splits claimed RWT: 70% stays in vault (NAV growth), 15% → crank wallet, 15% → ARL Treasury
+    3. Updates `total_invested_capital` and recalculates NAV
+    4. Crank then calls `native_dex::nexus_deposit` to route 15% RWT into Nexus with principal tracking
+  </Step>
+  <Step title="Compound for DEX Pools">
+    For each OT/RWT pool: call `native_dex::compound_yield(cumulative_amount, proof)`. Permissionless instruction that:
+    1. CPIs to `yield_distribution::claim` with pool PDA as claimant
+    2. Claimed RWT added directly to pool reserves (auto-compound)
+    3. All LP holders benefit proportionally — no individual claim needed
+  </Step>
+  <Step title="Claim for ARL Treasury (non-eligible yield)">
+    Call `ownership_token::claim_yd_for_treasury(cumulative_amount, proof)` on the **ARL OT instance**. This claims non-eligible holders' yield from ALL OT projects as protocol revenue:
+    1. CPIs to `yield_distribution::claim` with ARL OtTreasury PDA as claimant
+    2. Claimed RWT arrives in ARL Treasury's RWT ATA
+    3. RWT is protocol revenue — spendable by ARL Futarchy governance via `spend_treasury`
+
+    Called once per distributor (one per OT project) — each distributor has a separate merkle tree with ARL Treasury as a leaf for that project's non-eligible share.
+  </Step>
+</Steps>
+
+### Configuration
+
+| Parameter | Default | Description |
+|---|---|---|
+| `CLAIM_INTERVAL_SECS` | `1800` (30 min) | How often to attempt claims |
+| `PROOF_SOURCE` | — | Merkle Publisher's proof storage (DB or API) |
+| `OT_RWT_POOLS` | — | List of OT/RWT pool addresses to compound |
+
+### On-Chain Interaction
+
+| Action | Instruction | Accounts |
+|--------|-------------|----------|
+| Read proofs | — | Off-chain: Merkle Publisher proof storage |
+| Claim for vault | `rwt_engine::claim_yield` | `crank` (signer, mut), `rwt_vault` (mut), `dist_config`, RWT ATAs, YD CPI accounts |
+| Compound for pool | `native_dex::compound_yield` | `crank` (signer, mut), `pool_state` (mut), `target_vault` (mut), YD CPI accounts |
+| Claim for treasury | `ownership_token::claim_yd_for_treasury` | `crank` (signer, mut), `ot_treasury`, `treasury_rwt_ata`, YD CPI accounts |
+| Route to Nexus | `native_dex::nexus_deposit` | `crank` (signer), `nexus` (mut), token accounts |
+
+### Permissions
+
+- **Permissionless** — any wallet can call all three instructions. PDAs sign their own CPI claims internally.
+- **If compromised:** no risk — claimed RWT goes to pre-configured on-chain destinations. Cannot change split ratios, destinations, or redirect pool compound.
+
+### Dependency
+
+Requires Merkle Publisher to have published a root that includes RWT Vault PDA and pool PDAs as claimants. If no valid proof exists, claim will fail with `InvalidProof`.
+
+---
+
+## Nexus Manager
+
+Manages the Liquidity Nexus PDA's positions in DEX pools. The Nexus holds protocol-owned liquidity (funded by 10% of OT revenue + 15% of RWT yield). The manager bot decides when and where to deploy this capital. **Principal is permanently locked** — only LP profits (swap fees, auto-compound) can be withdrawn to Areal Treasury by authority.
+
+### How It Works
+
+<Steps>
+  <Step title="Deposit Capital">
+    After OT `distribute_revenue` sends 10% USDC to crank, or after RWT `claim_yield` sends 15% RWT to crank — crank calls `native_dex::nexus_deposit` to route tokens into Nexus with principal tracking. This is the only way capital enters Nexus.
+  </Step>
+  <Step title="Monitor Nexus Balance">
+    Read Liquidity Nexus RWT and USDC balances. Check for undeployed capital.
+  </Step>
+  <Step title="Evaluate Pools">
+    Analyze DEX pools: TVL, volume, spread, utilization. Identify pools that need more liquidity.
+  </Step>
+  <Step title="Deploy Liquidity">
+    Call `native_dex::nexus_add_liquidity` to LP into target pools. Can also call `nexus_swap` to rebalance between tokens before adding.
+  </Step>
+  <Step title="Rebalance">
+    Periodically rebalance positions: `nexus_remove_liquidity` from underperforming pools, `nexus_add_liquidity` to better pools.
+  </Step>
+  <Step title="Withdraw Profits">
+    Authority (Team Multisig) periodically calls `nexus_withdraw_profits` to send LP profits to Areal Treasury. Only amount above principal is withdrawable. Manager must `nexus_remove_liquidity` first to bring tokens back to ATAs.
+  </Step>
+</Steps>
+
+### Configuration
+
+| Parameter | Default | Description |
+|---|---|---|
+| `CHECK_INTERVAL_SECS` | `300` (5 min) | How often to evaluate positions |
+| `MIN_DEPLOY_AMOUNT` | `1,000,000` ($1 RWT) | Minimum amount to deploy in one operation |
+| `MAX_POOL_CONCENTRATION` | `0.5` (50%) | Max fraction of Nexus capital in one pool |
+
+### On-Chain Interaction
+
+| Action | Instruction | Accounts |
+|--------|-------------|----------|
+| Deposit | `native_dex::nexus_deposit` | `crank` (signer), `nexus` (mut), token accounts |
+| Read balance | — | Nexus ATAs (read) |
+| Swap | `native_dex::nexus_swap` | `nexus_manager` (signer), `dex_config`, `nexus`, pool accounts |
+| Add LP | `native_dex::nexus_add_liquidity` | `nexus_manager` (signer), `dex_config`, `nexus`, pool accounts |
+| Remove LP | `native_dex::nexus_remove_liquidity` | `nexus_manager` (signer), `dex_config`, `nexus`, pool accounts |
+| Withdraw profits | `native_dex::nexus_withdraw_profits` | `authority` (signer), `dex_config`, `nexus` (mut), token accounts |
+
+### Permissions
+
+- **CAN:** swap, add/remove liquidity using Nexus PDA's funds
+- **CANNOT:** withdraw principal, change DEX config, pause pools
+- **If compromised:** attacker can make bad trades with Nexus funds (LP into bad pools, swap at bad prices), but **cannot extract principal** — protected on-chain (`ata_balance - withdrawal >= principal`). Team replaces via `update_nexus_manager`.
+
+<Warning>
+  **Manager trust:** Nexus Manager has discretion over ~25% of protocol capital flow (10% OT revenue + 15% RWT yield). Monitor positions and P&L. In V2, this could become an AI agent with automated strategy.
+</Warning>
+
+---
+
+## Shared Infrastructure
+
+All six bots run on a single VPS with shared configuration:
+
+### Architecture
+
+```
+┌──────────────────────────────────────────────────────┐
+│                    VPS ($10/month)                    │
+│                                                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────┐ │
+│  │   Pool       │  │   Merkle     │  │  Revenue   │ │
+│  │  Rebalancer  │  │  Publisher   │  │   Crank    │ │
+│  │  (60s loop)  │  │  (10min loop)│  │  (1h loop) │ │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬─────┘ │
+│         │                 │                 │        │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────┐ │
+│  │  Convert &   │  │  Yield Claim │  │   Nexus    │ │
+│  │  Fund Crank  │  │    Crank     │  │  Manager   │ │
+│  │  (5min loop) │  │  (30min loop)│  │  (5min)    │ │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬─────┘ │
+│         │                 │                 │        │
+│         └────────────┬────┴────────┬────────┘        │
+│                      ▼             ▼                  │
+│              ┌──────────────┐ ┌──────────┐           │
+│              │  Shared RPC  │ │ Wallets  │           │
+│              │  (Helius)    │ │  (.keys) │           │
+│              └──────┬───────┘ └────┬─────┘           │
+└─────────────────────┼──────────────┼─────────────────┘
+                      │              │
+                      ▼              ▼
+              ┌─────────────────────────┐
+              │    Solana Blockchain    │
+              └─────────────────────────┘
+```
+
+### Wallets
+
+| Bot | Wallet Type | Registered As |
+|-----|-------------|---------------|
+| Pool Rebalancer | Dedicated keypair | `dex_config.rebalancer` |
+| Merkle Publisher | Dedicated keypair | `config.publish_authority` |
+| Revenue Crank | Shared crank wallet | Permissionless (no registration) |
+| Convert & Fund | Shared crank wallet | Permissionless (no registration) |
+| Yield Claim | Shared crank wallet | Permissionless (no registration) |
+| Nexus Manager | Dedicated keypair | `dex_config.nexus_manager` |
+
+Three permissionless bots can share one wallet. Three privileged bots need dedicated keypairs.
+
+### Environment Variables
+
+| Variable | Description |
+|---|---|
+| `RPC_URL` | Solana RPC endpoint (Helius free tier sufficient) |
+| `REBALANCER_KEYPAIR` | Pool Rebalancer wallet keypair |
+| `PUBLISHER_KEYPAIR` | Merkle Publisher wallet keypair |
+| `NEXUS_MANAGER_KEYPAIR` | Nexus Manager wallet keypair |
+| `CRANK_KEYPAIR` | Shared wallet for permissionless operations |
+| `RWT_VAULT_ADDRESS` | RWT Engine vault PDA |
+| `CONCENTRATED_POOLS` | List of concentrated pool addresses (restart required on change) |
+| `OT_PROJECTS` | List of `{ot_mint, distributor, accumulator, revenue_config}` per project (restart required on change) |
+
+### Cost Estimate
+
+| Component | Cost/month |
+|---|---|
+| VPS | $10 |
+| Solana TX fees (~500 TXs total) | ~$0.30 |
+| RPC (Helius free tier) | $0 |
+| **Total** | **~$10/month** |
+
+### Operational Requirements
+
+| Requirement | Detail |
+|---|---|
+| **Infrastructure** | VPS, always-on, systemd or Docker |
+| **SOL balance** | Each wallet: ~0.1 SOL for TX fees |
+| **Monitoring** | Log every TX with bot name, instruction, result |
+| **Alerting** | Alert if any bot fails for > 15 minutes |
+| **Key management** | Keypairs encrypted at rest, never committed to git |
+| **Restart policy** | Auto-restart on crash, exponential backoff |
+
+### Event-Driven Optimizations
+
+Instead of purely interval-based polling, bots can subscribe to Solana events for faster reactions:
+
+| Event | Triggers |
+|---|---|
+| `CapitalAdjusted` (RWT Engine) | Pool Rebalancer checks immediately (NAV changed) |
+| Revenue SPL transfer to RevenueAccount | Revenue Crank checks immediately |
+| `StreamConverted` (YD) | Merkle Publisher publishes new root (total_funded changed) |
+| `RootPublished` (YD) | Yield Claim Crank claims immediately (new proof available) |
+
+### Deployment Order
+
+1. Deploy all smart contracts
+2. Bootstrap: `initialize_*` all contracts, set authority, register wallets
+3. Register bot wallets on-chain:
+   - `update_dex_config(rebalancer: rebalancer_pubkey)` — Pool Rebalancer
+   - `update_dex_config(nexus_manager: manager_pubkey)` — Nexus Manager
+   - Publish authority set at `initialize_config` — Merkle Publisher
+4. Fund bot wallets with ~0.1 SOL each
+5. Start all services, verify logs
+6. Transfer authorities to Team Multisig
+
+### Trust Summary
+
+| Bot | Trust Level | If Compromised |
+|-----|-------------|----------------|
+| Pool Rebalancer | Low | Can shift bins to bad positions. No fund extraction. Replace wallet. |
+| Merkle Publisher | **High** | Can publish fake roots → drain reward vaults. Replace immediately + monitor. |
+| Revenue Crank | None | Permissionless. Can only trigger to preset destinations. |
+| Convert & Fund | None | Permissionless. Converts to preset vault. |
+| Yield Claim | None | Permissionless. Claims to preset destinations. |
+| Nexus Manager | Medium | Can make bad trades with Nexus funds. Cannot extract. Replace wallet. |

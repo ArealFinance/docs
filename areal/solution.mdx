@@ -1,0 +1,101 @@
+---
+title: Solution
+description: How Areal solves liquidity fragmentation and governance opacity in RWA
+---
+
+Areal addresses both core problems — fragmented liquidity and opaque governance — at the protocol level, through three interconnected mechanisms.
+
+<CardGroup cols={3}>
+  <Card title="Real World Token" icon="coins" color="#a56eff" href="/economics/rwt-real-world-token">
+    An accumulating base token that provides unified liquidity for every asset
+  </Card>
+  <Card title="Cash Stream Distribution" icon="arrow-progress" color="#10b981" href="/architecture/yield-and-reward-distribution">
+    Community-governed distribution of real yield from every project
+  </Card>
+  <Card title="Futarchy Governance" icon="scale-balanced" color="#3b82f6" href="/architecture/governance-and-futarchy">
+    Market-driven decisions instead of opaque committee voting
+  </Card>
+</CardGroup>
+
+---
+
+## RWT — Utility Liquidity Token
+
+**RWT (Real World Token)** is the protocol's utility token designed to solve liquidity fragmentation, aggregate yield, support Ownership Token projects, and form a powerful ecosystem of RWA-backed products.
+
+<Note>
+  Areal has two core tokens with distinct roles: **ARL** is the governance token that controls protocol decisions through futarchy, and **RWT** is the utility liquidity token that powers the economic layer.
+</Note>
+
+RWT works as an index-like aggregator with a built-in vault. The vault selectively acquires <Tooltip tip="Ownership Token — a tokenized representation of a specific real-world asset within the Areal protocol">Ownership Tokens</Tooltip> — not all of them, but those chosen by the community — forming a curated reserve of real-world assets. Dividend yield from these assets flows back into liquidity, driving RWT's value growth and sustaining the ecosystem.
+
+The vault composition policy — which Ownership Tokens to acquire, in what proportions, and when — is **determined by the community** through <Tooltip tip="ARL — the governance token of the Areal protocol used for futarchy-based decision making">ARL</Tooltip> governance.
+
+<Card title="Deep dive: Real World Token" icon="arrow-right" href="/economics/rwt-real-world-token">
+  Vault mechanics, master pools, permissionless minting, and the full liquidity architecture
+</Card>
+
+---
+
+## Cash Stream Distribution
+
+Every real-world asset generates income — rent, interest, revenue. In Areal, this yield is distributed through a **unified, community-governed model** tied directly to Ownership Tokens.
+
+Each project that emits an <Tooltip tip="Ownership Token — represents a specific real-world asset and participates in cash stream distribution">Ownership Token</Tooltip> generates **cash streams** from its underlying real-world activity. These cash streams are distributed to OT holders according to rules set by the community through governance.
+
+<CardGroup cols={2}>
+  <Card title="OT holders receive yield" icon="hand-holding-dollar">
+    Cash streams flow directly to Ownership Token holders — no intermediary staking or locking mechanisms required
+  </Card>
+  <Card title="Community decides allocation" icon="users">
+    How cash streams are distributed is determined by governance vote — the community shapes the economics of every project
+  </Card>
+</CardGroup>
+
+This model ensures that yield from real assets follows **one consistent, transparent mechanism** across the entire protocol — regardless of the asset type or project size.
+
+<Card title="Deep dive: Yield & Reward Distribution" icon="arrow-right" href="/architecture/yield-and-reward-distribution">
+  Cash stream mechanics and community-governed yield allocation
+</Card>
+
+---
+
+## Governance Through Futarchy
+
+Areal replaces opaque, committee-driven governance with **futarchy** — a model where decisions are evaluated by expected economic outcomes, not by subjective voting.
+
+<Tabs>
+  <Tab title="Why not traditional DAOs" icon="thumbs-down">
+    Most DAOs rely on token-weighted voting: more tokens = more influence. This leads to narrative-driven decisions, governance capture, and zero accountability for poor outcomes.
+
+    Futarchy replaces opinions with **market signals** — participants are incentivized to be correct, not persuasive.
+  </Tab>
+  <Tab title="How it works" icon="scale-balanced">
+    1. **Goals are defined** — the community sets measurable objectives
+    2. **Actions are evaluated by markets** — prediction markets aggregate expectations about which action best achieves the goal
+    3. **Best signal wins** — the action with the strongest market signal is executed
+
+    Every decision is tied to a verifiable outcome.
+  </Tab>
+  <Tab title="What the DAO controls" icon="sliders">
+    Through ARL governance, the community decides:
+
+    - which assets are onboarded
+    - how cash streams are distributed
+    - treasury allocation strategies
+    - liquidity mechanics and protocol fees
+    - all core economic parameters
+
+    No single team controls these decisions — they are defined collectively.
+  </Tab>
+</Tabs>
+
+<Card title="Deep dive: Governance & Futarchy" icon="arrow-right" href="/architecture/governance-and-futarchy">
+  Futarchy mechanics, prediction markets, and the governance loop
+</Card>
+
+---
+
+<Info>
+  **These three mechanisms form a closed loop:** RWT provides unified liquidity for every asset → cash streams from projects flow to OT holders through community-governed rules → futarchy ensures all decisions are driven by outcomes, not opinions. Each layer reinforces the others.
+</Info>

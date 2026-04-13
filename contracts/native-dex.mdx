@@ -1,0 +1,1253 @@
+---
+title: "Native DEX"
+description: "Permissioned AMM with standard curve and concentrated liquidity pools"
+---
+
+# Native DEX
+
+<Card title="✅ Ready to Dev" icon="check" color="#48bb78">
+  This contract specification has passed business logic audit, technical review, cross-program integration check (OT + RWT + YD), fee architecture verification, and crank flow analysis. A developer can implement from this document.
+</Card>
+
+Purpose-built AMM for trading OT and RWT tokens. Two pool types: constant-product (StandardCurve) and bin-based concentrated liquidity (Concentrated). Pool creation is whitelisted — only approved creators can launch pools. All swap fees split between LP holders (claimable from per-pool fee vault) and Areal Finance (protocol fee in RWT). Fees are charged **on top of the swap** in RWT to preserve pool capitalization. OT token pairs charge an additional 0.5% fee that goes to the OT project treasury (controlled by Futarchy). Pools holding OT tokens also earn RWT yield via Yield Distribution — auto-compounded into reserves via `compound_yield`.
+
+<Warning>
+  **Upgradeable contract.** Program upgrade authority = Team Multisig (Squads). Separate from config authority and pause authority.
+</Warning>
+
+## Key Concepts
+
+<CardGroup cols={3}>
+  <Card title="22 Instructions" icon="code">
+    Config, create pools, add/remove/zap liquidity, swap, shift, compound, nexus (init, deposit, withdraw profits, swap, add/remove LP, update manager), pause, authority
+  </Card>
+  <Card title="6 State Accounts" icon="database">
+    DexConfig, PoolState, PoolCreators, LpPosition, BinArray, LiquidityNexus
+  </Card>
+  <Card title="6 PDA Seeds" icon="key">
+    dex_config, pool_creators, pool, lp, bins, liquidity_nexus
+  </Card>
+</CardGroup>
+
+## Two Pool Types
+
+<CardGroup cols={2}>
+  <Card title="StandardCurve" icon="chart-line">
+    **Constant product: x × y = k**
+
+    - Simple, proven AMM math
+    - Continuous pricing: `price = reserve_b / reserve_a`
+    - LP shares: `sqrt(a × b)` on first add, proportional after
+    - Good for: general trading, deep liquidity
+  </Card>
+  <Card title="Concentrated" icon="chart-bar">
+    **Bin-based liquidity (order book model)**
+
+    - 70 bins per pool, configurable step size (default 0.1%)
+    - Bins below active = USDC only (bid). Bins above = RWT only (ask). Active bin = both.
+    - Users add/remove liquidity same as StandardCurve — bins managed by Rebalancer
+    - Swap walks through bins consuming liquidity, shifting active bin
+    - `shift_liquidity` (Rebalancer only) repositions range around NAV
+    - Good for: tight ranges around NAV, capital efficiency
+  </Card>
+</CardGroup>
+
+## Fee Architecture
+
+<Steps>
+  <Step title="Base Fee">
+    Applied to every swap. Default: 50 bps (0.5%). Max: 1,000 bps (10%). Set per pool at creation, copied from DexConfig.
+  </Step>
+  <Step title="Fee Split">
+    - **LP Fee** (default 50% of base) → in **RWT**, transferred to Yield Distribution reward vault. LP holders claim rewards via merkle proof — same flow as OT yield claims.
+    - **Protocol Fee** (default 50% of base) → always in **RWT**, transferred to `areal_fee_destination` (Areal Finance RWT ATA).
+  </Step>
+  <Step title="Fees On Top (No Pool Dilution)">
+    All fees are charged **on top of the swap amount** in RWT. Pool reserves are never reduced by fees — total pool capitalization stays intact. If user sells RWT: user pays `amount_in + fees` (extra RWT on top). If user buys RWT: user receives `amount_out` in full, fees are taken separately from the RWT output gross before delivery.
+  </Step>
+  <Step title="Always RWT">
+    Every pool pairs with RWT (e.g., OT/RWT, RWT/USDC). All fees (LP, protocol, OT treasury) are always taken in RWT. No fee token designation needed, no conversion logic.
+  </Step>
+  <Step title="LP Fee → Fee Vault (Instant Claim)">
+    LP fees are collected in a **per-pool fee vault** (RWT token account owned by pool PDA). LP holders claim their proportional share at any time via `claim_lp_fees` — no vesting, no merkle proof, no off-chain server. Claimable amount = `fee_vault_balance × lp_shares / total_shares - already_claimed`.
+  </Step>
+  <Step title="OT Treasury Fee (OT pairs only)">
+    Pools paired with an OT token charge an **additional 50 bps (0.5%)** on every swap — sent entirely in RWT to the OT project's Treasury RWT ATA (controlled by Futarchy). Total effective fee for OT pairs: **100 bps (1%)**. Non-OT pools (e.g., RWT/USDC) are unaffected — standard 50 bps only. The OT treasury fee is calculated on the same gross amount as the base fee (no compounding). Stored as `OT_TREASURY_FEE_BPS = 50` program constant — changeable only via program upgrade.
+  </Step>
+</Steps>
+
+## Six Roles
+
+<CardGroup cols={3}>
+  <Card title="🏛️ Authority" icon="landmark">
+    **Team Multisig** (after bootstrap)
+
+    - `update_dex_config` — fees, destinations, rebalancer
+    - `update_pool_creators` — whitelist management
+    - `propose_authority_transfer`
+  </Card>
+  <Card title="🛑 Pause Authority" icon="shield">
+    **Team Multisig** (Squads)
+
+    - `pause_pool` / `unpause_pool`
+
+    Immutable — set at init, changed only via program upgrade.
+  </Card>
+  <Card title="⚖️ Rebalancer" icon="scale-balanced">
+    **Pool Rebalancer wallet** (dedicated bot keypair)
+
+    - `shift_liquidity` — manage bin concentration
+
+    Set at init, changeable by authority via `update_dex_config`.
+  </Card>
+</CardGroup>
+
+<CardGroup cols={3}>
+  <Card title="💧 Nexus Manager" icon="droplet">
+    **Bot wallet** (Areal Finance LP bot)
+
+    - `nexus_swap` / `nexus_add_liquidity` / `nexus_remove_liquidity`
+
+    Manages Areal Finance LP positions. Changeable by authority via `update_nexus_manager`.
+  </Card>
+  <Card title="🏗️ Pool Creators" icon="hammer">
+    **Whitelisted wallets** (max 10)
+
+    - `create_pool` / `create_concentrated_pool`
+
+    Closed platform — only approved creators. Managed by authority.
+  </Card>
+  <Card title="🌐 Permissionless" icon="globe">
+    **Any wallet**
+
+    - `swap` — trade tokens
+    - `add_liquidity` / `zap_liquidity` / `remove_liquidity`
+    - `compound_yield` — auto-compound RWT
+  </Card>
+</CardGroup>
+
+## Instructions
+
+### Initialization
+
+<AccordionGroup>
+  <Accordion title="initialize_dex">
+    Create global DEX configuration and pool creators whitelist. Called once.
+
+    **Parameters:**
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `areal_fee_destination` | `Pubkey` | Areal Finance **RWT ATA** — receives protocol fees in RWT (static, immutable) |
+    | `pause_authority` | `Pubkey` | Emergency pause signer (Team Multisig, immutable) |
+    | `rebalancer` | `Pubkey` | Pool Rebalancer wallet — can call shift_liquidity |
+
+    **Caller:** Deployer (one-time)
+
+    **Accounts:**
+    - `authority` (signer, mut) — deployer, pays for creation
+    - `dex_config` (init) — PDA seed: `["dex_config"]`
+    - `pool_creators` (init) — PDA seed: `["pool_creators"]`
+    - `system_program`
+
+    **Creates:**
+    - `DexConfig` PDA — global config singleton
+    - `PoolCreators` PDA — whitelist (deployer auto-added as first creator)
+
+    **Initial state:**
+    - `base_fee_bps = 50` (0.5%)
+    - `lp_fee_share_bps = 5,000` (50% of fee to LP)
+    - `is_active = true`
+  </Accordion>
+</AccordionGroup>
+
+### Pool Creation
+
+<AccordionGroup>
+  <Accordion title="create_pool">
+    Create a StandardCurve (constant product) pool for a token pair. No parameters — pool configuration (fee, type) is derived from DexConfig and accounts.
+
+    **Caller:** Whitelisted pool creator
+
+    **Accounts:**
+    - `creator` (signer, mut) — must be in pool_creators whitelist, pays for account creation
+    - `dex_config` — validates is_active, provides base_fee_bps and lp_fee_share_bps
+    - `pool_creators` — validates `creator` is in whitelist
+    - `pool_state` (init) — PDA seed: `["pool", token_a_mint, token_b_mint]`
+    - `token_a_mint` — constraint: `key < token_b_mint.key` (canonical order enforced)
+    - `token_b_mint` — constraint: `key > token_a_mint.key`
+    - `vault_a` (init) — SPL token account for A, authority = pool_state PDA (keypair, not ATA)
+    - `vault_b` (init) — SPL token account for B, authority = pool_state PDA (keypair, not ATA)
+    - `ot_treasury` (optional) — OT Treasury PDA: `["ot_treasury", ot_mint]`. Required when creating an OT pair. Must be owned by `OT_PROGRAM_ID`.
+    - `ot_treasury_rwt_ata` (optional) — RWT ATA owned by `ot_treasury` PDA. Required when `ot_treasury` is provided.
+    - `token_program`, `system_program`
+
+    **Validation:**
+    - `token_a_mint ≠ token_b_mint`
+    - One of `token_a_mint` or `token_b_mint` must be `RWT_MINT` (all pools pair with RWT — required for protocol fee in RWT)
+    - `token_a_mint < token_b_mint` (lexicographic order — canonical PDA derivation, prevents duplicate pools with reversed order)
+    - Creator must be whitelisted
+    - If `ot_treasury` provided: verify PDA derivation `["ot_treasury", ot_mint]` where `ot_mint` is the non-RWT mint. Verify account owner is `OT_PROGRAM_ID`. Verify `ot_treasury_rwt_ata` is the associated token address for (`ot_treasury`, `RWT_MINT`). Fails with `InvalidOtTreasuryDestination` if any check fails.
+
+    **Initial state:** Reserves = 0, total_lp_shares = 0, fee_bps copied from DexConfig. `ot_treasury_fee_destination` = `ot_treasury_rwt_ata.key()` if OT treasury accounts provided, otherwise `None`.
+
+    <Note>
+      Per-pool `fee_bps` is copied from DexConfig at creation and **immutable** after that. Changing `base_fee_bps` in DexConfig only affects future pools. To change an existing pool's fee, a program upgrade is required. Similarly, `ot_treasury_fee_destination` is set at creation and immutable.
+    </Note>
+  </Accordion>
+
+  <Accordion title="create_concentrated_pool">
+    Create a Concentrated (bin-based) pool with BinArray.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `bin_step_bps` | `u16` | Price step between bins (default: 10 = 0.1%) |
+    | `initial_active_bin` | `i32` | Starting active bin ID |
+
+    **Caller:** Whitelisted pool creator
+
+    **Accounts:** Same as `create_pool` plus:
+    - `bin_array` (init) — PDA seed: `["bins", pool_state]`
+
+    **Validation:**
+    - `bin_step_bps > 0`
+    - One of `token_a_mint` or `token_b_mint` must be `RWT_MINT`
+    - `token_a_mint < token_b_mint` (canonical order)
+    - Creator must be whitelisted
+    - OT treasury validation same as `create_pool` (optional accounts, same derivation checks)
+
+    **Initial state:** 70 empty bins centered around initial_active_bin. Only `target_bin_count` bins (default 40) are actively used by the Rebalancer — remaining bins serve as buffer for range shifts when NAV changes.
+  </Accordion>
+</AccordionGroup>
+
+### Liquidity
+
+<Note>
+  **Unified LP interface.** Users interact with `add_liquidity` and `remove_liquidity` regardless of pool type. For Concentrated pools, the protocol (Pool Rebalancer) manages bin concentration internally via `shift_liquidity`. Users are isolated from bin management — they simply deposit tokens and receive proportional shares.
+</Note>
+
+<AccordionGroup>
+  <Accordion title="add_liquidity">
+    Add liquidity to any pool (StandardCurve or Concentrated). Receive LP shares proportional to deposit. For Concentrated pools, tokens go to vaults and the Rebalancer distributes across bins separately.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount_a` | `u64` | Token A amount |
+    | `amount_b` | `u64` | Token B amount |
+
+    **Caller:** Permissionless
+
+    **Accounts:**
+    - `provider` (signer) — owns token accounts
+    - `payer` (signer, mut) — pays rent for LpPosition init
+    - `pool_state` (mut) — updates reserves, lp_shares
+    - `lp_position` (init_if_needed) — PDA seed: `["lp", pool_state, provider]`
+    - `provider_token_a` (mut) — constraint: `owner == provider`, `mint == pool.token_a_mint`
+    - `provider_token_b` (mut) — constraint: `owner == provider`, `mint == pool.token_b_mint`
+    - `vault_a` (mut), `vault_b` (mut) — pool vaults
+    - `bin_array` (mut, optional) — required for Concentrated pools (to distribute across bins)
+    - `token_program`, `system_program`
+
+    **Validation:**
+    - `amount_a > 0 && amount_b > 0` (both required; use `zap_liquidity` for single-token)
+    - Pool must be active
+
+    **Math (same for both pool types):**
+    - First add: `shares = sqrt(amount_a × amount_b)`, must be ≥ MIN_LIQUIDITY (1,000). Overflow guard: `amount_a * amount_b` must fit u128.
+    - Subsequent: `shares = min(amount_a × total_shares / reserve_a, amount_b × total_shares / reserve_b)`. The `min()` means excess tokens of one side are **not deposited** — only the proportional amount is used. Unused tokens remain in the user's wallet.
+
+    <Warning>
+      **Imbalanced deposits lose value.** If user deposits at a ratio that differs from pool ratio, they effectively receive shares based on the LESSER side. Use `zap_liquidity` for imbalanced amounts — it auto-swaps to match the pool ratio first. Off-chain UIs should calculate optimal amounts before calling `add_liquidity`.
+    </Warning>
+
+    **Effect:** Transfers tokens to vaults, mints LP shares, updates reserves. For Concentrated pools, new liquidity is **immediately distributed across current active bins** proportionally — no waiting for Rebalancer. Emits `LiquidityAdded`.
+
+    <Note>
+      **Concentrated pools — bin distribution on add:**
+      ```
+      // Distribute new tokens across active bin range proportionally
+      for each bin in [lower_active..upper_active]:
+        if bins_have_existing_liquidity:
+          // Proportional to existing weights
+          weight = bin.liquidity_a + bin.liquidity_b
+          share = weight / total_active_liquidity
+        else:
+          // First add: uniform distribution
+          share = 1 / active_bin_count
+        
+        if bin < active_bin_id:
+          bin.liquidity_b += amount_b * share  // USDC only (bid side)
+        elif bin > active_bin_id:
+          bin.liquidity_a += amount_a * share  // RWT only (ask side)
+        else:  // active bin
+          bin.liquidity_a += amount_a * share  // both tokens
+          bin.liquidity_b += amount_b * share
+      ```
+      The Rebalancer (`shift_liquidity`) only **shifts** the entire range when NAV changes — it does not handle new deposits. This ensures swaps always have access to all deposited liquidity.
+    </Note>
+  </Accordion>
+
+  <Accordion title="zap_liquidity">
+    Add liquidity with any token ratio — including a single token. Contract auto-swaps to match pool ratio, then adds both sides. Works for both StandardCurve and Concentrated pools. Atomic — no risk of price change between swap and add.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount_a` | `u64` | Token A amount (can be 0) |
+    | `amount_b` | `u64` | Token B amount (can be 0) |
+    | `min_shares` | `u128` | Minimum LP shares to receive (slippage protection) |
+
+    **Caller:** Permissionless
+
+    **Accounts:**
+    - `provider` (signer) — owns token accounts
+    - `payer` (signer, mut) — pays rent for LpPosition init
+    - `pool_state` (mut) — must be active
+    - `dex_config` — for fee calculation
+    - `lp_position` (init_if_needed) — PDA seed: `["lp", pool_state, provider]`
+    - `provider_token_a` (mut) — constraint: `owner == provider`, `mint == pool.token_a_mint`
+    - `provider_token_b` (mut) — constraint: `owner == provider`, `mint == pool.token_b_mint`
+    - `vault_a` (mut), `vault_b` (mut) — pool vaults
+    - `areal_fee_account` (mut) — receives protocol fee from internal swap
+    - `ot_treasury_fee_account` (mut, optional) — receives OT treasury fee from internal swap (required if OT pair)
+    - `bin_array` (mut, optional) — required for Concentrated pools
+    - `token_program`, `system_program`
+
+    **Validation:**
+    - `amount_a > 0 || amount_b > 0` (at least one token)
+    - Pool must be active
+
+    **Logic:**
+    1. Read current pool ratio. **If pool is empty** (reserves = 0): skip swap, treat as regular `add_liquidity` with both amounts as-is. Otherwise: `target_ratio = reserve_a / reserve_b`
+    2. Calculate how much to swap to match ratio:
+       ```
+       If amount_a / amount_b > target_ratio:
+         // Too much A — swap excess A → B
+         excess_a = amount_a - (amount_b * reserve_a / reserve_b)
+         swap_amount = excess_a / 2  (swap half of excess)
+         Internal swap: A → B (same fee math as regular swap)
+       Else:
+         // Too much B — swap excess B → A
+         excess_b = amount_b - (amount_a * reserve_b / reserve_a)
+         swap_amount = excess_b / 2
+         Internal swap: B → A
+       ```
+    3. After internal swap: pool ratio changed, recalculate optimal add amounts
+    4. Add liquidity with balanced amounts (same math as `add_liquidity`)
+    5. `shares ≥ min_shares` (slippage check)
+    6. Emit `ZapLiquidityExecuted`
+
+    <Note>
+      **Single-token zap:** If `amount_a = 0`, the entire `amount_b` is split — half swapped to token A, half kept as token B. Same in reverse. This is the simplest UX: "deposit USDC, get LP shares."
+    </Note>
+
+    <Note>
+      Internal swap incurs the same fees as a regular swap (LP fee → YD reward vault, protocol fee → Areal Finance, OT treasury fee → OT Treasury for OT pairs). This is by design — zap should not be a fee-free backdoor.
+    </Note>
+  </Accordion>
+
+  <Accordion title="remove_liquidity">
+    Remove liquidity from any pool. Burn LP shares, receive proportional tokens from total reserves.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `shares_to_burn` | `u128` | LP shares to redeem |
+
+    **Caller:** LP provider (must own the position)
+
+    **Accounts:**
+    - `provider` (signer) — must match `lp_position.owner`
+    - `pool_state` (mut)
+    - `lp_position` (mut) — constraint: `owner == provider`, `pool == pool_state`
+    - `provider_token_a` (mut), `provider_token_b` (mut)
+    - `vault_a` (mut), `vault_b` (mut)
+    - `token_program`
+
+    **Math (same for both pool types):**
+    ```
+    amount_a = shares_to_burn * reserve_a / total_lp_shares
+    amount_b = shares_to_burn * reserve_b / total_lp_shares
+    ```
+
+    **Validation:**
+    - `shares_to_burn ≤ lp_position.shares`
+    - Works even when pool is paused (LP can always exit)
+
+    **Effect:** Pool PDA signs vault transfers. If `lp_position.shares == 0` after burn, the LpPosition account is closed and rent returned to provider. Emits `LiquidityRemoved`.
+  </Accordion>
+
+  <Accordion title="shift_liquidity">
+    Shift the entire concentrated bin range to a new position (e.g., when NAV changes). **Rebalancer only** — users cannot call this. No tokens enter/leave vaults — internal bin redistribution only. Does NOT handle new deposits — `add_liquidity` distributes to bins immediately.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `nav_bin` | `i32` | Target NAV bin ID (center of new range). **Calculated off-chain** by the Rebalancer bot from `rwt_vault.nav_book_value` via RPC: `nav_bin = log(nav_price) / log(1 + bin_step_bps/10000)` |
+    | `target_bin_count` | `u16` | Total bins in range (split around nav_bin) |
+
+    **Caller:** Rebalancer only (must match `dex_config.rebalancer`)
+
+    **Accounts:**
+    - `rebalancer` (signer) — must match `dex_config.rebalancer`
+    - `dex_config` — for rebalancer validation
+    - `pool_state` (mut) — must be Concentrated type
+    - `bin_array` (mut)
+
+    **Validation:**
+    - Pool must be Concentrated type
+    - `target_bin_count > 0`
+    - `target_bin_count ≤ MAX_BINS` (70)
+    - Computed range `[nav_bin - count/2, nav_bin + count/2]` within BinArray bounds
+    - New range must differ from current range (prevents no-op rebalancing that wastes compute)
+
+    **Logic (diff-based, no full collect):**
+    1. **Compute targets:** For each bin in range, calculate target liquidity using pyramid formula (asymmetric 2:1, centered on nav_bin).
+       - Bid side bins (below nav_bin): **USDC only**, pyramid weighted
+         `target_usdc(bin) = total_pool_usdc * 2/3 * weight(bin) / total_bid_weight`
+         `weight(bin) = bin - lower + 1` (closer to NAV = more)
+       - `nav_bin`: **both RWT + USDC** (peak of pyramid)
+       - Ask side bins (above nav_bin): **RWT only**, pyramid weighted
+         `target_rwt(bin) = total_pool_rwt * 1/3 * weight(bin) / total_ask_weight`
+         `weight(bin) = upper - bin + 1` (closer to NAV = more)
+    2. **Compute deltas and rebalance:**
+       ```
+       lower = nav_bin - target_bin_count / 2
+       upper = nav_bin + target_bin_count / 2
+       total_bid_weight = sum(bin - lower + 1 for bin in [lower..nav_bin])
+       total_ask_weight = sum(upper - bin + 1 for bin in [nav_bin..upper])
+
+       for each bin in [0..MAX_BINS]:
+         if bin < lower or bin > upper:
+           // Drain bins outside new range
+           surplus_usdc += bin.liquidity_b;  bin.liquidity_b = 0
+           surplus_rwt  += bin.liquidity_a;  bin.liquidity_a = 0
+         elif bin < nav_bin:
+           // Bid side: USDC only
+           target = total_pool_usdc * 2/3 * (bin - lower + 1) / total_bid_weight
+           delta = target - bin.liquidity_b  // i128
+           if delta > 0: deficit_usdc += delta
+           else: surplus_usdc += abs(delta)
+         elif bin > nav_bin:
+           // Ask side: RWT only
+           target = total_pool_rwt * 1/3 * (upper - bin + 1) / total_ask_weight
+           delta = target - bin.liquidity_a
+           if delta > 0: deficit_rwt += delta
+           else: surplus_rwt += abs(delta)
+         else:
+           // nav_bin: both tokens (peak of pyramid)
+
+       // Apply: distribute surplus to deficit bins proportionally
+       // surplus_usdc == deficit_usdc (conservation invariant)
+       // surplus_rwt  == deficit_rwt  (conservation invariant)
+       // Dust from integer division stays in reserves
+       ```
+
+    **`active_bin_id` is NOT changed** — only swaps move the active bin. Shift only repositions where liquidity sits.
+
+    **No liquidity gap:** Unlike "collect all → redistribute", bins always contain liquidity during shift. Tokens flow directly from excess bins to deficit bins.
+
+    **Pyramid distribution:**
+    ```
+                   bid (USDC 2x)    NAV    ask (RWT 1x)
+                              ██████│███
+                           █████████│██████
+                        ████████████│█████████
+                     ███████████████│████████████
+                  ██████████████████│██████████████
+               █████████████████████│████████████████
+            ████████████████████████│██████████████████
+         ███████████████████████████│████████████████████
+      ██████████████████████████████│██████████████████████
+    ────────────────────────────────┼────────────────────────
+    bin: lower ──── dешевле ─────── NAV ─────── дороже ──── upper
+    ```
+
+    **Why asymmetric:** Bid side (2x USDC) prioritizes buying RWT below NAV — this is the primary market use case. Ask side (1x RWT) provides buffer above NAV for zap_liquidity and small trades, but large buys above NAV go to `mint_rwt` instead (cheaper at NAV price).
+
+    **Effect:** No tokens enter/leave vaults. Dust from integer division stays in reserves. Emits `LiquidityShifted`.
+  </Accordion>
+</AccordionGroup>
+
+### Swap
+
+<AccordionGroup>
+  <Accordion title="swap">
+    Swap tokens through any pool. Contract automatically uses the correct math based on pool type: constant product for StandardCurve, bin-walk for Concentrated.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount_in` | `u64` | Input token amount |
+    | `min_amount_out` | `u64` | Minimum output (slippage protection) |
+    | `a_to_b` | `bool` | Swap direction |
+
+    **Caller:** Permissionless
+
+    **Accounts:**
+    - `user` (signer)
+    - `pool_state` (mut) — must be active
+    - `dex_config` — must be active
+    - `bin_array` (mut, optional) — required only for Concentrated pools
+    - `user_token_in` (mut), `user_token_out` (mut)
+    - `vault_in` (mut), `vault_out` (mut)
+    - `areal_fee_account` (mut) — receives protocol fee
+    - `ot_treasury_fee_account` (mut, optional) — receives OT treasury fee. Required if `pool_state.ot_treasury_fee_destination` is `Some`. Must match stored address.
+    - `token_program`
+
+    **Fee math (both pool types). All fees in RWT, charged on top:**
+
+    If input = RWT (user sells RWT):
+    ```
+    // Fees calculated on swap amount
+    fee_total = amount_in * fee_bps / 10,000
+    fee_lp = fee_total * lp_fee_share_bps / 10,000
+    fee_protocol = fee_total - fee_lp
+
+    // OT Treasury fee (only if ot_treasury_fee_destination is Some)
+    ot_treasury_fee = amount_in * OT_TREASURY_FEE_BPS / 10,000  // 50 bps on gross amount
+
+    // User pays fees ON TOP — total debit from user wallet:
+    user_total_debit = amount_in + fee_total + ot_treasury_fee
+    // Full amount_in goes into pool (no fee deduction from reserves)
+    amount_out = constant_product(amount_in)
+    ```
+
+    If input = OT (user buys RWT):
+    ```
+    amount_out_gross = constant_product(amount_in)
+
+    // Fees calculated on gross RWT output
+    fee_total = amount_out_gross * fee_bps / 10,000
+    fee_lp = fee_total * lp_fee_share_bps / 10,000
+    fee_protocol = fee_total - fee_lp
+
+    // OT Treasury fee (only if ot_treasury_fee_destination is Some)
+    ot_treasury_fee = amount_out_gross * OT_TREASURY_FEE_BPS / 10,000  // 50 bps on gross amount
+
+    // Fees deducted from gross output — user receives net:
+    amount_out = amount_out_gross - fee_total - ot_treasury_fee
+    ```
+
+    **Fee destinations (both directions):**
+    - `fee_lp` → RWT transferred to pool's `fee_vault` (per-pool RWT account, claimable by LP holders via `claim_lp_fees`)
+    - `fee_protocol` → RWT transferred to `areal_fee_account` (Areal Finance RWT ATA)
+    - `ot_treasury_fee` → RWT transferred to `ot_treasury_fee_account` (OT pairs only)
+    - For non-OT pools, `ot_treasury_fee = 0` (no additional fee)
+
+    **Reserve updates after swap (for programmer):**
+    ```
+    // Reserves stay intact — fees never touch pool liquidity
+    reserve_in  += amount_in   // full swap amount enters pool
+    reserve_out -= amount_out_gross  // gross amount leaves pool (before fee split)
+    // All fees are external to pool reserves
+    total_fees_accumulated += fee_total + ot_treasury_fee
+    ```
+
+    **StandardCurve output:**
+    ```
+    amount_out = reserve_out * net_input / (reserve_in + net_input)
+    ```
+
+    **Concentrated output (bin walk):**
+    ```
+    remaining = net_input  (or amount_in if fee taken from output)
+    total_out = 0
+    current_bin = active_bin_id
+
+    while remaining > 0:
+      bin = bin_array[current_bin]
+      
+      if a_to_b (selling RWT for USDC):
+        available = bin.liquidity_b  (USDC in this bin)
+        price = (1 + bin_step_bps/10000) ^ current_bin
+        consumable = min(remaining * price, available)  // cast u128
+        total_out += consumable
+        remaining -= consumable / price
+        bin.liquidity_b -= consumable
+        bin.liquidity_a += consumable / price
+        if bin.liquidity_b == 0:
+          current_bin -= 1  // move to cheaper bin
+          if current_bin < lower_bin_id: break  // no more liquidity
+      
+      else (buying RWT with USDC):
+        available = bin.liquidity_a  (RWT in this bin)
+        price = (1 + bin_step_bps/10000) ^ current_bin
+        consumable = min(remaining / price, available)  // cast u128
+        total_out += consumable
+        remaining -= consumable * price
+        bin.liquidity_a -= consumable
+        bin.liquidity_b += consumable * price
+        if bin.liquidity_a == 0:
+          current_bin += 1  // move to more expensive bin
+          if current_bin > upper_bin_id: break
+
+    active_bin_id = current_bin
+    amount_out = total_out
+    ```
+
+    **Validation:**
+    - `amount_in > 0`
+    - Pool reserves non-zero: `reserve_in > 0 && reserve_out > 0` (StandardCurve) or at least one bin has liquidity (Concentrated). Fails with `EmptyReserves` if pool has no liquidity.
+    - `amount_out ≥ min_amount_out` (slippage check)
+    - `amount_out > 0`
+    - Pool and DEX must be active
+
+    **Effect:** User sends input → vault. Pool sends output → user. LP fee → pool fee_vault (claimable by LP holders). Protocol fee → areal_fee_account. OT treasury fee → ot_treasury_fee_account (OT pairs only). All fees in RWT, charged on top of swap — pool reserves unaffected. Emits `SwapExecuted`.
+  </Accordion>
+</AccordionGroup>
+
+### Yield Compounding
+
+<AccordionGroup>
+  <Accordion title="compound_yield">
+    Claim RWT yield from Yield Distribution on behalf of the pool PDA, auto-compounding OT yield into pool reserves. Benefits all LP holders proportionally. Note: this is for OT yield only — LP swap fees are collected in a separate fee vault and claimed individually via `claim_lp_fees`.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `cumulative_amount` | `u64` | Pool's cumulative share (from merkle leaf) |
+    | `proof` | `Vec<[u8; 32]>` | Merkle proof path |
+
+    **Caller:** Permissionless (crank)
+
+    **Accounts:**
+    - `crank` (signer, mut) — pays for ClaimStatus init
+    - `pool_state` (mut) — updates reserves
+    - `target_vault` (mut) — constraint: must be `pool.vault_a` or `pool.vault_b` (whichever is RWT)
+    - YD CPI accounts: `yd_distributor`, `yd_claim_status`, `yd_reward_vault`
+    - `yd_program` — constraint: `key == YD_PROGRAM_ID`
+    - `token_program`, `system_program`
+
+    **Logic:**
+    1. Snapshot target_vault balance before
+    2. CPI → `yield_distribution::claim` with pool PDA as claimant
+    3. Measure RWT received (after - before)
+    4. Add received amount to pool reserves (reserve_a or reserve_b)
+    5. Emit `CompoundYieldExecuted`
+
+    <Note>
+      Pool PDA acts as an OT holder (if pool contains OT tokens in its reserves). Claimed RWT goes directly into reserves, increasing the value of all LP positions equally. No individual LP claim needed. `target_vault` mint is validated by YD program during CPI (`claimant_token.mint == reward_vault.mint`) — crank cannot redirect RWT to wrong vault. **Only applicable to pools that hold OT** (e.g., OT/RWT). Calling compound_yield on RWT/USDC pool will fail with InvalidProof (pool has no OT balance → not in merkle tree).
+    </Note>
+  </Accordion>
+
+  <Accordion title="claim_lp_fees">
+    Claim accumulated LP swap fee rewards from the pool's fee vault. Each LP holder claims proportionally to their share of total LP supply. No vesting — rewards are available instantly.
+
+    **Caller:** LP holder (permissionless — anyone with an LP position)
+
+    **Accounts:**
+    - `lp_holder` (signer) — must own the LP position
+    - `pool_state` — reads `total_lp_shares`
+    - `lp_position` (mut) — reads `shares`, updates `fees_claimed`
+    - `fee_vault` (mut) — pool's RWT fee vault, constraint: `owner == pool_state.key()`
+    - `lp_holder_rwt_ata` (mut) — holder's RWT ATA, receives claimed fees
+    - `token_program`
+
+    **Logic:**
+    ```
+    cumulative_per_share = pool_state.cumulative_fees_per_share  // u128, updated on each swap
+    entitled = lp_position.shares * cumulative_per_share / PRECISION
+    claimable = entitled - lp_position.fees_claimed
+    
+    if claimable == 0: return
+    
+    transfer claimable RWT: fee_vault → lp_holder_rwt_ata (pool PDA signs)
+    lp_position.fees_claimed += claimable
+    ```
+
+    **Validation:**
+    - `lp_position.owner == lp_holder.key()`
+    - `claimable > 0`
+    - `fee_vault.amount >= claimable`
+
+    **Effect:** RWT transferred from fee vault to LP holder. Emits `LpFeesClaimed`.
+
+    <Note>
+      **How cumulative_fees_per_share works:** On each swap, the contract updates `pool_state.cumulative_fees_per_share += fee_lp * PRECISION / total_lp_shares`. This allows O(1) per-holder accounting — no iteration over LP holders needed. Each LP position tracks its own `fees_claimed` to prevent double-claiming. Pattern used by Sushiswap MasterChef, Raydium, and most DeFi fee distributors.
+    </Note>
+  </Accordion>
+</AccordionGroup>
+
+### Liquidity Nexus
+
+Areal Finance LP management. Nexus PDA owns LP positions and token accounts. Manager bot executes operations; funds are protected by the program (manager cannot extract tokens directly). LP fee rewards accumulate in the pool fee vault and are claimed to Areal Treasury via `nexus_claim_rewards`.
+
+<AccordionGroup>
+  <Accordion title="initialize_nexus">
+    Create Liquidity Nexus PDA and set initial manager. One Nexus per DEX deployment (singleton).
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `manager` | `Pubkey` | Initial Nexus manager wallet (bot) |
+
+    **Caller:** Authority (Team Multisig)
+
+    **Accounts:**
+    - `authority` (signer, mut) — must match `dex_config.authority`
+    - `dex_config` — validates authority
+    - `nexus` (init) — PDA seed: `["liquidity_nexus"]`
+    - `system_program`
+
+    **Creates:**
+    - `LiquidityNexus` PDA — singleton, owns LP positions
+
+    **Initial state:** `manager = manager param`, `is_active = true`
+  </Accordion>
+
+  <Accordion title="nexus_deposit">
+    Deposit tokens into Nexus PDA. This is the standard way to add capital to Nexus. Permissionless — cranks call this after OT revenue distribution or RWT yield claim.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount` | `u64` | Token amount to deposit |
+
+    **Caller:** Permissionless (crank)
+
+    **Accounts:**
+    - `depositor` (signer) — source wallet
+    - `nexus` (mut) — validates is_active
+    - `depositor_token_account` (mut) — constraint: `owner == depositor`
+    - `nexus_token_account` (mut) — constraint: `owner == nexus.key()`
+    - `token_mint` — validates accepted token type
+    - `token_program`
+
+    **Validation:**
+    - `amount > 0`
+    - `nexus.is_active == true`
+    - `token_mint == USDC_MINT || token_mint == RWT_MINT` (only accepted tokens)
+
+    **Logic:**
+    1. Transfer `amount` from depositor → nexus ATA
+    2. Transfer `amount` from `depositor_token_account` to `nexus_token_account`
+    4. Emit `NexusDeposited`
+
+    <Note>
+      OT `distribute_revenue` sends 10% USDC to an intermediate wallet (crank). The crank then calls `nexus_deposit` to route into Nexus. Same for RWT from `claim_yield` — crank receives 15% RWT, then calls `nexus_deposit`.
+    </Note>
+  </Accordion>
+
+  <Accordion title="nexus_claim_rewards">
+    Claim accumulated LP fee rewards from pool fee vaults to Areal Treasury. Nexus PDA acts as LP holder and claims its proportional share. Authority only.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `pool` | `Pubkey` | Pool to claim fees from |
+
+    **Caller:** Authority (Team Multisig)
+
+    **Accounts:**
+    - `authority` (signer) — must match `dex_config.authority`
+    - `dex_config` — for authority validation
+    - `nexus` — PDA, signs as LP holder
+    - `pool_state` — reads `cumulative_fees_per_share`
+    - `nexus_lp_position` (mut) — Nexus's LP position in this pool, updates `fees_claimed`
+    - `fee_vault` (mut) — pool's RWT fee vault
+    - `treasury_token_account` (mut) — Areal Treasury RWT ATA, receives claimed rewards
+    - `token_program`
+
+    **Logic:**
+    1. Calculate claimable using same formula as `claim_lp_fees`
+    2. Transfer RWT from fee_vault → `treasury_token_account` (Areal Treasury)
+    3. Update `nexus_lp_position.fees_claimed`
+    4. Emit `NexusRewardsClaimed`
+
+    <Note>
+      Uses the same `cumulative_fees_per_share` accounting as regular LP claims. Nexus PDA's LP positions earn fees like any other LP holder — rewards go directly to Areal Treasury.
+    </Note>
+  </Accordion>
+
+  <Accordion title="nexus_swap">
+    Swap tokens from Nexus PDA through any DEX pool. Same swap logic as regular `swap` but Nexus PDA signs as user.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount_in` | `u64` | Input token amount |
+    | `min_amount_out` | `u64` | Minimum output (slippage protection) |
+    | `a_to_b` | `bool` | Swap direction |
+
+    **Caller:** Nexus manager only
+
+    **Accounts:**
+    - `manager` (signer) — must match `nexus.manager`
+    - `nexus` — PDA, signs swap as user
+    - `nexus_token_in` (mut) — constraint: `owner == nexus.key()`
+    - `nexus_token_out` (mut) — constraint: `owner == nexus.key()`
+    - `pool_state` (mut), `dex_config`, `bin_array` (optional)
+    - `vault_in` (mut), `vault_out` (mut)
+    - `areal_fee_account` (mut)
+    - `ot_treasury_fee_account` (mut, optional) — required if OT pair
+    - `token_program`
+
+    **Validation:**
+    - `amount_in > 0`
+    - `min_amount_out > 0` (slippage protection required — prevents manager from executing swaps at arbitrary prices)
+    - `manager == nexus.manager`
+
+    **Effect:** Internal CPI to `swap` logic with Nexus PDA as user. OT treasury fee charged if OT pair. Emits `SwapExecuted`.
+
+    <Warning>
+      **Manager trust assumption.** While `min_amount_out > 0` is enforced, the manager sets the value. A compromised manager can set `min_amount_out = 1` and execute at terrible prices. Mitigation: authority (Team Multisig) monitors swap events and replaces manager via `update_nexus_manager` if anomalous trades detected. All swaps are auditable via `SwapExecuted` events.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="nexus_add_liquidity">
+    Add liquidity from Nexus PDA to any pool. Works as zap — accepts any token ratio including single token. Nexus PDA signs as provider.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount_a` | `u64` | Token A amount (can be 0) |
+    | `amount_b` | `u64` | Token B amount (can be 0) |
+    | `min_shares` | `u128` | Minimum LP shares (slippage protection) |
+
+    **Caller:** Nexus manager only
+
+    **Accounts:**
+    - `manager` (signer) — must match `nexus.manager`
+    - `nexus` — PDA, signs as provider
+    - `pool_state` (mut), `dex_config`
+    - `lp_position` (init_if_needed) — PDA seed: `["lp", pool_state, nexus]`
+    - `nexus_token_a` (mut) — constraint: `owner == nexus.key()`
+    - `nexus_token_b` (mut) — constraint: `owner == nexus.key()`
+    - `vault_a` (mut), `vault_b` (mut)
+    - `areal_fee_account` (mut) — for internal swap fee if zap
+    - `bin_array` (mut, optional)
+    - `token_program`, `system_program`
+
+    **Effect:** Zap logic (auto-swap to match ratio) + add liquidity. Nexus PDA as provider. Emits `LiquidityAdded`.
+  </Accordion>
+
+  <Accordion title="nexus_remove_liquidity">
+    Remove liquidity from Nexus PDA's LP position.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `shares_to_burn` | `u128` | LP shares to redeem |
+
+    **Caller:** Nexus manager only
+
+    **Accounts:**
+    - `manager` (signer) — must match `nexus.manager`
+    - `nexus` — PDA, signs as provider
+    - `pool_state` (mut)
+    - `lp_position` (mut) — constraint: `owner == nexus.key()`
+    - `nexus_token_a` (mut), `nexus_token_b` (mut)
+    - `vault_a` (mut), `vault_b` (mut)
+    - `token_program`
+
+    **Effect:** Pool PDA signs vault→nexus transfers. Emits `LiquidityRemoved`.
+  </Accordion>
+
+  <Accordion title="update_nexus_manager">
+    Change the Nexus manager wallet.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `new_manager` | `Pubkey` | New manager wallet |
+
+    **Caller:** Authority (Team Multisig)
+
+    **Accounts:**
+    - `authority` (signer) — must match `dex_config.authority`
+    - `dex_config`
+    - `nexus` (mut)
+
+    **Effect:** Sets `nexus.manager = new_manager`. Emits `NexusManagerUpdated`.
+  </Accordion>
+</AccordionGroup>
+
+### Configuration & Authority
+
+<AccordionGroup>
+  <Accordion title="update_dex_config">
+    Update global DEX configuration. Full overwrite.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `base_fee_bps` | `u16` | New base fee (max 1,000 = 10%) |
+    | `lp_fee_share_bps` | `u16` | New LP fee share (max 10,000 = 100%) |
+    | `rebalancer` | `Pubkey` | New Rebalancer wallet |
+    | `is_active` | `bool` | Global DEX active flag |
+
+    **Caller:** Authority (Team Multisig)
+
+    **Accounts:**
+    - `authority` (signer) — must match `dex_config.authority`
+    - `dex_config` (mut)
+
+    **Validation:**
+    - `base_fee_bps ≤ 1,000` (max 10%)
+    - `lp_fee_share_bps ≤ 10,000`
+
+    **Effect:** Overwrites config. Emits `DexConfigUpdated`.
+
+    <Note>
+      `areal_fee_destination` and `pause_authority` are immutable — set at init, cannot be changed. Only a program upgrade can modify them.
+    </Note>
+  </Accordion>
+
+  <Accordion title="update_pool_creators">
+    Add or remove a wallet from the pool creators whitelist.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `wallet` | `Pubkey` | Creator wallet to add/remove |
+    | `action` | `CreatorAction` | `Add` or `Remove` |
+
+    **Caller:** Authority (Team Multisig)
+
+    **Accounts:**
+    - `authority` (signer) — must match `pool_creators.authority`
+    - `pool_creators` (mut)
+
+    **Validation:**
+    - Add: not already whitelisted, count < MAX_POOL_CREATORS (10)
+    - Remove: must exist in whitelist
+
+    **Effect:** Updates whitelist. Emits `PoolCreatorsUpdated`.
+  </Accordion>
+
+  <Accordion title="propose_authority_transfer">
+    Step 1: Current authority proposes a new authority.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `new_authority` | `Pubkey` | Proposed new authority |
+
+    **Caller:** Current authority
+
+    **Accounts:**
+    - `authority` (signer) — must match `dex_config.authority`
+    - `dex_config` (mut)
+
+    **Validation:** `new_authority ≠ current authority`
+
+    **Effect:** Sets `dex_config.pending_authority = Some(new_authority)`. Emits `AuthorityTransferProposed`.
+
+    <Note>
+      Calling again **overwrites** any existing pending_authority. The previous proposed authority loses their ability to accept.
+    </Note>
+  </Accordion>
+
+  <Accordion title="accept_authority_transfer">
+    Step 2: Proposed authority accepts.
+
+    **Caller:** New authority (must sign)
+
+    **Accounts:**
+    - `new_authority` (signer) — must match `dex_config.pending_authority`
+    - `dex_config` (mut)
+    - `pool_creators` (mut) — authority also updated here
+
+    **Validation:** `signer == dex_config.pending_authority`
+
+    **Effect:** Sets `authority = new_authority` on both `dex_config` and `pool_creators`. Clears `pending_authority`. Emits `AuthorityTransferAccepted`.
+  </Accordion>
+</AccordionGroup>
+
+### Emergency
+
+<AccordionGroup>
+  <Accordion title="pause_pool">
+    Emergency pause a single pool. Stops swaps and new liquidity adds. Does NOT affect remove_liquidity (LPs can always exit).
+
+    **Caller:** Pause Authority (Team Multisig)
+
+    **Accounts:**
+    - `pause_authority` (signer) — must match `dex_config.pause_authority`
+    - `dex_config` — for pause_authority validation
+    - `pool_state` (mut)
+
+    **Effect:** Sets `pool_state.is_active = false`. Emits `PoolPaused`.
+  </Accordion>
+
+  <Accordion title="unpause_pool">
+    Resume a paused pool.
+
+    **Caller:** Pause Authority (Team Multisig)
+
+    **Accounts:**
+    - `pause_authority` (signer) — must match `dex_config.pause_authority`
+    - `dex_config`
+    - `pool_state` (mut)
+
+    **Effect:** Sets `pool_state.is_active = true`. Emits `PoolUnpaused`.
+  </Accordion>
+</AccordionGroup>
+
+## State Accounts
+
+### DexConfig
+
+Global singleton. One per protocol deployment.
+
+| Field | Type | Description |
+|---|---|---|
+| `authority` | `Pubkey` | Config authority (Team Multisig after bootstrap) |
+| `pending_authority` | `Option<Pubkey>` | Pending authority transfer target |
+| `pause_authority` | `Pubkey` | Emergency pause signer (Team Multisig, immutable) |
+| `base_fee_bps` | `u16` | Default swap fee (default: 50 = 0.5%) |
+| `lp_fee_share_bps` | `u16` | LP's share of fee (default: 5,000 = 50%) |
+| `areal_fee_destination` | `Pubkey` | Areal Finance **RWT ATA** — receives protocol fees in RWT |
+| `rebalancer` | `Pubkey` | Pool Rebalancer wallet — only signer allowed to call `shift_liquidity` |
+| `is_active` | `bool` | Global DEX kill switch |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["dex_config"]`
+
+### PoolState
+
+One per token pair. Stores reserves, shares, fees.
+
+| Field | Type | Description |
+|---|---|---|
+| `pool_type` | `PoolType` | `StandardCurve` or `Concentrated` |
+| `token_a_mint` | `Pubkey` | Token A mint |
+| `token_b_mint` | `Pubkey` | Token B mint |
+| `vault_a` | `Pubkey` | Token A vault (authority = pool PDA) |
+| `vault_b` | `Pubkey` | Token B vault (authority = pool PDA) |
+| `reserve_a` | `u64` | Current A balance |
+| `reserve_b` | `u64` | Current B balance |
+| `total_lp_shares` | `u128` | Outstanding LP shares |
+| `fee_bps` | `u16` | Swap fee (copied from DexConfig at creation) |
+| `is_active` | `bool` | Pool active flag (pauseable by Team Multisig) |
+| `total_fees_accumulated` | `u64` | Lifetime total fees (LP + protocol) |
+| `fee_vault` | `Pubkey` | RWT token account for LP fee collection (authority = pool PDA) |
+| `cumulative_fees_per_share` | `u128` | Running sum of `fee_lp * PRECISION / total_lp_shares` — used for O(1) per-holder fee accounting |
+| `bin_step_bps` | `u16` | Bin step (0 for StandardCurve) |
+| `active_bin_id` | `i32` | Current active bin (Concentrated only) |
+| `ot_treasury_fee_destination` | `Option<Pubkey>` | RWT ATA of OT Treasury PDA. When `Some`, additional 50 bps fee charged on swaps and sent here. `None` for non-OT pools (e.g., RWT/USDC). Set at creation, **immutable**. |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["pool", token_a_mint, token_b_mint]`
+
+### PoolCreators
+
+Whitelist of wallets allowed to create pools. Max 10.
+
+| Field | Type | Description |
+|---|---|---|
+| `authority` | `Pubkey` | Who can add/remove creators |
+| `creators` | `[Pubkey; 10]` | Whitelisted wallets |
+| `active_count` | `u8` | Number of active creators |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["pool_creators"]`
+
+### LpPosition
+
+Per (pool, provider) LP tracking. Created on first add via `init_if_needed`.
+
+| Field | Type | Description |
+|---|---|---|
+| `pool` | `Pubkey` | Associated pool |
+| `owner` | `Pubkey` | LP provider wallet |
+| `shares` | `u128` | LP shares held |
+| `fees_claimed` | `u128` | Cumulative LP fees claimed (prevents double-claiming) |
+| `fee_debt` | `u128` | Fee snapshot at time of deposit — excludes pre-deposit fees from claim |
+| `last_update_ts` | `i64` | Last interaction timestamp |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["lp", pool_state, provider]`
+
+### BinArray
+
+Concentrated liquidity bins. One per Concentrated pool.
+
+| Field | Type | Description |
+|---|---|---|
+| `pool` | `Pubkey` | Associated pool |
+| `bins` | `[Bin; 70]` | Array of bins. Each bin: `liquidity_a: u64` (RWT), `liquidity_b: u64` (USDC). Below active: only liquidity_b. Above active: only liquidity_a. Active bin: both. |
+| `lower_bin_id` | `i32` | ID of bins[0] |
+| `bin_step_bps` | `u16` | Price step between bins |
+| `active_bin_id` | `i32` | Current active bin |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["bins", pool_state]`
+
+### LiquidityNexus
+
+Areal Finance LP management PDA. Singleton — one per DEX. Owns token ATAs and LP positions. Manager bot executes operations; funds protected by program.
+
+| Field | Type | Description |
+|---|---|---|
+| `manager` | `Pubkey` | Bot wallet that can execute nexus operations |
+| `total_deposited_usdc` | `u64` | Cumulative USDC deposited via `nexus_deposit` |
+| `total_deposited_rwt` | `u64` | Cumulative RWT deposited via `nexus_deposit` |
+| `is_active` | `bool` | Active flag |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["liquidity_nexus"]`
+
+<Note>
+  Nexus PDA owns LP positions (LpPosition where `owner == nexus.key()`) and token ATAs. Manager can swap/add/remove LP but CANNOT transfer tokens out of Nexus ATAs directly — only through DEX instructions. LP fee rewards are claimed from YD directly to Areal Treasury via `nexus_claim_rewards`. If manager compromised, authority replaces via `update_nexus_manager`.
+</Note>
+
+## PDA Seeds
+
+| Account | Seeds | Description |
+|---|---|---|
+| DexConfig | `"dex_config"` | Global config singleton |
+| PoolCreators | `"pool_creators"` | Creator whitelist |
+| PoolState | `"pool"`, `token_a_mint`, `token_b_mint` | Per-pair pool |
+| LpPosition | `"lp"`, `pool_state`, `provider` | Per-LP tracking |
+| BinArray | `"bins"`, `pool_state` | Concentrated bins |
+| LiquidityNexus | `"liquidity_nexus"` | Areal Finance LP manager |
+
+<Note>
+  Vault accounts (vault_a, vault_b) are NOT PDAs — they are regular SPL token accounts with `authority = pool_state PDA`. Created as keypair accounts at pool creation.
+</Note>
+
+## Constants
+
+| Constant | Value | Description |
+|---|---|---|
+| `BPS_DENOMINATOR` | `10,000` | 100% in basis points |
+| `DEFAULT_BASE_FEE_BPS` | `50` | 0.5% swap fee |
+| `DEFAULT_LP_FEE_SHARE_BPS` | `5,000` | 50% of fee to LP |
+| `MAX_FEE_BPS` | `1,000` | 10% max fee cap |
+| `MAX_BINS` | `70` | Bins per concentrated pool |
+| `DEFAULT_BIN_STEP_BPS` | `10` | 0.1% between bins |
+| `MAX_POOL_CREATORS` | `10` | Max whitelisted creators |
+| `MIN_LIQUIDITY` | `1,000` | Min shares on first add (dust prevention) |
+| `OT_TREASURY_FEE_BPS` | `50` | 0.5% additional fee for OT pairs — sent to OT Treasury RWT ATA |
+| `RWT_MINT` | hardcoded | RWT token mint — all pools must include RWT (validated in create_pool) |
+| `USDC_MINT` | hardcoded | USDC mint — for nexus_deposit token validation |
+| `OT_PROGRAM_ID` | hardcoded | OT contract program ID — validated in create_pool to verify OT Treasury PDA ownership |
+| `YD_PROGRAM_ID` | hardcoded | Validated in compound_yield |
+
+## Events
+
+| Event | Fields | When |
+|---|---|---|
+| `DexInitialized` | authority, base_fee_bps, timestamp | DEX created |
+| `PoolCreated` | pool, token_a_mint, token_b_mint, pool_type, creator, ot_treasury_fee_destination, timestamp | Pool created |
+| `LiquidityAdded` | pool, provider, amount_a, amount_b, shares_minted, timestamp | LP added |
+| `ZapLiquidityExecuted` | pool, provider, input_a, input_b, swapped_amount, shares_minted, timestamp | Zap: auto-swap + add LP |
+| `LiquidityRemoved` | pool, provider, amount_a, amount_b, shares_burned, timestamp | LP removed |
+| `LiquidityShifted` | pool, rebalancer, old_lower, old_upper, new_lower, new_upper, timestamp | Bins rebalanced |
+| `SwapExecuted` | pool, user, a_to_b, amount_in, amount_out, fee_lp, fee_protocol, fee_ot_treasury, timestamp | Swap completed |
+| `LpFeesClaimed` | pool, lp_holder, amount, timestamp | LP holder claimed swap fee rewards |
+| `CompoundYieldExecuted` | pool, rwt_claimed, timestamp | OT yield auto-compounded into pool |
+| `PoolCreatorsUpdated` | wallet, action, active_count, timestamp | Whitelist changed |
+| `DexConfigUpdated` | base_fee_bps, lp_fee_share_bps, rebalancer, is_active, timestamp | Config changed |
+| `AuthorityTransferProposed` | current_authority, pending_authority, timestamp | Transfer proposed |
+| `AuthorityTransferAccepted` | old_authority, new_authority, timestamp | Transfer accepted |
+| `PoolPaused` | pool, timestamp | Pool emergency paused |
+| `PoolUnpaused` | pool, timestamp | Pool resumed |
+| `NexusInitialized` | manager, timestamp | Nexus created |
+| `NexusDeposited` | token_mint, amount, timestamp | Capital deposited into Nexus |
+| `NexusRewardsClaimed` | amount, treasury_destination, timestamp | LP fee rewards claimed from YD to Areal Treasury |
+| `NexusProfitsWithdrawn` | token_mint, amount, remaining_profit, treasury_destination, timestamp | Profits withdrawn to Areal Treasury |
+| `NexusManagerUpdated` | old_manager, new_manager, timestamp | Nexus manager changed |
+
+## Error Codes
+
+| Error | Description |
+|---|---|
+| `Unauthorized` | Not DEX authority |
+| `CreatorNotWhitelisted` | Not in pool creators whitelist |
+| `DexPaused` | Global DEX is_active = false |
+| `PoolNotActive` | Pool is_active = false |
+| `WhitelistFull` | Max 10 creators |
+| `IdenticalMints` | token_a == token_b |
+| `CreatorNotFound` | Remove: creator not in whitelist |
+| `ZeroAmount` | Amount = 0 |
+| `InsufficientLiquidity` | Pool reserves empty |
+| `InsufficientShares` | LP has fewer shares than burn |
+| `InitialLiquidityTooSmall` | First add < MIN_LIQUIDITY |
+| `SlippageExceeded` | Output < min_amount_out |
+| `ZeroOutput` | Swap would produce 0 |
+| `EmptyReserves` | Cannot swap with 0 reserves |
+| `MathOverflow` | Arithmetic overflow |
+| `InvalidFee` | base_fee_bps > MAX_FEE_BPS |
+| `InvalidFeeShare` | lp_fee_share_bps > 10,000 |
+| `InvalidBinRange` | lower ≥ upper or out of bounds |
+| `BinOutOfRange` | Bin ID outside BinArray |
+| `InsufficientBinLiquidity` | No liquidity in bins for swap |
+| `InvalidBinStep` | bin_step_bps = 0 for concentrated |
+| `MissingRwtMint` | Neither token_a nor token_b is RWT_MINT |
+| `InvalidMintOrder` | token_a_mint >= token_b_mint (must be canonical order) |
+| `InvalidVault` | target_vault not vault_a or vault_b |
+| `NothingToCompound` | No RWT received from YD |
+| `SelfTransfer` | Cannot transfer authority to yourself |
+| `NoPendingAuthority` | No pending transfer |
+| `InvalidPendingAuthority` | Signer ≠ pending_authority |
+| `InvalidOtTreasuryDestination` | ot_treasury_fee_destination does not match derived RWT ATA for OT Treasury PDA, or OT Treasury PDA not owned by OT_PROGRAM_ID |
+| `MissingOtTreasuryAccount` | Pool has ot_treasury_fee_destination set but ot_treasury_fee_account not provided in swap |
+| `InvalidNexusToken` | nexus_deposit token_mint is not USDC_MINT or RWT_MINT |
+| `NexusNotActive` | Nexus is_active = false |
+| `InvalidNexusManager` | Signer ≠ nexus.manager |
+| `NexusClaimFailed` | Nexus PDA not found in merkle tree or proof invalid |
+
+## Architecture & Integration Guide
+
+### Cross-Program Integration
+
+<AccordionGroup>
+  <Accordion title="← RWT Engine (vault swaps)">
+    - RWT Engine `vault_swap` CPIs to `native_dex::swap`
+    - RWT Vault PDA signs as user
+    - Manager controls direction and slippage
+  </Accordion>
+
+  <Accordion title="← Yield Distribution (USDC→RWT conversion)">
+    - YD `convert_to_rwt` CPIs to `native_dex::swap` (buy RWT below NAV)
+    - YD Accumulator PDA signs as user
+  </Accordion>
+
+  <Accordion title="Liquidity Nexus (internal DEX PDA)">
+    - Nexus PDA lives inside DEX contract — owns LP positions and token ATAs
+    - Capital enters via `nexus_deposit`: 10% OT revenue (USDC) + 15% RWT Engine yield (RWT)
+    - Manager bot calls `nexus_swap`, `nexus_add_liquidity`, `nexus_remove_liquidity`
+    - LP fee rewards claimed from YD to Areal Treasury via `nexus_claim_rewards` (Authority)
+    - Manager changeable by DEX authority (Team Multisig) via `update_nexus_manager`
+  </Accordion>
+
+  <Accordion title="→ Yield Distribution (compound_yield)">
+    - Pool PDA claims OT yield RWT from YD via CPI → auto-compounds into pool reserves
+    - All LP holders benefit proportionally (deeper pool = better trades)
+    - LP swap fees are handled separately via per-pool fee vault (`claim_lp_fees`)
+  </Accordion>
+
+  <Accordion title="← Pool Rebalancer (shift_liquidity)">
+    - Rebalancer bot calls `shift_liquidity` to reposition concentrated LP around NAV
+    - Rebalancer wallet signs as signer (dedicated keypair, not PDA)
+  </Accordion>
+</AccordionGroup>
+
+### Trust Assumptions
+
+<Warning>
+  **Pool creators trust:** Whitelisted creators can set initial pool parameters (bin_step). Malicious creator could set unfavorable initial price via first liquidity add. Mitigation: authority (Team Multisig) controls whitelist.
+</Warning>
+
+<Warning>
+  **compound_yield YD dependency:** Uses hardcoded YD program ID for CPI. If YD program is upgraded to new address, compound_yield must be updated via program upgrade.
+</Warning>
+
+### Deployment Checklist
+
+**Prerequisites:** Yield Distribution must be deployed (needed for compound_yield CPI).
+
+1. **Call `initialize_dex`** with areal_fee_destination (Areal Finance RWT ATA), pause_authority (Team Multisig), rebalancer (bot wallet)
+2. **Call `initialize_nexus`** with manager (Nexus bot wallet)
+3. **Create Nexus ATAs** — create USDC ATA and RWT ATA owned by Nexus PDA (needed before OT destinations and RWT Engine config point to them)
+4. **Add pool creators** via `update_pool_creators`
+5. **Create pools** — all pools pair with RWT (e.g., OT/RWT, RWT/USDC). Mints must be in canonical order (`token_a < token_b`). For OT pairs: pass `ot_treasury` PDA and its RWT ATA — OT Treasury must already be initialized via the OT contract before pool creation
+6. **Transfer authority** to Team Multisig via `propose_authority_transfer` + `accept_authority_transfer`
+
+### Token Flow Summary
+
+| From | To | Mechanism | Who triggers |
+|------|-----|-----------|-------------|
+| User token_in | Pool vault_in | swap | User |
+| Pool vault_out | User token_out | swap | User |
+| Swap fee (LP share) | Pool fee_vault (RWT) | swap | Automatic |
+| Pool fee_vault | LP holder RWT ATA | claim_lp_fees | LP holder |
+| Swap fee (protocol share) | Areal Finance RWT ATA (always in RWT) | swap | Automatic |
+| Swap fee (OT treasury) | OT Treasury RWT ATA (OT pairs only, always in RWT) | swap | Automatic |
+| LP tokens A+B | Pool vaults | add_liquidity | LP provider |
+| LP any ratio / single token | Pool vaults (via internal swap) | zap_liquidity | LP provider |
+| Pool vaults | LP tokens A+B | remove_liquidity | LP provider |
+| YD reward vault | Pool reserves (RWT) | compound_yield (CPI to YD) | Crank |
+| OT Revenue (10% USDC) | Crank USDC ATA → Nexus USDC ATA | OT `distribute_revenue` → `nexus_deposit` (two-step: crank receives, then deposits) | Crank |
+| RWT Engine yield (15% RWT) | Crank RWT ATA → Nexus RWT ATA | RWT `claim_yield` → `nexus_deposit` (two-step: crank receives, then deposits) | Crank |
+| Nexus LP fee rewards (RWT) | Areal Treasury RWT ATA | `nexus_claim_rewards` | Authority |
+| Nexus tokens | Pool vaults | nexus_add_liquidity | Nexus manager |
+| Pool vaults | Nexus tokens | nexus_remove_liquidity | Nexus manager |

@@ -1,0 +1,35 @@
+---
+title: Changelog
+description: Latest updates and changes to Areal Finance
+hidePagination: true
+---
+
+All notable changes to the Areal Finance protocol are documented here. Filter by tag:
+
+<div style={{ display: "flex", gap: "6px", marginBottom: "1.5rem", flexWrap: "wrap" }}>
+  <a href="/changelog/features" className="changelog-tag-link"><span className="changelog-tag changelog-tag-feature">Feature</span></a>
+  <a href="/changelog/updates" className="changelog-tag-link"><span className="changelog-tag changelog-tag-update">Update</span></a>
+  <a href="/changelog/fixes" className="changelog-tag-link"><span className="changelog-tag changelog-tag-fix">Fix</span></a>
+  <a href="/changelog/breaking" className="changelog-tag-link"><span className="changelog-tag changelog-tag-breaking">Breaking</span></a>
+  <a href="/changelog/security" className="changelog-tag-link"><span className="changelog-tag changelog-tag-security">Security</span></a>
+</div>
+
+---
+
+<div className="changelog-entry">
+  <div className="changelog-date">April 13, 2026</div>
+
+  ### [LP Fee Reward Model — Per-Pool Fee Vault](/changelog/2026-04-13-lp-fee-claim) <a href="/changelog/breaking" className="changelog-tag-link"><span className="changelog-tag changelog-tag-breaking">Breaking</span></a>
+
+  LP swap fees are no longer auto-compounded into pool reserves. Fees are now collected in a per-pool fee vault — LP holders claim instantly via `claim_lp_fees`. Fees charged on top of swaps to preserve pool capitalization.
+
+</div>
+
+<div className="changelog-entry">
+  <div className="changelog-date">April 13, 2026</div>
+
+  ### [OT Swap Base Fee Update](/changelog/2026-04-13-ot-swap-fee) <a href="/changelog/updates" className="changelog-tag-link"><span className="changelog-tag changelog-tag-update">Update</span></a>
+
+  Updated the base commission for OT Swap to **1%** — split between Project Reserve (0.50%), LP Provider (0.25%), and Areal Treasury (0.25%).
+
+</div>

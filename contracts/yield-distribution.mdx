@@ -1,0 +1,717 @@
+---
+title: "Yield Distribution"
+description: "Perpetual merkle-based RWT yield streams with per-claimant vesting"
+---
+
+# Yield Distribution
+
+<Card title="✅ Ready to Dev" icon="check" color="#48bb78">
+  This contract specification has passed business logic audit, technical review, cross-program integration check (OT + RWT Engine), vesting math verification, and naming standardization. A developer can implement from this document.
+</Card>
+
+Distributes RWT yield to OT holders proportional to their token balance. Each OT project has **one perpetual distributor** — funded monthly with RWT, vesting linearly over 365 days. Holders claim anytime; the UI shows a real-time growing balance.
+
+<Warning>
+  **Upgradeable contract.** Program upgrade authority = Team Multisig (Squads). Separate from config authority and publish authority.
+</Warning>
+
+## Key Concepts
+
+<CardGroup cols={3}>
+  <Card title="11 Instructions" icon="code">
+    Config, create/close distributor, convert, fund, publish root, claim, authority management
+  </Card>
+  <Card title="4 State Accounts" icon="database">
+    DistributionConfig, MerkleDistributor, Accumulator, ClaimStatus
+  </Card>
+  <Card title="4 PDA Seeds" icon="key">
+    dist_config, merkle_dist, accumulator, claim_status
+  </Card>
+</CardGroup>
+
+## How It Works
+
+<Steps>
+  <Step title="OT Revenue Arrives (monthly)">
+    OT contract `distribute_revenue` sends 70% USDC to the distributor's **Accumulator PDA** (USDC ATA owned by the contract). No external wallets needed.
+  </Step>
+  <Step title="Convert USDC → RWT + Fund (atomic)">
+    Crank calls `convert_to_rwt` — contract swaps USDC on DEX up to NAV price, mints remainder at NAV, deposits RWT into reward vault, and updates vesting state. All in one atomic instruction. Previously vested amount is locked, new RWT begins vesting from now.
+  </Step>
+  <Step title="Publish Merkle Root (every 10 min)">
+    Publish authority (server wallet) scans OT holders off-chain, builds merkle tree, publishes root on-chain via `publish_root`. Holders with < $100 holdings excluded; their share → ARL Treasury (protocol revenue).
+  </Step>
+  <Step title="Holders Claim (anytime)">
+    Holder calls `claim` with merkle proof. Contract calculates per-claimant vested amount and transfers RWT. Can claim as often as desired — vesting accrues every second.
+  </Step>
+</Steps>
+
+## Vesting Model
+
+**Perpetual distributor with incremental funding.** Both `convert_to_rwt` and `fund_distributor` use identical vesting logic when adding RWT:
+
+```
+// All vesting calculations cast to u128 BEFORE multiply to prevent overflow
+
+On fund (either convert_to_rwt or fund_distributor):
+  elapsed = now - last_fund_ts
+  locked_vested += (total_funded - locked_vested) * min(elapsed, period) / period  // u128
+  total_funded += new_amount (net after protocol fee)
+  last_fund_ts = now
+
+On claim:
+  new_portion = total_funded - locked_vested
+  new_vested = new_portion * min(now - last_fund_ts, period) / period
+  total_vested = min(locked_vested + new_vested, max_total_claim)
+  
+  my_share = total_vested * my_cumulative_amount / max_total_claim
+  claimable = my_share - already_claimed
+```
+
+<Note>
+  **UX:** The UI calculates `total_vested` client-side every second to show a real-time growing balance. The actual on-chain transfer happens only when the holder clicks "Claim". This is the standard DeFi pattern (Jito, Marinade, etc.).
+</Note>
+
+<Note>
+  **Minimum $100 holdings:** Only holders with ≥ $100 total protocol holdings across all OT + RWT positions are eligible for yield. Non-eligible holders' share is allocated to **ARL Treasury** (= ARL OtTreasury PDA `["ot_treasury", arl_ot_mint]`) as a leaf in the merkle tree. This is protocol revenue — Areal Finance earns the yield that small holders don't qualify for. Claimed via OT `claim_yd_for_treasury` on the ARL OT instance.
+</Note>
+
+## Three Roles
+
+<CardGroup cols={3}>
+  <Card title="🏛️ Config Authority" icon="landmark">
+    **Team Multisig** (after bootstrap)
+
+    - `create_distributor` — new OT project
+    - `close_distributor` — retire project
+    - `update_config` — change fees, limits
+    - `update_publish_authority` — change server wallet
+    - `propose_authority_transfer`
+  </Card>
+  <Card title="📡 Publish Authority" icon="tower-broadcast">
+    **Server wallet** (crank bot on VPS)
+
+    - `publish_root` — every 10 minutes
+
+    Hot wallet that builds merkle trees off-chain and publishes roots. If compromised, config authority can replace it. Does NOT control funds.
+  </Card>
+  <Card title="🌐 Permissionless" icon="globe">
+    **Any wallet / Crank bot**
+
+    - `convert_to_rwt` — USDC→RWT conversion
+    - `fund_distributor` — deposit RWT
+    - `claim` — holder claims yield
+  </Card>
+</CardGroup>
+
+## Instructions
+
+### Initialization
+
+<AccordionGroup>
+  <Accordion title="initialize_config">
+    Create global distribution configuration. Called once per protocol deployment.
+
+    **Parameters:**
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `protocol_fee_bps` | `u16` | Fee on deposits (default: 25 = 0.25%) |
+    | `min_distribution_amount` | `u64` | Min fund amount (default: $100 equivalent) |
+    | `areal_fee_destination` | `Pubkey` | Where fees go — Areal Finance **RWT ATA** (static, immutable). Note: this is an RWT token account, not USDC — YD protocol fee is deducted in RWT after conversion. |
+    | `publish_authority` | `Pubkey` | Server wallet for publish_root |
+
+    **Caller:** Deployer (one-time)
+
+    **Accounts:**
+    - `deployer` (signer, mut) — pays for account creation
+    - `config` (init) — PDA seed: `["dist_config"]`
+    - `system_program`
+
+    **Creates:**
+    - `DistributionConfig` PDA — global singleton
+
+    **Initial state:**
+    - `authority = deployer` (transferred to Team Multisig after bootstrap)
+    - `publish_authority = publish_authority param`
+    - `is_active = true`
+  </Accordion>
+</AccordionGroup>
+
+### Distributor Lifecycle
+
+<AccordionGroup>
+  <Accordion title="create_distributor">
+    Create a perpetual distributor for an OT project. One per OT mint, lives forever. Also creates the Accumulator PDA where USDC revenue arrives.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `vesting_period_secs` | `i64` | Vesting period (default: 31,536,000 = 365 days) |
+
+    **Caller:** Authority (Team Multisig)
+
+    **Accounts:**
+    - `authority` (signer) — must match `config.authority`
+    - `config` — validates authority, is_active
+    - `ot_mint` — the OT this distributor serves
+    - `distributor` (init) — PDA seed: `["merkle_dist", ot_mint]`
+    - `reward_vault` (init) — RWT token account, authority = distributor PDA
+    - `accumulator` (init) — PDA seed: `["accumulator", ot_mint]`
+    - `accumulator_usdc_ata` (init) — USDC ATA, authority = accumulator PDA
+    - `rwt_mint` — RWT token mint
+    - `usdc_mint` — USDC mint (for accumulator ATA)
+    - `token_program`, `system_program`, `associated_token_program`
+
+    **Creates:**
+    - `MerkleDistributor` PDA — perpetual distributor state
+    - Reward Vault — RWT ATA owned by distributor PDA
+    - `Accumulator` PDA — receives USDC from OT revenue
+    - Accumulator USDC ATA — USDC holding account
+
+    **Initial state:**
+    - `total_funded = 0`, `total_claimed = 0`
+    - `locked_vested = 0`, `last_fund_ts = now`
+    - `merkle_root = [0; 32]`, `epoch = 0`
+    - `is_active = true`
+
+    **Validation:**
+    - `vesting_period_secs > 0`
+  </Accordion>
+
+  <Accordion title="close_distributor">
+    Close a distributor permanently. Sweeps all unclaimed RWT to a destination.
+
+    **Caller:** Authority (Team Multisig)
+
+    **Accounts:**
+    - `authority` (signer) — must match `config.authority`
+    - `config`
+    - `distributor` (mut)
+    - `reward_vault` (mut) — RWT being swept
+    - `unclaimed_destination` (mut) — receives remaining RWT (typically ARL Treasury ATA)
+    - `token_program`
+
+    **Validation:**
+    - `distributor.is_active == true` (cannot close twice)
+
+    **Effect:** Transfers all remaining RWT → unclaimed_destination. Sets `distributor.is_active = false`. Emits `DistributorClosed`.
+
+    <Warning>
+      Closing a distributor immediately stops all claims. Holders with unvested rewards lose them. Authority should ensure all vesting is complete or communicate closure in advance. Consider waiting until `total_vested ≈ total_funded` before closing.
+    </Warning>
+  </Accordion>
+</AccordionGroup>
+
+### Funding
+
+<AccordionGroup>
+  <Accordion title="convert_to_rwt">
+    Convert accumulated USDC to RWT. Two-step: swap on DEX up to NAV price, mint remainder at NAV via RWT Engine. Accumulator PDA signs all transfers — no external keypairs needed.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `max_swap_amount` | `u64` | Max USDC to swap on DEX (rest minted at NAV) |
+    | `min_rwt_out` | `u64` | Minimum total RWT to receive (slippage protection against sandwich attacks on DEX swap) |
+
+    **Caller:** Permissionless (crank)
+
+    **Accounts:**
+    - `crank` (signer, mut)
+    - `config` — reads protocol_fee_bps, areal_fee_destination
+    - `distributor` (mut) — updates locked_vested, total_funded, last_fund_ts
+    - `accumulator` — PDA, signs USDC transfers and RWT transfer via seeds
+    - `fee_account` (mut) — constraint: `key == config.areal_fee_destination` (receives protocol fee in RWT)
+    - `accumulator_usdc_ata` (mut) — USDC source, constraint: `owner == accumulator.key()`
+    - `accumulator_rwt_ata` (mut) — intermediate RWT ATA, constraint: `owner == accumulator.key()`, `mint == rwt_mint` (receives RWT from DEX swap/RWT Engine mint, then transfers to reward_vault). Created by crank if needed via `init_if_needed`.
+    - `reward_vault` (mut) — final destination for RWT
+    - DEX accounts: `pool_state`, `dex_config`, `vault_in`, `vault_out`, `dao_fee_account`
+    - `dex_program` — constraint: `key == DEX_PROGRAM_ID`
+    - RWT Engine CPI accounts (must match `mint_rwt` instruction layout exactly):
+      - `rwt_vault` (mut) — RWT Engine vault PDA `["rwt_vault"]`, receives USDC deposit
+      - `rwt_mint` (mut) — RWT token mint, authority = rwt_vault PDA
+      - `capital_acc` (mut) — USDC ATA owned by rwt_vault (`vault.capital_accumulator_ata`)
+      - `rwt_engine_fee_account` (mut) — `vault.areal_fee_destination` (receives 0.5% mint fee)
+      - Accumulator PDA signs as `user` (depositor) in mint_rwt CPI
+    - `rwt_engine_program` — constraint: `key == RWT_ENGINE_PROGRAM_ID`
+    - `token_program`
+
+    **Logic:**
+    1. Read accumulator USDC balance. If 0, return.
+    2. Calculate DEX pool price vs RWT NAV
+    3. If pool price < NAV: CPI swap `min(max_swap_amount, balance)` USDC → RWT on DEX
+    4. If USDC remains: CPI to `rwt_engine::mint_rwt` at NAV (accumulator PDA signs as user)
+    5. **Fallback path:** If no DEX pool exists or pool has zero liquidity: mint ALL at NAV via RWT Engine. In this case, entire USDC volume bypasses DEX — no LP fees generated, no swap volume. This is expected during bootstrap (before pools exist) but should not occur in normal operation.
+    6. Calculate protocol fee on acquired RWT: `fee = rwt_acquired * protocol_fee_bps / 10,000`
+    7. Transfer `fee` RWT → fee_account (accumulator PDA signs)
+    8. Transfer `rwt_acquired - fee` → reward_vault (accumulator PDA signs)
+    9. Lock vesting: `locked_vested += (total_funded - locked_vested) * min(elapsed, period) / period` (cast to u128)
+    10. `total_funded += rwt_acquired - fee`
+    11. `last_fund_ts = now`
+    12. Validate: `rwt_acquired >= min_rwt_out` (slippage check — reverts if sandwich attack caused unfavorable swap)
+    13. Emit `StreamConverted`
+
+    **Effect:** USDC converted to RWT **and deposited** into reward vault in one atomic operation. Updates distributor vesting state. No separate `fund_distributor` call needed for converted funds.
+
+    <Note>
+      This instruction combines convert + fund into one atomic operation. The Accumulator PDA signs both the USDC swap/mint and the RWT transfer to reward vault. No intermediate state where RWT "floats" between accounts.
+    </Note>
+
+    <Warning>
+      **Circular dependency:** YD calls `rwt_engine::mint_rwt`, and RWT Engine calls `yd::claim` (via `claim_yield`). To avoid circular Anchor crate imports, YD uses raw `invoke_signed` for the RWT Engine CPI. Discriminator: `sha256("global:mint_rwt")[..8]`. Account layout must match RWT Engine's `mint_rwt` instruction exactly.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="fund_distributor">
+    Deposit RWT into distributor's reward vault. Locks previously vested amount and starts vesting new portion from now.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount` | `u64` | RWT amount to deposit |
+
+    **Caller:** Permissionless — anyone can fund
+
+    **Accounts:**
+    - `depositor` (signer)
+    - `config` — validates is_active
+    - `distributor` (mut) — updates locked_vested, total_funded, last_fund_ts
+    - `reward_vault` (mut) — receives RWT
+    - `depositor_token` (mut) — source RWT ATA, constraint: `owner == depositor`
+    - `fee_account` (mut) — constraint: `key == config.areal_fee_destination`
+    - `token_program`
+
+    **Validation:**
+    - `amount > 0`
+    - `amount >= config.min_distribution_amount` (default $100 equivalent)
+    - `distributor.is_active == true`
+
+    **Logic:**
+    1. Calculate protocol fee: `fee = amount * protocol_fee_bps / 10,000`
+    2. Transfer fee → fee_account
+    3. Transfer `amount - fee` → reward_vault
+    4. Lock vesting: `locked_vested += (total_funded - locked_vested) * min(elapsed, period) / period` (cast to u128 before multiply)
+    5. `total_funded += amount - fee`
+    6. `last_fund_ts = now`
+    7. Emit `DistributorFunded`
+
+    <Note>
+      The locked_vested calculation preserves already-earned yield when new funds arrive. Without this, adding funds would dilute vesting progress of existing deposits.
+    </Note>
+  </Accordion>
+</AccordionGroup>
+
+### Distribution
+
+<AccordionGroup>
+  <Accordion title="publish_root">
+    Publish a new merkle root representing current OT holder weights. Called every 10 minutes by the publish authority (server wallet).
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `merkle_root` | `[u8; 32]` | Root hash of the merkle tree |
+    | `max_total_claim` | `u64` | Must equal current `total_funded` |
+
+    **Caller:** Publish authority (server wallet)
+
+    **Accounts:**
+    - `publish_authority` (signer) — must match `config.publish_authority`
+    - `config` — validates publish_authority, is_active
+    - `distributor` (mut) — updates merkle_root, epoch
+
+    **Validation:**
+    - `max_total_claim > 0` (prevents division by zero in `claim` — cannot publish root for unfunded distributor)
+    - `max_total_claim == distributor.total_funded`
+    - `max_total_claim >= distributor.total_claimed`
+
+    **Merkle leaf format:** `sha256(claimant_pubkey_bytes || cumulative_amount_le_bytes)`
+
+    Where `cumulative_amount` = holder's proportional share of `total_funded`:
+    ```
+    cumulative_amount = total_funded * holder_ot_balance / total_ot_supply
+    ```
+
+    **Effect:** Increments `epoch`, stores new root. Emits `RootPublished`.
+
+    **Recommended frequency:** Every 10 minutes (off-chain crank). Ensures holder balance changes reflected within 10 min. Must also be called immediately after each `fund_distributor` to make new funds claimable. Cost: ~$2.60/month per OT project.
+  </Accordion>
+
+  <Accordion title="claim">
+    Claim vested RWT rewards. Can be called anytime, as often as desired. Vesting accrues every second.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `cumulative_amount` | `u64` | Holder's cumulative share (from merkle leaf) |
+    | `proof` | `Vec<[u8; 32]>` | Merkle proof path (max 20 nodes) |
+
+    **Caller:** Holder (or PDA via CPI — e.g., RWT Vault, ARL Treasury)
+
+    **Accounts:**
+    - `claimant` (signer) — holder wallet or PDA
+    - `payer` (signer, mut) — pays rent for ClaimStatus init on first claim
+    - `distributor` — reads vesting state, merkle_root
+    - `claim_status` (init_if_needed) — PDA seed: `["claim_status", distributor, claimant]`
+    - `reward_vault` (mut) — source of RWT
+    - `claimant_token` (mut) — holder's RWT ATA, constraint: `mint == reward_vault.mint`
+    - `token_program`, `system_program`
+
+    **Validation:**
+    - `distributor.is_active == true` (cannot claim from closed distributor)
+    - Merkle proof: `verify(proof, root, sha256(claimant || cumulative_amount))`
+    - `proof.len() <= MAX_PROOF_LEN` (20)
+    - `epoch > 0` (root must be published)
+
+    **Logic:**
+    1. Verify merkle proof
+    2. Initialize ClaimStatus if first claim (claimant, distributor, claimed_amount=0)
+    3. Calculate total_vested (cast to u128 **before** multiply, same as fund logic):
+       ```
+       new_portion = total_funded - locked_vested
+       new_vested = (new_portion as u128) * (min(now - last_fund_ts, vesting_period) as u128) / (vesting_period as u128)
+       total_vested = locked_vested + new_vested as u64
+       ```
+    4. Cap at published root: `total_vested = min(total_vested, max_total_claim)` (prevents over-claiming if fund happened after last publish_root)
+    5. Minimum vested: `total_vested = max(total_vested, min(MIN_VESTED_AMOUNT, max_total_claim))`
+    6. Personal share: `my_vested = (total_vested as u128) * cumulative_amount / max_total_claim`
+    7. `claimable = my_vested - claim_status.claimed_amount`
+    8. If claimable == 0, return
+    9. Transfer `claimable` RWT: reward_vault → claimant_token (distributor PDA signs)
+    10. `claim_status.claimed_amount += claimable`
+    11. `distributor.total_claimed += claimable`
+    12. Emit `RewardsClaimed`
+  </Accordion>
+</AccordionGroup>
+
+### Configuration & Authority
+
+<AccordionGroup>
+  <Accordion title="update_config">
+    Update global distribution configuration.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `protocol_fee_bps` | `u16` | New fee BPS |
+    | `min_distribution_amount` | `u64` | New minimum |
+    | `is_active` | `bool` | Global active flag |
+
+    **Caller:** Authority (Team Multisig)
+
+    **Accounts:**
+    - `authority` (signer) — must match `config.authority`
+    - `config` (mut)
+
+    **Effect:** Overwrites config values. Emits `ConfigUpdated`.
+
+    <Note>
+      `areal_fee_destination` is immutable — set at init, cannot be changed. Only a program upgrade can modify it.
+    </Note>
+  </Accordion>
+
+  <Accordion title="update_publish_authority">
+    Change the server wallet that can call publish_root.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `new_publish_authority` | `Pubkey` | New server wallet |
+
+    **Caller:** Authority (Team Multisig)
+
+    **Accounts:**
+    - `authority` (signer) — must match `config.authority`
+    - `config` (mut)
+
+    **Effect:** Sets `config.publish_authority = new_publish_authority`. Emits `PublishAuthorityUpdated`.
+  </Accordion>
+
+  <Accordion title="propose_authority_transfer">
+    Step 1: Current authority proposes a new config authority.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `new_authority` | `Pubkey` | Proposed new authority |
+
+    **Caller:** Current authority
+
+    **Accounts:**
+    - `authority` (signer) — must match `config.authority`
+    - `config` (mut)
+
+    **Validation:** `new_authority ≠ current authority` (no self-transfer)
+
+    **Effect:** Sets `config.pending_authority = Some(new_authority)`. Emits `AuthorityTransferProposed`.
+
+    <Note>
+      Calling again **overwrites** any existing pending_authority. The previous proposed authority loses their ability to accept.
+    </Note>
+  </Accordion>
+
+  <Accordion title="accept_authority_transfer">
+    Step 2: Proposed authority accepts the transfer.
+
+    **Caller:** The proposed new authority (must sign)
+
+    **Accounts:**
+    - `new_authority` (signer) — must match `config.pending_authority`
+    - `config` (mut)
+
+    **Validation:** `signer == config.pending_authority`
+
+    **Effect:** Sets `authority = new_authority`, clears `pending_authority`. Emits `AuthorityTransferAccepted`.
+  </Accordion>
+</AccordionGroup>
+
+## State Accounts
+
+### DistributionConfig
+
+Global singleton. One per protocol deployment.
+
+| Field | Type | Description |
+|---|---|---|
+| `authority` | `Pubkey` | Config authority (Team Multisig after bootstrap) |
+| `pending_authority` | `Option<Pubkey>` | Pending authority transfer target |
+| `publish_authority` | `Pubkey` | Server wallet for publish_root (changeable by authority) |
+| `protocol_fee_bps` | `u16` | Fee on fund_distributor (default: 25 = 0.25%) |
+| `min_distribution_amount` | `u64` | Minimum fund amount |
+| `areal_fee_destination` | `Pubkey` | Areal Finance **RWT ATA** — receives protocol fee in RWT (static, immutable) |
+| `is_active` | `bool` | Global kill switch |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["dist_config"]`
+
+### MerkleDistributor
+
+One per OT project, perpetual (never recreated).
+
+| Field | Type | Description |
+|---|---|---|
+| `ot_mint` | `Pubkey` | The OT this distributor serves |
+| `reward_vault` | `Pubkey` | RWT token account (authority = distributor PDA) |
+| `accumulator` | `Pubkey` | Accumulator PDA for this OT (USDC arrives here) |
+| `merkle_root` | `[u8; 32]` | Current merkle root of holder weights |
+| `max_total_claim` | `u64` | Equal to total_funded (safety cap) |
+| `total_claimed` | `u64` | Cumulative RWT claimed across all holders |
+| `total_funded` | `u64` | Cumulative RWT deposited (grows with each fund) |
+| `locked_vested` | `u64` | RWT guaranteed vested (locked at each fund) |
+| `last_fund_ts` | `i64` | Timestamp of last fund_distributor call |
+| `vesting_period_secs` | `i64` | Vesting duration (default: 365 days) |
+| `epoch` | `u64` | publish_root counter |
+| `is_active` | `bool` | Active flag (false after close_distributor) |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["merkle_dist", ot_mint]`
+
+<Note>
+  No `stream_id` in seed — one distributor per OT mint. This is the key simplification vs multi-stream architecture.
+</Note>
+
+### Accumulator
+
+Per-OT USDC receiving account. Owned by the contract — no external keypairs. OT `distribute_revenue` sends USDC here. `convert_to_rwt` spends from here.
+
+| Field | Type | Description |
+|---|---|---|
+| `ot_mint` | `Pubkey` | The OT this accumulator serves |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["accumulator", ot_mint]`
+
+<Note>
+  Accumulator does not store USDC balance in state. Balance is read from the USDC ATA owned by this PDA. The PDA signs USDC transfers in `convert_to_rwt` via seeds.
+</Note>
+
+### ClaimStatus
+
+Per (distributor, claimant) tracking. Created on first claim via `init_if_needed`.
+
+| Field | Type | Description |
+|---|---|---|
+| `claimant` | `Pubkey` | Holder wallet or PDA |
+| `distributor` | `Pubkey` | Which distributor this tracks |
+| `claimed_amount` | `u64` | Cumulative RWT claimed |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["claim_status", distributor, claimant]`
+
+## PDA Seeds
+
+| Account | Seeds | Description |
+|---|---|---|
+| DistributionConfig | `"dist_config"` | Global singleton config |
+| MerkleDistributor | `"merkle_dist"`, `ot_mint` | Per-OT perpetual distributor |
+| Accumulator | `"accumulator"`, `ot_mint` | Per-OT USDC receiver (contract-owned) |
+| ClaimStatus | `"claim_status"`, `distributor`, `claimant` | Per-holder claim tracking |
+
+## Constants
+
+| Constant | Value | Description |
+|---|---|---|
+| `BPS_DENOMINATOR` | `10,000` | 100% in basis points |
+| `DEFAULT_PROTOCOL_FEE_BPS` | `25` | 0.25% fee on fund_distributor |
+| `DEFAULT_MIN_DISTRIBUTION` | `100,000,000` | $100 equivalent (6 decimals) |
+| `DEFAULT_VESTING_PERIOD` | `31,536,000` | 365 days in seconds |
+| `MAX_PROOF_LEN` | `20` | Max merkle proof depth (~1M holders) |
+| `MIN_VESTED_AMOUNT` | `1,000,000` | 1 RWT minimum vested (prevents stuck at zero) |
+| `RWT_ENGINE_PROGRAM_ID` | hardcoded | Validated in convert_to_rwt |
+| `DEX_PROGRAM_ID` | hardcoded | Validated in convert_to_rwt |
+
+## Events
+
+| Event | Fields | When |
+|---|---|---|
+| `ConfigInitialized` | authority, publish_authority, protocol_fee_bps, timestamp | Config created |
+| `DistributorCreated` | ot_mint, reward_vault, accumulator, vesting_period_secs, timestamp | Distributor created |
+| `DistributorFunded` | ot_mint, amount, protocol_fee, total_funded, locked_vested, timestamp | RWT deposited |
+| `StreamConverted` | ot_mint, usdc_swapped, rwt_minted, total_rwt, timestamp | USDC→RWT conversion |
+| `RootPublished` | ot_mint, epoch, merkle_root, max_total_claim, timestamp | New root published |
+| `RewardsClaimed` | claimant, ot_mint, amount, cumulative_claimed, timestamp | Holder claimed RWT |
+| `ConfigUpdated` | protocol_fee_bps, min_distribution_amount, is_active, timestamp | Config changed |
+| `PublishAuthorityUpdated` | old_publish_authority, new_publish_authority, timestamp | Publish wallet changed |
+| `AuthorityTransferProposed` | current_authority, pending_authority, timestamp | Transfer proposed |
+| `AuthorityTransferAccepted` | old_authority, new_authority, timestamp | Transfer accepted |
+| `DistributorClosed` | ot_mint, unclaimed_swept, timestamp | Distributor retired |
+
+## Error Codes
+
+| Error | Description |
+|---|---|
+| `Unauthorized` | Signer is not the required authority |
+| `SystemPaused` | Global config is_active = false |
+| `DistributorNotActive` | Distributor is closed |
+| `ZeroAmount` | Amount must be > 0 |
+| `BelowMinDistribution` | Fund amount below min_distribution_amount |
+| `RootNotPublished` | Cannot claim before first publish_root (epoch = 0) |
+| `InvalidProof` | Merkle proof verification failed |
+| `NothingToClaim` | Claimable amount = 0 |
+| `ProofTooLong` | Proof exceeds MAX_PROOF_LEN (20) |
+| `ExceedsMaxClaim` | total_claimed would exceed max_total_claim |
+| `SlippageExceeded` | rwt_acquired < min_rwt_out (sandwich protection) |
+| `MathOverflow` | Arithmetic overflow |
+| `InvalidVestingPeriod` | vesting_period_secs must be > 0 |
+| `SelfTransfer` | Cannot transfer authority to yourself |
+| `NoPendingAuthority` | No pending transfer to accept |
+| `InvalidPendingAuthority` | Signer ≠ pending_authority |
+
+## Architecture & Integration Guide
+
+### Cross-Program Integration
+
+<AccordionGroup>
+  <Accordion title="← Ownership Token (receives 70% revenue as USDC)">
+    - OT `distribute_revenue` sends 70% **USDC** to Accumulator PDA's USDC ATA
+    - Accumulator PDA address is derived: `["accumulator", ot_mint]`
+    - OT destination config points to this ATA
+    - Flow: OT revenue → Accumulator USDC ATA → `convert_to_rwt` (atomic: convert USDC→RWT + deposit to vault)
+  </Accordion>
+
+  <Accordion title="→ RWT Engine (convert USDC → RWT)">
+    - `convert_to_rwt` CPIs to `native_dex::swap` (buy RWT below NAV)
+    - If USDC remains: CPIs to `rwt_engine::mint_rwt` (mint at NAV)
+    - Accumulator PDA signs as user/depositor
+    - Uses raw `invoke_signed` for RWT Engine CPI (circular dependency workaround)
+  </Accordion>
+
+  <Accordion title="→ RWT Engine (vault claims yield)">
+    - RWT Vault is an OT holder → has a leaf in merkle tree
+    - RWT Engine `claim_yield` CPIs to `yield_distribution::claim`
+    - Vault PDA signs as claimant
+  </Accordion>
+
+  <Accordion title="→ Ownership Token (ARL Treasury claims non-eligible share)">
+    - Non-eligible holders' share from ALL OT projects → **ARL OtTreasury PDA** leaf in merkle tree (protocol revenue)
+    - OT `claim_yd_for_treasury` (called on ARL OT instance) CPIs to `yield_distribution::claim`
+    - ARL OtTreasury PDA signs as claimant (OT contract signs via PDA seeds)
+    - ARL Treasury = `["ot_treasury", arl_ot_mint]` — same PDA as any other OT's treasury, just for the ARL project
+  </Accordion>
+
+  <Accordion title="→ Team Multisig (config authority)">
+    - Config authority = Team Multisig after bootstrap
+    - create/close distributor, update_config, update_publish_authority controlled by team
+  </Accordion>
+</AccordionGroup>
+
+### Authority Model
+
+<CardGroup cols={3}>
+  <Card title="🔧 Program Upgrade" icon="wrench">
+    **Team Multisig (Squads)**
+
+    Can deploy new contract versions.
+  </Card>
+  <Card title="🏛️ Config Authority" icon="landmark">
+    **Team Multisig** (after bootstrap)
+
+    - `create_distributor` / `close_distributor`
+    - `update_config`
+    - `update_publish_authority`
+    - `propose_authority_transfer`
+  </Card>
+  <Card title="📡 Publish Authority" icon="tower-broadcast">
+    **Server wallet** (VPS crank bot)
+
+    - `publish_root` (every 10 min)
+
+    Builds merkle tree off-chain, publishes root. Changeable by config authority.
+  </Card>
+</CardGroup>
+
+<Warning>
+  **Immutable after init:** `areal_fee_destination` cannot be changed. Only a program upgrade can modify it.
+</Warning>
+
+<Warning>
+  **Publish authority trust:** If the server wallet is compromised, an attacker could publish a fraudulent merkle root and claim yield to attacker wallets.
+
+  **On-chain mitigations:**
+  - `ClaimStatus` tracks `cumulative_claimed` per claimant — once a holder claims, they cannot re-claim the same amount even under a new root. An attacker cannot steal already-claimed funds.
+  - `max_total_claim == total_funded` — caps total claimable at actual RWT in vault, preventing inflation attacks.
+  - `config.is_active` kill switch — Team Multisig can pause all claims immediately via `update_config(is_active: false)`.
+  - `update_publish_authority` — Team Multisig replaces compromised wallet instantly.
+
+  **Off-chain mitigations:**
+  - All root publishes visible on-chain via `RootPublished` events — monitor for unexpected roots.
+  - Automated alert if root published by unexpected wallet or at unusual frequency.
+
+  **Limitation:** No root history or invalidation mechanism. A fraudulent root is valid until overwritten by the next `publish_root`. The window of vulnerability = time between compromise detection and `update_publish_authority` + new `publish_root`.
+</Warning>
+
+### Deployment Checklist
+
+**Prerequisites:** RWT Engine and Native DEX must be deployed (needed for convert_to_rwt CPI).
+
+1. **Call `initialize_config`** with areal_fee_destination, publish_authority (server wallet)
+2. **Create distributor** for each OT project via `create_distributor` (also creates Accumulator PDA)
+3. **Configure OT revenue destination** to point to Accumulator USDC ATA
+4. **Transfer config authority** to Team Multisig via `propose_authority_transfer` + `accept_authority_transfer`
+5. **Start crank bot** — publish_root every 10 minutes, convert_to_rwt after each OT revenue distribution
+
+<Warning>
+  Step 2 and 3 must happen before first OT revenue distribution. Otherwise, USDC has nowhere to go.
+</Warning>
+
+### Token Flow Summary
+
+| From | To | Mechanism | Who triggers |
+|------|-----|-----------|-------------|
+| OT Revenue (USDC) | Accumulator USDC ATA | OT distribute_revenue | Crank |
+| Accumulator USDC | Reward vault RWT (via DEX + mint) | convert_to_rwt (atomic: convert + fund) | Crank |
+| External RWT | Reward vault | fund_distributor (direct RWT deposit) | Anyone |
+| Reward vault | Holder RWT ATA | claim (per-claimant vesting) | Holder |
+| Reward vault | RWT Vault ATA | claim (via RWT Engine CPI) | Crank |
+| Reward vault | ARL OtTreasury RWT ATA | claim (via OT `claim_yd_for_treasury` on ARL instance) | Crank |
+| Reward vault | Destination (on close) | close_distributor | Authority |
+
+### Merkle Tree Construction (Off-chain)
+
+The merkle tree is built off-chain by the publish authority server every 10 minutes:
+
+1. Scan all token accounts for the OT mint (`getParsedProgramAccounts`). This includes regular wallets AND on-chain PDAs that hold OT: **RWT Vault PDA** (holds OT as portfolio backing), **DEX Pool PDAs** (pool vaults hold OT with pool PDA as authority), and **OtTreasury PDA** (may hold OT from governance).
+2. Filter: only holders with ≥ $100 total protocol holdings
+3. Calculate cumulative_amount per holder: `total_funded * holder_balance / total_eligible_supply`
+4. Non-eligible share → **ARL Treasury** wallet as leaf (protocol revenue — Areal Finance earns yield from holders below $100 threshold)
+5. Build tree: leaf = `sha256(address_bytes || cumulative_amount_le_bytes)`
+6. Publish root on-chain via `publish_root`
+
+**Recommended frequency:** Every 10 minutes. Cost: ~$2.60/month per OT project. Off-chain compute: ~300ms per OT (10K holders). Infrastructure: VPS ($10/month) + free RPC tier.
+
+<Note>
+  The contract only verifies proofs — it does not scan holders or compute weights. All tree construction is off-chain.
+</Note>

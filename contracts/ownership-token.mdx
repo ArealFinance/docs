@@ -1,0 +1,631 @@
+---
+title: "Ownership Token (OT)"
+description: "Per-project tokenized ownership with revenue collection and distribution"
+---
+
+# Ownership Token
+
+<Card title="✅ Ready to Dev" icon="check" color="#48bb78">
+  This contract specification has passed business logic audit, technical review, and cross-program integration check. A developer can implement from this document.
+</Card>
+
+Each real-world asset project gets its own OT mint. The OT contract handles token minting, revenue collection from the asset, and automatic distribution to configured destinations. All management operations require governance authority.
+
+<Warning>
+  **Upgradeable contract.** Program upgrade authority = Team Multisig (Squads). This allows the development team to deploy new versions of the contract code via multisig approval. Upgrade authority is separate from governance authority — governance controls business logic (mint, spend, destinations), while upgrade authority controls the program binary.
+</Warning>
+
+## Key Concepts
+
+<CardGroup cols={3}>
+  <Card title="8 Instructions" icon="code">
+    Mint, distribute, spend treasury, claim YD for treasury, batch destinations, authority transfer
+  </Card>
+  <Card title="5 State Accounts" icon="database">
+    OtConfig, RevenueAccount, RevenueConfig, OtGovernance, OtTreasury
+  </Card>
+  <Card title="5 PDA Seeds" icon="key">
+    ot_config, revenue, revenue_config, ot_governance, ot_treasury
+  </Card>
+</CardGroup>
+
+## Revenue Flow
+
+<Steps>
+  <Step title="Revenue Deposit">
+    Asset manager sends USDC to **RevenueAccount ATA** via standard SPL transfer. No special instruction — anyone can deposit at any time.
+  </Step>
+  <Step title="Distribution Trigger">
+    When ATA balance ≥ $100 **and** at least 7 days since last distribution, any crank bot calls `distribute_revenue`. Reentrancy guard prevents double execution.
+
+    Validation: `revenue_token_account.amount ≥ min_distribution_amount` AND `now - last_distribution_ts ≥ 604,800` (7 days in seconds).
+  </Step>
+  <Step title="Protocol Fee">
+    0.25% (25 bps) is deducted first and sent to `areal_fee_destination` (static Areal Finance address, set at init).
+  </Step>
+  <Step title="Revenue Split">
+    Remainder distributed proportionally to active destinations:
+
+    | Destination | Default BPS | Description |
+    |---|---|---|
+    | **YD Accumulator** | 7,000 (70%) | USDC → YD converts to RWT → merkle streams for OT holders |
+    | **OT Treasury** | 2,000 (20%) | Project treasury (multi-token wallet) |
+    | **Liquidity Nexus** | 1,000 (10%) | DEX liquidity management (via crank → `nexus_deposit`) |
+
+  </Step>
+</Steps>
+
+<Note>
+  Revenue split is configurable per project via `batch_update_destinations`. Default: 70% YD holders, 20% Treasury, 10% Liquidity Nexus. Total must always equal 10,000 bps (100%). After `initialize_ot`, destinations are empty (active_count = 0) — `distribute_revenue` will fail until `batch_update_destinations` is called.
+</Note>
+
+## Instructions
+
+### Initialization
+
+<AccordionGroup>
+  <Accordion title="initialize_ot">
+    Register an existing SPL mint as an Ownership Token and create all required PDA accounts. Called once per project. The mint must be created externally beforehand (supports vanity addresses).
+
+    **Pre-requisite:** Create the SPL mint externally before calling this instruction. This allows vanity mint addresses (e.g., `RCPxxxxxx...` generated via `solana-keygen grind`). The mint must have `supply == 0` and `mint_authority == deployer`.
+
+    **Parameters:**
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `name` | `[u8; 32]` | Token name (e.g. "Rental Car Pool"), null-padded |
+    | `symbol` | `[u8; 10]` | Token symbol (e.g. "RCP"), null-padded |
+    | `uri` | `[u8; 200]` | Metadata URI, null-padded |
+    | `initial_authority` | `Pubkey` | Initial governance authority |
+    | `areal_fee_destination` | `Pubkey` | Where 0.25% protocol fee goes — Areal Finance **USDC ATA** (static, immutable). Must be a USDC token account, not a wallet address. |
+
+    **Caller:** Deployer (one-time per project)
+
+    **Accounts:**
+    - `deployer` (signer, mut) — current mint_authority of ot_mint, pays for account creation
+    - `ot_mint` (mut) — existing SPL mint (vanity address OK)
+    - `usdc_mint` (readonly) — USDC mint address (for creating Revenue ATA)
+
+    **Validation:**
+    - `ot_mint.supply == 0` (fresh mint, no tokens issued yet)
+    - `ot_mint.mint_authority == deployer` (deployer controls the mint)
+    - `ot_mint.freeze_authority == None` (no freeze)
+    - `ot_mint.decimals ≤ MAX_DECIMALS` (9) and `ot_mint.decimals ≥ 1` (financial tokens need decimals)
+    - `name` and `symbol` non-empty
+
+    **Creates (6 accounts):**
+    - `OtConfig` PDA — holds token metadata, becomes new mint authority via `set_authority`
+    - `RevenueAccount` PDA — tracks distribution state
+    - **Revenue USDC ATA** — Associated Token Account for USDC, owned by RevenueAccount PDA. This is where all revenue deposits arrive.
+    - `RevenueConfig` PDA — stores destination array and protocol fee destination
+    - `OtGovernance` PDA — stores authority and governance parameters
+    - `OtTreasury` PDA — project treasury, can hold any tokens (ATAs created externally)
+
+    **Mint authority transfer:** At the end of `initialize_ot`, the instruction calls `spl_token::set_authority` to transfer `mint_authority` from deployer → OtConfig PDA. After this, only the OT contract can mint tokens.
+
+    <Note>
+      **Vanity address workflow:** `solana-keygen grind --starts-with RCP` → `spl-token create-token RCP_keypair.json --decimals 6` → `initialize_ot(ot_mint: RCP_address, ...)`. Decimals are read from the existing mint — not passed as a parameter.
+    </Note>
+  </Accordion>
+</AccordionGroup>
+
+### Minting
+
+<AccordionGroup>
+  <Accordion title="mint_ot">
+    Mint OT tokens to any recipient wallet.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount` | `u64` | Number of tokens to mint (in smallest units) |
+
+    **Caller:** Authority (Futarchy PDA)
+
+    **Accounts:**
+    - `authority` (signer) — must match `ot_governance.authority`
+    - `ot_governance` — validates authority and `is_active`
+    - `ot_config` (mut) — increments `total_minted`
+    - `ot_mint` (mut) — the SPL mint
+    - `recipient_token_account` (init_if_needed) — recipient's ATA
+    - `recipient` — any pubkey
+    - `payer` (signer) — pays for ATA creation if needed
+
+    **Validation:**
+    - `amount > 0`
+
+    **Effect:** Mints tokens via OtConfig PDA as mint authority. Emits `OtMinted` event.
+  </Accordion>
+</AccordionGroup>
+
+### Revenue
+
+Revenue is deposited by sending USDC directly to the RevenueAccount's ATA via standard SPL transfer — no special instruction needed. Anyone (asset manager, off-chain service, etc.) can send USDC to this ATA at any time. The ATA is created at init for USDC mint only — it can only hold USDC.
+
+<AccordionGroup>
+  <Accordion title="distribute_revenue">
+    Distribute accumulated USDC revenue to configured destinations. This is a permissionless crank operation — any wallet can trigger it.
+
+    **Caller:** Permissionless (crank)
+
+    **Accounts:**
+    - `crank` (signer) — any wallet
+    - `revenue_account` (mut) — must not be distributing (reentrancy guard)
+    - `revenue_token_account` (mut) — USDC ATA owned by revenue_account
+    - `revenue_config` — contains destination array and `areal_fee_destination`
+    - `areal_fee_account` (mut) — **must match `revenue_config.areal_fee_destination`** (validated on-chain)
+    - Remaining accounts: one USDC token account for each of the first `active_count` destinations, in array order. The instruction iterates destinations 0..active_count and matches them 1:1 with remaining accounts — mismatch will fail with `DestinationAccountMismatch`.
+
+    **Validation:**
+    - `revenue_token_account.amount ≥ min_distribution_amount` (default $100, reads ATA balance directly)
+    - `now - last_distribution_ts ≥ DISTRIBUTION_COOLDOWN` (7 days)
+    - Active destination BPS sum = 10,000
+    - `is_distributing == false` (reentrancy guard)
+
+    <Note>
+      **Solana TX atomicity:** If the transaction fails at ANY step, ALL state changes are rolled back — including `is_distributing`. Deadlock is impossible on Solana because failed transactions cannot leave partial state. The reentrancy guard protects against same-transaction CPI re-entry only.
+    </Note>
+
+    **Logic:**
+    1. Set `is_distributing = true`
+    2. Read `revenue_token_account.amount` (actual USDC balance on ATA)
+    3. Calculate protocol fee: `balance × 25 / 10,000` (0.25%, ceiling division)
+    4. Transfer fee to `areal_fee_account`
+    5. Distribute remainder proportionally to each active destination
+    6. Last destination gets rounding remainder (dust prevention)
+    7. Update `last_distribution_ts = now`, increment `distribution_count`, add to `total_distributed`
+    8. Set `is_distributing = false`
+    9. Emit `RevenueDistributed` event
+  </Accordion>
+</AccordionGroup>
+
+### Treasury
+
+The OT Treasury is a multi-token PDA wallet. It can hold USDC, RWT, OT, or any SPL token. Treasury receives USDC automatically from `distribute_revenue` (20% share). Other tokens (RWT, OT, etc.) can be sent by anyone via standard SPL transfer. ATAs are created externally (by the sender) before transferring.
+
+<AccordionGroup>
+  <Accordion title="spend_treasury">
+    Transfer tokens from the treasury to any destination. Governance only.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount` | `u64` | Token amount to transfer |
+
+    **Caller:** Authority (Futarchy PDA)
+
+    **Accounts:**
+    - `authority` (signer) — must match `ot_governance.authority`
+    - `ot_governance` — validates authority and `is_active`
+    - `ot_treasury` — Treasury PDA (signs the transfer via seeds)
+    - `treasury_token_account` (mut) — source ATA owned by Treasury PDA
+    - `destination_token_account` (mut) — recipient's token account (must exist before calling — no init_if_needed)
+    - `token_mint` — mint of the token being transferred
+
+    **Effect:** SPL transfer from treasury ATA → destination. Emits `TreasurySpent` event.
+
+    <Note>
+      Destination ATA must be created before calling `spend_treasury`. If it doesn't exist, the SPL transfer will fail. The caller (governance proposal executor) is responsible for ensuring the ATA exists.
+    </Note>
+  </Accordion>
+
+  <Accordion title="claim_yd_for_treasury">
+    Claim RWT yield from Yield Distribution on behalf of this OT project's Treasury PDA. Treasury PDA signs the YD claim CPI. Permissionless — any crank can trigger.
+
+    **Primary use case:** Non-eligible holders' (< $100 holdings) yield share from ALL OT projects is allocated to **ARL OtTreasury PDA** in the merkle tree. The crank calls this instruction on the **ARL OT instance** to claim that yield as protocol revenue. RWT arrives in ARL Treasury and can be spent by ARL Futarchy governance.
+
+    **Cross-project yield:** Any OT Treasury can hold OT tokens of other projects and earn yield from them. If RCP Treasury holds ARL OT worth ≥ $100, RCP Treasury appears as a leaf in the ARL YD merkle tree. Crank calls `claim_yd_for_treasury` on the **RCP OT instance**, passing ARL YD distributor accounts — RCP OtTreasury PDA signs the claim, and RWT arrives in RCP Treasury. This enables portfolio investments between protocol projects: treasuries earn yield on cross-project OT holdings, governed by each project's Futarchy.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `cumulative_amount` | `u64` | Treasury's cumulative share (from merkle leaf) |
+    | `proof` | `Vec<[u8; 32]>` | Merkle proof path |
+
+    **Caller:** Permissionless (crank)
+
+    **Accounts:**
+    - `crank` (signer, mut) — pays for ClaimStatus init if first claim
+    - `ot_treasury` — Treasury PDA, signs YD claim CPI via seeds
+    - `treasury_rwt_ata` (mut) — Treasury's RWT ATA, constraint: `owner == ot_treasury.key()`
+    - `ot_mint` — for PDA derivation
+    - YD CPI accounts: `yd_distributor`, `yd_claim_status`, `yd_reward_vault` (all UncheckedAccount)
+    - `yield_distribution_program` — constraint: `key == YD_PROGRAM_ID`
+    - `token_program`, `system_program`
+
+    **Logic:**
+    1. CPI → `yield_distribution::claim(cumulative_amount, proof)` with OtTreasury PDA as claimant
+    2. RWT arrives in treasury_rwt_ata
+    3. Emit `TreasuryYieldClaimed`
+
+    <Note>
+      **ARL Treasury = ARL OtTreasury PDA** `["ot_treasury", arl_ot_mint]`. This is the same PDA created by `initialize_ot` for the ARL project. Non-eligible yield from all OT projects is protocol revenue that accumulates in ARL Treasury. ARL Futarchy governance controls spending via `spend_treasury`.
+    </Note>
+  </Accordion>
+</AccordionGroup>
+
+### Destination Management
+
+<AccordionGroup>
+  <Accordion title="batch_update_destinations">
+    Atomically replace the entire revenue destination configuration. Clears all existing destinations and writes new ones. This is the only instruction for managing destinations — no separate add/update/remove.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `destinations` | `Vec<BatchDestination>` | New complete destination set (1-10 entries) |
+
+    Each `BatchDestination`:
+
+    | Field | Type | Description |
+    |---|---|---|
+    | `address` | `Pubkey` | Target USDC token account |
+    | `allocation_bps` | `u16` | Allocation in basis points (1-10,000) |
+    | `label` | `[u8; 32]` | Human-readable label |
+
+    **Caller:** Authority (Futarchy PDA)
+
+    **Accounts:**
+    - `authority` (signer) — must match `ot_governance.authority`
+    - `ot_governance` — validates authority and `is_active`
+    - `revenue_config` (mut) — destination array is overwritten
+    - `ot_mint` — for PDA derivation
+
+    **Validation:**
+    - 1 ≤ destinations.len() ≤ 10
+    - Each allocation_bps ∈ [1, 10,000]
+    - Each address ≠ `Pubkey::default()` (no zero address)
+    - Each address ≠ `areal_fee_destination` (prevent fee destination collision)
+    - No duplicate addresses
+    - Total BPS = 10,000
+
+    <Warning>
+      **No on-chain ATA validation.** The contract does NOT verify that destination addresses are valid initialized USDC token accounts. If governance sets an invalid address, `distribute_revenue` will fail at transfer time with `DestinationAccountMismatch`. Off-chain tooling should validate addresses before submitting proposals.
+    </Warning>
+
+    **Effect:** Clears all 10 slots, writes new destinations, updates `active_count` and `config_version`. Emits `DestinationConfigUpdated`.
+
+    <Note>
+      **CPI from Futarchy:** When called via `execute_proposal(UpdateDestinations)`, Futarchy passes destinations through `remaining_accounts` (Borsh-serialized `Vec<BatchDestination>`). The OT instruction deserializes remaining_accounts data into `Vec<BatchDestination>` and applies normally. Futarchy verifies `params_hash == sha256(borsh_serialize(destinations))` before CPI to ensure executor passes the exact destinations that were proposed.
+    </Note>
+  </Accordion>
+</AccordionGroup>
+
+### Authority Transfer
+
+Two-step governance authority handoff. Prevents accidental transfers.
+
+<AccordionGroup>
+  <Accordion title="propose_authority_transfer">
+    Step 1: Current authority proposes a new authority.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `new_authority` | `Pubkey` | Proposed new authority |
+
+    **Caller:** Current authority
+
+    **Accounts:**
+    - `authority` (signer) — must match `ot_governance.authority`
+    - `ot_governance` (mut)
+
+    **Validation:** `new_authority ≠ current_authority` (no self-transfer)
+
+    **Effect:** Sets `ot_governance.pending_authority = Some(new_authority)`. Emits `AuthorityTransferProposed`.
+
+    <Note>
+      Calling `propose_authority_transfer` again **overwrites** any existing pending_authority without notification. The previous proposed authority loses their ability to accept.
+    </Note>
+  </Accordion>
+
+  <Accordion title="accept_authority_transfer">
+    Step 2: Proposed authority accepts the transfer.
+
+    **Caller:** The proposed new authority (must sign)
+
+    **Accounts:**
+    - `new_authority` (signer) — must match `ot_governance.pending_authority`
+    - `ot_governance` (mut)
+
+    **Validation:** `signer == ot_governance.pending_authority`
+
+    **Effect:** Sets `authority = new_authority`, clears `pending_authority`. Emits `AuthorityTransferAccepted`.
+  </Accordion>
+</AccordionGroup>
+
+## State Accounts
+
+### OtConfig
+
+Core token configuration. Acts as mint authority for the OT SPL Mint.
+
+| Field | Type | Description |
+|---|---|---|
+| `ot_mint` | `Pubkey` | SPL token mint address |
+| `name` | `[u8; 32]` | Token name, null-padded |
+| `symbol` | `[u8; 10]` | Token symbol, null-padded |
+| `decimals` | `u8` | Token decimals |
+| `total_minted` | `u64` | Tokens minted so far |
+| `uri` | `[u8; 200]` | Metadata URI, null-padded |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["ot_config", ot_mint]`
+
+### RevenueAccount
+
+Owns the USDC ATA where revenue accumulates. Balance is read directly from the ATA — no state tracking of deposits needed.
+
+| Field | Type | Description |
+|---|---|---|
+| `ot_mint` | `Pubkey` | The OT this belongs to |
+| `total_distributed` | `u64` | Lifetime USDC distributed |
+| `distribution_count` | `u64` | Number of distributions executed |
+| `last_distribution_ts` | `i64` | Unix timestamp of last distribution |
+| `min_distribution_amount` | `u64` | Minimum ATA balance to trigger distribution (default: 100_000_000 = $100) |
+| `is_distributing` | `bool` | Reentrancy guard flag |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["revenue", ot_mint]`
+
+### RevenueConfig
+
+Stores up to 10 revenue destinations and the protocol fee destination.
+
+| Field | Type | Description |
+|---|---|---|
+| `ot_mint` | `Pubkey` | The OT this belongs to |
+| `destinations` | `[RevenueDestination; 10]` | Fixed-size destination array |
+| `active_count` | `u8` | Number of active destinations |
+| `config_version` | `u64` | Incremented on every config change |
+| `areal_fee_destination` | `Pubkey` | Where 0.25% protocol fee is sent |
+| `bump` | `u8` | PDA bump seed |
+
+**RevenueDestination (embedded struct, not a PDA):**
+
+| Field | Type | Description |
+|---|---|---|
+| `address` | `Pubkey` | Target USDC token account |
+| `allocation_bps` | `u16` | Allocation in basis points |
+| `label` | `[u8; 32]` | Human-readable label (for UI/off-chain use) |
+
+Slots 0..`active_count` are active destinations. Remaining slots are zeroed/unused.
+
+**PDA Seed:** `["revenue_config", ot_mint]`
+
+### OtGovernance
+
+Governance authority and parameters. Controls minting and destination management.
+
+| Field | Type | Description |
+|---|---|---|
+| `ot_mint` | `Pubkey` | The OT this belongs to |
+| `authority` | `Pubkey` | Current governance authority (signer for all governance ops) |
+| `pending_authority` | `Option<Pubkey>` | Pending transfer target (set by propose, cleared by accept) |
+| `is_active` | `bool` | Governance active flag (reserved for future use) |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["ot_governance", ot_mint]`
+
+### OtTreasury
+
+Project treasury. A multi-token PDA wallet — can hold USDC, RWT, OT, or any SPL token. Token ATAs are created dynamically (init_if_needed) when tokens are deposited for the first time. The PDA itself signs transfers via seeds.
+
+| Field | Type | Description |
+|---|---|---|
+| `ot_mint` | `Pubkey` | The OT this treasury belongs to |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["ot_treasury", ot_mint]`
+
+<Note>
+  Treasury does NOT store ATA addresses in state. ATAs are derived as standard Associated Token Accounts with the Treasury PDA as owner. Any SPL token can be sent to the Treasury by creating an ATA for that mint.
+</Note>
+
+<Note>
+  **Cross-project investments:** Treasury can hold OT tokens of other projects. If holdings ≥ $100, Treasury appears in the other project's YD merkle tree and earns RWT yield — claimed via `claim_yd_for_treasury`. This enables inter-project portfolio investing, where each project's Futarchy governance decides which OT positions to take and when to sell via `spend_treasury`.
+</Note>
+
+## PDA Seeds
+
+| Account | Seeds | Description |
+|---|---|---|
+| OtConfig | `"ot_config"`, `ot_mint` | Token config, mint authority for OT |
+| RevenueAccount | `"revenue"`, `ot_mint` | Revenue accumulator, owns USDC ATA |
+| RevenueConfig | `"revenue_config"`, `ot_mint` | Destination allocations + fee destination |
+| OtGovernance | `"ot_governance"`, `ot_mint` | Governance authority |
+| OtTreasury | `"ot_treasury"`, `ot_mint` | Project treasury, multi-token wallet |
+
+## Constants
+
+| Constant | Value | Description |
+|---|---|---|
+| `BPS_DENOMINATOR` | `10,000` | 100% in basis points |
+| `Areal_PROTOCOL_FEE_BPS` | `25` | 0.25% protocol fee on distributions |
+| `MAX_DESTINATIONS` | `10` | Maximum revenue destinations per OT |
+| `MIN_DISTRIBUTION_AMOUNT` | `100,000,000` | $100 USDC (6 decimals) minimum to distribute |
+| `DISTRIBUTION_COOLDOWN` | `604,800` | 7 days in seconds — minimum interval between distributions |
+| `MAX_DECIMALS` | `9` | Maximum token decimals |
+| `MAX_NAME_LEN` | `32` | Token name max bytes |
+| `MAX_SYMBOL_LEN` | `10` | Token symbol max bytes |
+| `MAX_URI_LEN` | `200` | Metadata URI max bytes |
+| `YD_PROGRAM_ID` | hardcoded | Yield Distribution program ID (validated in claim_yd_for_treasury) |
+
+## Events
+
+| Event | Fields | When |
+|---|---|---|
+| `OtInitialized` | ot_mint, authority, decimals, timestamp | Token created |
+| `OtMinted` | ot_mint, recipient, amount, new_total_minted, timestamp | Tokens minted |
+| `RevenueDistributed` | ot_mint, total_amount, protocol_fee, distribution_count, num_destinations, timestamp | Revenue distributed |
+| `DestinationConfigUpdated` | ot_mint, config_version, active_count, timestamp | Destinations changed |
+| `AuthorityTransferProposed` | ot_mint, current_authority, pending_authority, timestamp | Transfer proposed |
+| `AuthorityTransferAccepted` | ot_mint, old_authority, new_authority, timestamp | Transfer accepted |
+| `TreasurySpent` | ot_mint, token_mint, amount, destination, timestamp | Tokens sent from treasury |
+| `TreasuryYieldClaimed` | ot_mint, amount, timestamp | Non-eligible yield claimed for treasury |
+
+## Error Codes
+
+| Error | Description |
+|---|---|
+| `Unauthorized` | Signer is not the governance authority |
+| `ZeroAmount` | Amount must be > 0 |
+| `InvalidBpsTotal` | Destination allocations don't sum to 10,000 |
+| `InvalidAllocationBps` | BPS not in range 1-10,000 |
+| `DuplicateDestination` | Same address used twice |
+| `EmptyDestinationList` | Batch update with empty list |
+| `TooManyDestinations` | More than 10 destinations |
+| `BelowMinDistribution` | ATA balance < $100 |
+| `DistributionCooldown` | Less than 7 days since last distribution |
+| `DistributionInProgress` | Reentrancy — distribution already running |
+| `InsufficientRemainingAccounts` | Not enough accounts for all destinations |
+| `DestinationAccountMismatch` | Remaining account doesn't match destination |
+| `MathOverflow` | Arithmetic overflow |
+| `InvalidMintSupply` | ot_mint.supply ≠ 0 (mint must be fresh) |
+| `InvalidMintAuthority` | ot_mint.mint_authority ≠ deployer |
+| `FreezeAuthoritySet` | ot_mint.freeze_authority is not None |
+| `InvalidName` | Empty name |
+| `InvalidSymbol` | Empty symbol |
+| `NoPendingAuthority` | No transfer to accept |
+| `InvalidPendingAuthority` | Signer ≠ pending_authority |
+| `AuthorityTransferToSelf` | Cannot transfer to yourself |
+
+## Architecture & Integration Guide
+
+### PDA Account Map
+
+5 PDAs are created by `initialize_ot` (SPL Mint is created externally beforehand for vanity address support):
+
+<CardGroup cols={3}>
+  <Card title="OtConfig" icon="gear">
+    **Seed:** `["ot_config", ot_mint]`
+
+    Mint authority for the SPL Mint. Stores name, symbol, decimals, total_minted, uri.
+
+    **Controlled by:** OtGovernance authority (for minting)
+  </Card>
+  <Card title="RevenueAccount" icon="money-bill">
+    **Seed:** `["revenue", ot_mint]`
+
+    Owns the USDC ATA where revenue accumulates. Anyone sends USDC here via SPL transfer. Tracks distribution_count, total_distributed. Has reentrancy guard.
+
+    **Used by:** `distribute_revenue` reads ATA balance directly
+  </Card>
+  <Card title="RevenueConfig" icon="sliders">
+    **Seed:** `["revenue_config", ot_mint]`
+
+    Array of 10 destination slots (address + allocation_bps + label). Stores `areal_fee_destination` (static). `config_version` increments on changes.
+
+    **Controlled by:** OtGovernance authority
+  </Card>
+</CardGroup>
+
+<CardGroup cols={2}>
+  <Card title="OtGovernance" icon="landmark">
+    **Seed:** `["ot_governance", ot_mint]`
+
+    Stores `authority` (Futarchy PDA after bootstrap), `pending_authority` for 2-step transfer. Controls: mint, spend, destinations.
+
+    **Connected to:** Futarchy program (authority = Futarchy config PDA)
+  </Card>
+  <Card title="OtTreasury" icon="vault">
+    **Seed:** `["ot_treasury", ot_mint]`
+
+    Multi-token PDA wallet. No fixed ATAs — holds any SPL token dynamically. Treasury PDA signs transfers via seeds.
+
+    **Receives:** 20% of revenue via distribute. **Spends:** governance only via `spend_treasury`. All spend history trackable via `TreasurySpent` events.
+  </Card>
+</CardGroup>
+
+### Cross-Program Integration
+
+<AccordionGroup>
+  <Accordion title="→ Yield Distribution (receives 70% revenue)">
+    - `distribute_revenue` sends 70% **USDC** to YD Accumulator ATA
+    - YD contract converts USDC → **RWT** (swap on DEX up to NAV price + mint remainder at NAV)
+    - YD creates merkle streams that distribute **RWT** to eligible OT holders
+    - Holders claim **RWT** proportional to their OT balance via merkle proofs
+    - Non-eligible holders' share (< $100 holdings) → **ARL OtTreasury PDA** leaf in merkle tree (protocol revenue)
+    - `claim_yd_for_treasury` on ARL OT instance (permissionless crank) claims that share — ARL OtTreasury PDA signs CPI to YD
+  </Accordion>
+
+  <Accordion title="→ Futarchy Governance (controls authority)">
+    - Futarchy config PDA = `ot_governance.authority` after bootstrap
+    - All governance ops (mint, spend, destinations) require Futarchy proposals
+    - Futarchy Liquidity Nexus receives 10% of revenue for DEX LP
+  </Accordion>
+
+  <Accordion title="→ RWT Engine (holds OT as backing)">
+    - RWT Vault buys/sells OT through DEX via `vault_swap`
+    - OT balance in RWT Vault contributes to RWT NAV (Net Asset Value)
+    - RWT Vault claims yield from YD streams via `claim_yield`
+  </Accordion>
+
+  <Accordion title="→ Native DEX (OT trading)">
+    - OT traded in OT/RWT and OT/USDC pools
+    - Liquidity Nexus manages LP positions using 10% revenue share
+    - Pool Rebalancer maintains concentrated liquidity around NAV price
+  </Accordion>
+</AccordionGroup>
+
+### Authority Model
+
+<CardGroup cols={3}>
+  <Card title="🔧 Program Upgrade" icon="wrench">
+    **Team Multisig (Squads)**
+
+    Can deploy new contract versions. Cannot change on-chain state directly.
+  </Card>
+  <Card title="🏛️ Governance Authority" icon="landmark">
+    **OtGovernance.authority = Futarchy PDA**
+
+    - `mint_ot` — create new tokens
+    - `spend_treasury` — move treasury funds
+    - `batch_update_destinations` — change revenue split
+    - `propose_authority_transfer`
+  </Card>
+  <Card title="🌐 Permissionless" icon="globe">
+    **Any wallet / Crank bot**
+
+    - SPL transfer USDC → Revenue ATA
+    - SPL transfer tokens → Treasury ATA
+    - `distribute_revenue` (if ≥ $100)
+    - `claim_yd_for_treasury`
+    - `accept_authority_transfer`
+  </Card>
+</CardGroup>
+
+<Warning>
+  **Immutable after init:** `areal_fee_destination` (static Areal Finance **USDC** ATA) and `min_distribution_amount` ($100) cannot be changed by governance. Only a program upgrade can modify these.
+</Warning>
+
+<Note>
+  **Two Areal fee addresses across the protocol.** OT and RWT Engine send fees in **USDC** → Areal Finance USDC ATA. YD and DEX send fees in **RWT** → Areal Finance RWT ATA. These are two different ATAs owned by the same Areal Finance wallet. Developers must use the correct ATA for each contract.
+</Note>
+
+### Deployment Checklist
+
+For a new OT project, the deployer must:
+
+**Prerequisites:** Native DEX (for Nexus PDA address) and Yield Distribution (for Accumulator PDA address) must be deployed and initialized first — their addresses are needed for revenue destinations in step 3. Futarchy must be deployed before step 5 (governance transfer).
+
+1. **Create vanity mint** externally via `solana-keygen grind` + `spl-token create-token`
+2. **Call `initialize_ot`** with project params → creates 5 PDAs + Revenue USDC ATA, transfers mint authority to OtConfig PDA
+3. **Call `batch_update_destinations`** to set revenue split:
+   - 70% → YD accumulator USDC ATA
+   - 20% → OtTreasury USDC ATA  
+   - 10% → Crank USDC ATA (crank routes to Nexus via `nexus_deposit` for principal tracking)
+4. **Mint initial tokens** via `mint_ot` to early investors / deployer for distribution
+5. **Transfer governance** to Futarchy config PDA via `propose_authority_transfer` + `accept_authority_transfer`
+
+<Warning>
+  Step 4 must come BEFORE step 5. After governance transfer, deployer can no longer mint directly — only Futarchy proposals can.
+</Warning>
+
+### Token Flow Summary
+
+| From | To | Mechanism | Who triggers |
+|------|-----|-----------|-------------|
+| External USDC | RevenueAccount ATA | SPL transfer | Asset manager |
+| RevenueAccount | YD Accumulator (70%) | distribute_revenue | Crank |
+| RevenueAccount | Treasury (20%) | distribute_revenue | Crank |
+| RevenueAccount | Crank USDC ATA (10%) → Nexus via `nexus_deposit` | distribute_revenue + nexus_deposit | Crank |
+| RevenueAccount | Areal Fee (0.25%) | distribute_revenue | Crank |
+| Treasury | Any destination | spend_treasury | Governance |
+| OtConfig (mint authority) | Any recipient | mint_ot | Governance |
+| YD reward vault | Treasury RWT ATA | claim_yd_for_treasury (CPI to YD) | Crank |

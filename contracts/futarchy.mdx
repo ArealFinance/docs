@@ -1,0 +1,499 @@
+---
+title: "Futarchy"
+description: "Per-OT governance — holders control minting, treasury, and revenue distribution"
+---
+
+# Futarchy
+
+<Card title="✅ Ready to Dev" icon="check" color="#48bb78">
+  This contract specification has passed business logic audit, cross-program integration check, and authority model verification. A developer can implement from this document.
+</Card>
+
+Per-OT governance contract. Every OT project (RCP, ARL, etc.) gets its own Futarchy instance. OT holders govern three key decisions: minting new tokens, spending treasury funds, and changing revenue distribution. V1: team authority approves proposals. V2: futarchy prediction markets resolve proposals.
+
+<Warning>
+  **Upgradeable contract.** Program upgrade authority = Team Multisig (Squads). Separate from governance authority.
+</Warning>
+
+## Key Concepts
+
+<CardGroup cols={3}>
+  <Card title="8 Instructions" icon="code">
+    Initialize, create/approve/cancel/execute proposal, claim OT governance, authority transfer
+  </Card>
+  <Card title="2 State Accounts" icon="database">
+    FutarchyConfig, Proposal
+  </Card>
+  <Card title="2 PDA Seeds" icon="key">
+    futarchy_config, proposal
+  </Card>
+</CardGroup>
+
+## What Holders Can Govern
+
+<CardGroup cols={3}>
+  <Card title="🪙 Mint OT" icon="coins">
+    Create new OT tokens for the project.
+
+    CPI → `ownership_token::mint_ot`
+
+    Used for: raising capital, rewarding contributors, expanding supply.
+  </Card>
+  <Card title="💰 Spend Treasury" icon="vault">
+    Transfer any token from OT Treasury to any destination.
+
+    CPI → `ownership_token::spend_treasury`
+
+    Used for: funding operations, paying expenses, investing.
+  </Card>
+  <Card title="📊 Update Revenue Split" icon="chart-pie">
+    Change how revenue is distributed between holders, treasury, and Nexus.
+
+    CPI → `ownership_token::batch_update_destinations`
+
+    Used for: adjusting protocol economics.
+  </Card>
+</CardGroup>
+
+<Note>
+  **All OT projects are equal.** ARL (Areal Finance) uses the same Futarchy contract as RCP (Rental Car Pool) or any other OT project. No special treatment. The only difference is what the OT represents — the governance mechanics are identical.
+</Note>
+
+## V1 vs V2
+
+<CardGroup cols={2}>
+  <Card title="V1: Authority Approval" icon="user-check">
+    **Current implementation.**
+
+    - Authority (team wallet) creates and approves proposals
+    - Single signer = instant approval
+    - Simple and fast for early stage
+    - Authority transferred to Team Multisig after bootstrap
+  </Card>
+  <Card title="V2: Prediction Markets (future)" icon="crystal-ball">
+    **Planned upgrade.**
+
+    - OT holders create proposals
+    - Futarchy prediction market resolves: "Will this proposal increase OT value?"
+    - Market-based decision making
+    - No single authority — decentralized governance
+  </Card>
+</CardGroup>
+
+## Instructions
+
+### Initialization
+
+<AccordionGroup>
+  <Accordion title="initialize_futarchy">
+    Create governance for an OT project. Called once per OT.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `ot_mint` | `Pubkey` | The OT this governance serves |
+
+    **Caller:** Deployer (one-time per OT)
+
+    **Accounts:**
+    - `deployer` (signer, mut) — pays for creation
+    - `ot_mint` — the OT token mint
+    - `config` (init) — PDA seed: `["futarchy_config", ot_mint]`
+    - `system_program`
+
+    **Creates:**
+    - `FutarchyConfig` PDA — governance config for this OT
+
+    **Initial state:**
+    - `authority = deployer` (transferred to Team Multisig after bootstrap)
+    - `ot_mint = ot_mint`
+    - `next_proposal_id = 0`
+    - `is_active = true`
+  </Accordion>
+</AccordionGroup>
+
+### Proposals
+
+<AccordionGroup>
+  <Accordion title="create_proposal">
+    Create a new governance proposal. V1: authority creates. V2: any OT holder above threshold.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `proposal_type` | `ProposalType` | `MintOt`, `SpendTreasury`, or `UpdateDestinations` |
+    | `amount` | `u64` | Amount for mint/spend (0 for UpdateDestinations) |
+    | `destination` | `Pubkey` | Recipient for mint/spend, or ignored for UpdateDestinations |
+    | `token_mint` | `Pubkey` | Token mint for SpendTreasury (which token to spend) |
+    | `params_hash` | `[u8; 32]` | Hash of full params (for UpdateDestinations: hash of new destinations array) |
+
+    **Caller:** Authority (V1) / OT holder above threshold (V2)
+
+    **Accounts:**
+    - `proposer` (signer, mut) — pays for Proposal account
+    - `config` — validates is_active
+    - `proposal` (init) — PDA seed: `["proposal", config, proposal_id]`
+    - `system_program`
+
+    **Validation:**
+    - Config must be active
+    - V1: proposer == config.authority
+    - V2 (future): proposer holds >= threshold OT tokens (threshold TBD — likely configurable in FutarchyConfig, e.g., `min_proposal_ot_balance: u64`, set by authority)
+    - For `MintOt` / `SpendTreasury`: `amount > 0` (no zero-amount proposals)
+    - For `SpendTreasury` / `MintOt`: `destination ≠ Pubkey::default()` (no zero-address recipients)
+    - For `UpdateDestinations`: `params_hash ≠ [0; 32]` (sanity check against empty hash)
+
+    **Effect:** Creates Proposal with status=Active, increments next_proposal_id. Emits `ProposalCreated`.
+
+    <Note>
+      **V1 rate limiting:** Not needed — only authority can create proposals, providing implicit rate control. **V2 rate limiting (future):** When any holder can propose, add cooldown per proposer (e.g., 1 proposal per 24h per wallet) and proposal deposit (refundable on execution/cancel) to prevent spam. This should be added during V2 implementation.
+    </Note>
+  </Accordion>
+
+  <Accordion title="approve_proposal">
+    Approve a proposal. V1: authority signs. V2: prediction market resolves.
+
+    **Caller:** Authority (V1) / Automatic via market resolution (V2)
+
+    **Accounts:**
+    - `authority` (signer) — must match `config.authority` (V1)
+    - `config`
+    - `proposal` (mut) — must be Active status
+
+    **Validation:**
+    - `proposal.status == Active`
+
+    **Effect:** Sets `proposal.status = Approved`. Emits `ProposalApproved`.
+  </Accordion>
+
+  <Accordion title="cancel_proposal">
+    Cancel an active proposal. Only the authority can cancel. Cannot cancel already approved or executed proposals.
+
+    **Caller:** Authority (V1)
+
+    **Accounts:**
+    - `authority` (signer) — must match `config.authority`
+    - `config`
+    - `proposal` (mut) — must be Active status
+
+    **Validation:**
+    - `proposal.status == Active`
+
+    **Effect:** Sets `proposal.status = Cancelled`. Emits `ProposalCancelled`.
+  </Accordion>
+
+  <Accordion title="execute_proposal">
+    Execute an approved proposal. Permissionless — anyone can trigger execution once approved. CPIs to OT contract based on proposal_type.
+
+    **Caller:** Permissionless
+
+    **Accounts:**
+    - `executor` (signer, mut) — pays for CPI fees
+    - `config`
+    - `proposal` (mut) — must be Approved status
+    - OT contract accounts (varies by proposal_type — **order must match OT instruction layout**):
+      - **MintOt:** `ot_governance` (OT governance PDA `["ot_governance", ot_mint]`), `ot_config` (mut, `["ot_config", ot_mint]`), `ot_mint` (mut), `recipient_token_account` (mut, ATA of `proposal.destination` for OT mint), `recipient` (`proposal.destination`), `payer` (signer, pays ATA init if needed — can be executor)
+      - **SpendTreasury:** `ot_governance` (`["ot_governance", ot_mint]`), `ot_treasury` (`["ot_treasury", ot_mint]`), `treasury_token_account` (mut, Treasury ATA for `proposal.token_mint`), `destination_token_account` (mut, ATA at `proposal.destination` — must exist), `token_mint` (`proposal.token_mint`)
+      - **UpdateDestinations:** `ot_governance` (`["ot_governance", ot_mint]`), `revenue_config` (mut, `["revenue_config", ot_mint]`), `ot_mint`, plus `remaining_accounts[0]` (serialized `Vec<BatchDestination>`)
+    - `ot_program` — constraint: `key == OT_PROGRAM_ID`
+    - `token_program`, `system_program`
+
+    <Note>
+      **Executor guide:** All OT PDA addresses are derivable from `config.ot_mint`. Executor reads proposal fields (`amount`, `destination`, `token_mint`, `proposal_type`) and derives required accounts. For UpdateDestinations, executor must also fetch serialized destinations data matching `proposal.params_hash` (from off-chain source published by proposer).
+    </Note>
+
+    **Logic by ProposalType:**
+
+    **MintOt:**
+    1. CPI → `ownership_token::mint_ot(proposal.amount)`
+    2. Futarchy config PDA signs as OT governance authority
+    3. New OT tokens minted to `proposal.destination`
+
+    **SpendTreasury:**
+    1. CPI → `ownership_token::spend_treasury(proposal.amount)`
+    2. Futarchy config PDA signs as OT governance authority
+    3. Tokens transferred from OT Treasury to `proposal.destination`
+    4. `proposal.token_mint` determines which token to spend
+
+    **UpdateDestinations:**
+    1. Executor passes full destinations array via `remaining_accounts`
+    2. Deserialization:
+       ```
+       // remaining_accounts[0].data contains Borsh-serialized Vec<BatchDestination>
+       let data = remaining_accounts[0].try_borrow_data()?;
+       let destinations: Vec<BatchDestination> = Vec::<BatchDestination>::deserialize(&mut &data[..])?;
+       ```
+    3. Hash verification: `sha256(remaining_accounts[0].data) == proposal.params_hash` — ensures executor passes the exact destinations that were proposed
+    4. CPI → `ownership_token::batch_update_destinations(destinations)` with destinations as instruction parameter
+    5. Futarchy config PDA signs as OT governance authority via seeds `[b"futarchy_config", config.ot_mint.as_ref(), &[config.bump]]`
+
+    **`BatchDestination` struct** (defined in OT contract, used here for serialization):
+
+    | Field | Type | Description |
+    |---|---|---|
+    | `address` | `Pubkey` | Target USDC token account |
+    | `allocation_bps` | `u16` | Allocation in basis points (1-10,000) |
+    | `label` | `[u8; 32]` | Human-readable label |
+
+    **Hash construction:** `params_hash = sha256(borsh_serialize(destinations_vec))` where `destinations_vec: Vec<BatchDestination>`. Proposer computes hash off-chain when creating proposal; executor must pass identical serialized data in `remaining_accounts[0]`.
+
+    <Note>
+      **Executor workflow:** Proposer publishes `params_hash` and full destinations data off-chain (e.g., IPFS or API). Executor downloads data, passes as `remaining_accounts[0]`, contract verifies hash match before CPI. If hash mismatch → revert.
+    </Note>
+
+    **Validation:**
+    - `proposal.status == Approved`
+    - Proposal not already executed
+
+    **Effect:** Sets `proposal.status = Executed`, `executed_ts = now`. Emits `ProposalExecuted`.
+  </Accordion>
+</AccordionGroup>
+
+### OT Governance Claim
+
+<AccordionGroup>
+  <Accordion title="claim_ot_governance">
+    Accept OT governance authority on behalf of Futarchy config PDA. Called during deployment after OT proposes authority transfer to this Futarchy instance. Permissionless — anyone can trigger once OT has proposed.
+
+    **Caller:** Permissionless
+
+    **Accounts:**
+    - `executor` (signer, mut)
+    - `config` — Futarchy config PDA (signs CPI as new OT authority)
+    - `ot_governance` (mut) — OT governance account (pending_authority must == config PDA)
+    - `ot_mint` — for PDA derivation
+    - `ot_program` — constraint: `key == OT_PROGRAM_ID`
+
+    **Validation:**
+    - `ot_governance.pending_authority == config.key()` (OT must have proposed this Futarchy)
+
+    **Effect:** CPI → `ownership_token::accept_authority_transfer`. Futarchy config PDA signs as new_authority. OT governance authority now = Futarchy config PDA. Emits `OtGovernanceClaimed`.
+  </Accordion>
+</AccordionGroup>
+
+### Authority Transfer
+
+Two-step governance authority handoff. Standard pattern across all contracts.
+
+<AccordionGroup>
+  <Accordion title="propose_authority_transfer">
+    Step 1: Current authority proposes a new authority.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `new_authority` | `Pubkey` | Proposed new authority |
+
+    **Caller:** Current authority
+
+    **Accounts:**
+    - `authority` (signer) — must match `config.authority`
+    - `config` (mut)
+
+    **Validation:** `new_authority ≠ current authority` (no self-transfer)
+
+    **Effect:** Sets `config.pending_authority = Some(new_authority)`. Emits `AuthorityTransferProposed`.
+
+    <Note>
+      Calling again **overwrites** any existing pending_authority. The previous proposed authority loses their ability to accept.
+    </Note>
+  </Accordion>
+
+  <Accordion title="accept_authority_transfer">
+    Step 2: Proposed authority accepts.
+
+    **Caller:** The proposed new authority (must sign)
+
+    **Accounts:**
+    - `new_authority` (signer) — must match `config.pending_authority`
+    - `config` (mut)
+
+    **Validation:** `signer == config.pending_authority`
+
+    **Effect:** Sets `authority = new_authority`, clears `pending_authority`. Emits `AuthorityTransferAccepted`.
+
+    <Note>
+      This changes who controls the Futarchy instance — NOT the OT governance authority. OT governance authority remains = Futarchy config PDA regardless of who controls Futarchy.
+    </Note>
+  </Accordion>
+</AccordionGroup>
+
+## State Accounts
+
+### FutarchyConfig
+
+Per-OT governance configuration. One per OT project.
+
+| Field | Type | Description |
+|---|---|---|
+| `ot_mint` | `Pubkey` | The OT this governance serves |
+| `authority` | `Pubkey` | Current governance authority (team wallet V1, market PDA V2) |
+| `pending_authority` | `Option<Pubkey>` | Pending authority transfer target |
+| `next_proposal_id` | `u64` | Auto-incrementing proposal counter (also = total proposals created) |
+| `is_active` | `bool` | Governance active flag |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["futarchy_config", ot_mint]`
+
+<Note>
+  FutarchyConfig PDA is set as `ot_governance.authority` in the OT contract. This is how Futarchy controls OT operations — by signing as the OT governance authority via CPI.
+</Note>
+
+### Proposal
+
+Individual governance proposal. Created per action.
+
+| Field | Type | Description |
+|---|---|---|
+| `proposal_id` | `u64` | Unique ID within this Futarchy instance |
+| `ot_mint` | `Pubkey` | The OT project |
+| `proposer` | `Pubkey` | Who created this proposal |
+| `proposal_type` | `ProposalType` | `MintOt`, `SpendTreasury`, or `UpdateDestinations` |
+| `amount` | `u64` | Amount for mint/spend (context-dependent) |
+| `destination` | `Pubkey` | Recipient for mint/spend |
+| `token_mint` | `Pubkey` | Token mint for SpendTreasury |
+| `params_hash` | `[u8; 32]` | Hash of serialized params (for UpdateDestinations) |
+| `status` | `ProposalStatus` | `Active`, `Approved`, `Executed`, `Cancelled` |
+| `created_ts` | `i64` | Creation timestamp |
+| `executed_ts` | `i64` | Execution timestamp (0 if not executed) |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["proposal", futarchy_config, proposal_id]`
+
+**ProposalType enum:**
+- `MintOt` — mint new OT tokens
+- `SpendTreasury` — spend from OT Treasury
+- `UpdateDestinations` — change revenue split
+
+**ProposalStatus enum:**
+- `Active` — created, awaiting approval
+- `Approved` — approved, ready for execution
+- `Executed` — executed successfully
+- `Cancelled` — cancelled by authority via `cancel_proposal` (V1), or market resolves against (V2)
+
+## PDA Seeds
+
+| Account | Seeds | Description |
+|---|---|---|
+| FutarchyConfig | `"futarchy_config"`, `ot_mint` | Per-OT governance config |
+| Proposal | `"proposal"`, `futarchy_config`, `proposal_id` | Individual proposal |
+
+## Constants
+
+| Constant | Value | Description |
+|---|---|---|
+| `OT_PROGRAM_ID` | hardcoded | Ownership Token program ID (validated in execute_proposal) |
+
+## Events
+
+| Event | Fields | When |
+|---|---|---|
+| `FutarchyInitialized` | ot_mint, authority, timestamp | Governance created |
+| `ProposalCreated` | proposal_id, ot_mint, proposer, proposal_type, amount, destination, timestamp | Proposal created |
+| `ProposalApproved` | proposal_id, approver, timestamp | Proposal approved |
+| `ProposalCancelled` | proposal_id, authority, timestamp | Proposal cancelled |
+| `ProposalExecuted` | proposal_id, proposal_type, executor, timestamp | Proposal executed via CPI |
+| `OtGovernanceClaimed` | ot_mint, futarchy_config, timestamp | OT governance authority accepted |
+| `AuthorityTransferProposed` | current_authority, pending_authority, timestamp | Transfer proposed |
+| `AuthorityTransferAccepted` | old_authority, new_authority, timestamp | Transfer accepted |
+
+## Error Codes
+
+| Error | Description |
+|---|---|
+| `Unauthorized` | Signer is not the authority |
+| `GovernancePaused` | Config is_active = false |
+| `ProposalNotActive` | Proposal status ≠ Active (for approve) |
+| `ProposalNotApproved` | Proposal status ≠ Approved (for execute) |
+| `AlreadyExecuted` | Proposal already executed |
+| `ProposalCancelled` | Proposal was cancelled (for execute) |
+| `InvalidProposalType` | Unknown proposal type |
+| `MathOverflow` | Arithmetic overflow |
+| `SelfTransfer` | Cannot transfer authority to yourself |
+| `NoPendingAuthority` | No pending transfer |
+| `InvalidPendingAuthority` | Signer ≠ pending_authority |
+
+## Architecture & Integration Guide
+
+### Cross-Program Integration
+
+<AccordionGroup>
+  <Accordion title="→ Ownership Token (execute proposals via CPI)">
+    - Futarchy config PDA = `ot_governance.authority` in OT contract
+    - `execute_proposal` CPIs to OT: `mint_ot`, `spend_treasury`, `batch_update_destinations`
+    - Config PDA signs as OT governance authority
+    - `OT_PROGRAM_ID` hardcoded and validated
+  </Accordion>
+</AccordionGroup>
+
+### How Futarchy Connects to OT
+
+```
+FutarchyConfig PDA ["futarchy_config", ot_mint]
+  │
+  │ is set as authority in:
+  ▼
+OtGovernance PDA ["ot_governance", ot_mint]
+  │
+  │ controls:
+  ▼
+OT Contract: mint_ot, spend_treasury, batch_update_destinations
+```
+
+The Futarchy config PDA IS the OT governance authority. When `execute_proposal` CPIs to OT, the Futarchy config PDA signs via seeds — OT contract validates `signer == ot_governance.authority`. ✓
+
+### Authority Model
+
+<CardGroup cols={2}>
+  <Card title="🔧 Program Upgrade" icon="wrench">
+    **Team Multisig (Squads)**
+
+    Can deploy new contract versions.
+  </Card>
+  <Card title="🏛️ Governance Authority" icon="landmark">
+    **Team wallet (V1) / Prediction market (V2)**
+
+    - `create_proposal`
+    - `approve_proposal`
+    - `propose_authority_transfer`
+
+    In V1, team creates + approves. In V2, holders create, markets resolve.
+  </Card>
+</CardGroup>
+
+<Note>
+  `execute_proposal` is **permissionless** — once approved, anyone can trigger execution. This ensures proposals cannot be blocked after approval.
+</Note>
+
+### What Team Controls Directly (NOT via Futarchy)
+
+These protocol operations are managed by team wallets directly, NOT through Futarchy proposals:
+
+- **DEX:** config, pool creators, rebalancer — via `dex_config.authority` (Team Multisig)
+- **RWT Engine:** manager, distribution config, admin mint, capital adjustments — via `vault.authority` (Team Multisig)
+- **Yield Distribution:** config, publish authority, distributors — via `config.authority` (Team Multisig)
+- **Liquidity Nexus:** managed directly by team (Nexus manager wallet)
+- **Pool Rebalancer:** config — via `config.authority` (Team Multisig)
+- **Emergency pause:** all contracts — via `pause_authority` (Team Multisig)
+
+<Note>
+  Futarchy governs **per-project OT decisions** (mint, spend, split). Protocol-level infrastructure is managed by the team until decentralized governance (V2) is mature enough to handle it.
+</Note>
+
+### Deployment Checklist
+
+1. **Deploy OT contract** and `initialize_ot` for the project
+2. **Call `initialize_futarchy`** for the OT
+3. **Transfer OT governance** to Futarchy config PDA:
+   - OT: `propose_authority_transfer(futarchy_config_pda)` (deployer signs)
+   - Futarchy: `claim_ot_governance` (permissionless — Futarchy config PDA accepts via CPI)
+4. **Transfer Futarchy authority** to Team Multisig via `propose_authority_transfer` + `accept_authority_transfer`
+
+<Warning>
+  Step 3 must complete before deployer loses access. After `claim_ot_governance`, only Futarchy proposals can mint/spend/update destinations.
+</Warning>
+
+### Token Flow Summary
+
+| From | To | Mechanism | Who triggers |
+|------|-----|-----------|-------------|
+| — | OT mint → recipient | execute_proposal (MintOt CPI) | Anyone (permissionless) |
+| OT Treasury | destination | execute_proposal (SpendTreasury CPI) | Anyone (permissionless) |
+| — | OT RevenueConfig | execute_proposal (UpdateDestinations CPI) | Anyone (permissionless) |

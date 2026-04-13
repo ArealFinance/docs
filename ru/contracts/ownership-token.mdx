@@ -1,0 +1,631 @@
+---
+title: "Ownership Token (OT)"
+description: "Токенизированное владение проектом с функциями сбора и распределения дохода"
+---
+
+# Ownership Token
+
+<Card title="✅ Готов к разработке" icon="check" color="#48bb78">
+  Эта спецификация контракта прошла аудит бизнес-логики, техническую проверку и проверку межпрограммной интеграции. Разработчик может реализовать контракт по этому документу.
+</Card>
+
+Каждый проект реального актива получает собственный минт OT. Контракт OT обрабатывает минтинг токенов, сбор дохода от актива и автоматическое распределение по настроенным направлениям. Все управляющие операции требуют полномочий governance.
+
+<Warning>
+  **Обновляемый контракт.** Полномочия на обновление программы = Team Multisig (Squads). Это позволяет команде разработчиков развёртывать новые версии кода контракта через одобрение мультисигом. Полномочия на обновление отделены от полномочий governance — governance контролирует бизнес-логику (минтинг, расходы, направления), а полномочия на обновление контролируют бинарный файл программы.
+</Warning>
+
+## Ключевые концепции
+
+<CardGroup cols={3}>
+  <Card title="8 инструкций" icon="code">
+    Минтинг, распределение, расходование казначейства, клейм YD для казначейства, пакетное обновление направлений, передача полномочий
+  </Card>
+  <Card title="5 аккаунтов состояния" icon="database">
+    OtConfig, RevenueAccount, RevenueConfig, OtGovernance, OtTreasury
+  </Card>
+  <Card title="5 PDA Seeds" icon="key">
+    ot_config, revenue, revenue_config, ot_governance, ot_treasury
+  </Card>
+</CardGroup>
+
+## Поток дохода
+
+<Steps>
+  <Step title="Депозит дохода">
+    Управляющий активом отправляет USDC на **RevenueAccount ATA** через стандартный SPL-трансфер. Никакой специальной инструкции — кто угодно может внести депозит в любое время.
+  </Step>
+  <Step title="Триггер распределения">
+    Когда баланс ATA ≥ $100 **и** прошло минимум 7 дней с последнего распределения, любой крэнк-бот вызывает `distribute_revenue`. Защита от reentrancy предотвращает повторное выполнение.
+
+    Валидация: `revenue_token_account.amount ≥ min_distribution_amount` И `now - last_distribution_ts ≥ 604,800` (7 дней в секундах).
+  </Step>
+  <Step title="Комиссия протокола">
+    Сначала вычитается 0.25% (25 bps) и отправляется на `areal_fee_destination` (статический адрес Areal Finance, устанавливается при инициализации).
+  </Step>
+  <Step title="Разделение дохода">
+    Остаток распределяется пропорционально между активными направлениями:
+
+    | Destination | Default BPS | Description |
+    |---|---|---|
+    | **YD Accumulator** | 7,000 (70%) | USDC → YD конвертирует в RWT → merkle-стримы для держателей OT |
+    | **OT Treasury** | 2,000 (20%) | Казначейство проекта (мультитокен-кошелёк) |
+    | **Liquidity Nexus** | 1,000 (10%) | Управление ликвидностью на DEX (через крэнк → `nexus_deposit`) |
+
+  </Step>
+</Steps>
+
+<Note>
+  Разделение дохода настраивается для каждого проекта через `batch_update_destinations`. По умолчанию: 70% держателям YD, 20% казначейство, 10% Liquidity Nexus. Общая сумма всегда должна равняться 10,000 bps (100%). После `initialize_ot` направления пусты (active_count = 0) — `distribute_revenue` будет завершаться ошибкой, пока не будет вызван `batch_update_destinations`.
+</Note>
+
+## Инструкции
+
+### Инициализация
+
+<AccordionGroup>
+  <Accordion title="initialize_ot">
+    Регистрирует существующий SPL-минт как Ownership Token и создаёт все необходимые PDA-аккаунты. Вызывается один раз для каждого проекта. Минт должен быть создан заранее извне (поддерживает vanity-адреса).
+
+    **Предусловие:** Создайте SPL-минт извне перед вызовом этой инструкции. Это позволяет использовать vanity-адреса минтов (например, `RCPxxxxxx...`, сгенерированные через `solana-keygen grind`). Минт должен иметь `supply == 0` и `mint_authority == deployer`.
+
+    **Parameters:**
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `name` | `[u8; 32]` | Название токена (напр. "Rental Car Pool"), дополненное нулями |
+    | `symbol` | `[u8; 10]` | Символ токена (напр. "RCP"), дополненный нулями |
+    | `uri` | `[u8; 200]` | URI метаданных, дополненный нулями |
+    | `initial_authority` | `Pubkey` | Начальный governance authority |
+    | `areal_fee_destination` | `Pubkey` | Куда направляется комиссия протокола 0.25% — **USDC ATA** Areal Finance (статический, неизменяемый). Должен быть токен-аккаунтом USDC, а не адресом кошелька. |
+
+    **Caller:** Deployer (одноразово для каждого проекта)
+
+    **Accounts:**
+    - `deployer` (signer, mut) — текущий mint_authority для ot_mint, оплачивает создание аккаунтов
+    - `ot_mint` (mut) — существующий SPL-минт (vanity-адрес допустим)
+    - `usdc_mint` (readonly) — адрес минта USDC (для создания Revenue ATA)
+
+    **Validation:**
+    - `ot_mint.supply == 0` (свежий минт, токены ещё не выпущены)
+    - `ot_mint.mint_authority == deployer` (деплоер контролирует минт)
+    - `ot_mint.freeze_authority == None` (без заморозки)
+    - `ot_mint.decimals ≤ MAX_DECIMALS` (9) и `ot_mint.decimals ≥ 1` (финансовые токены нуждаются в десятичных знаках)
+    - `name` и `symbol` непустые
+
+    **Создаёт (6 аккаунтов):**
+    - `OtConfig` PDA — хранит метаданные токена, становится новым mint authority через `set_authority`
+    - `RevenueAccount` PDA — отслеживает состояние распределения
+    - **Revenue USDC ATA** — Associated Token Account для USDC, владелец — RevenueAccount PDA. Сюда поступают все депозиты дохода.
+    - `RevenueConfig` PDA — хранит массив направлений и адрес комиссии протокола
+    - `OtGovernance` PDA — хранит authority и параметры governance
+    - `OtTreasury` PDA — казначейство проекта, может хранить любые токены (ATA создаются извне)
+
+    **Передача mint authority:** В конце `initialize_ot` инструкция вызывает `spl_token::set_authority` для передачи `mint_authority` от deployer → OtConfig PDA. После этого только контракт OT может минтить токены.
+
+    <Note>
+      **Процесс с vanity-адресом:** `solana-keygen grind --starts-with RCP` → `spl-token create-token RCP_keypair.json --decimals 6` → `initialize_ot(ot_mint: RCP_address, ...)`. Decimals считываются из существующего минта — не передаются как параметр.
+    </Note>
+  </Accordion>
+</AccordionGroup>
+
+### Минтинг
+
+<AccordionGroup>
+  <Accordion title="mint_ot">
+    Минтит токены OT на любой кошелёк получателя.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount` | `u64` | Количество токенов для минтинга (в минимальных единицах) |
+
+    **Caller:** Authority (Futarchy PDA)
+
+    **Accounts:**
+    - `authority` (signer) — должен совпадать с `ot_governance.authority`
+    - `ot_governance` — проверяет authority и `is_active`
+    - `ot_config` (mut) — увеличивает `total_minted`
+    - `ot_mint` (mut) — SPL-минт
+    - `recipient_token_account` (init_if_needed) — ATA получателя
+    - `recipient` — любой pubkey
+    - `payer` (signer) — оплачивает создание ATA при необходимости
+
+    **Validation:**
+    - `amount > 0`
+
+    **Эффект:** Минтит токены через OtConfig PDA как mint authority. Эмитирует событие `OtMinted`.
+  </Accordion>
+</AccordionGroup>
+
+### Доход
+
+Доход вносится путём отправки USDC напрямую на ATA RevenueAccount через стандартный SPL-трансфер — специальная инструкция не нужна. Кто угодно (управляющий активом, внешний сервис и т.д.) может отправить USDC на этот ATA в любое время. ATA создаётся при инициализации только для минта USDC — он может хранить только USDC.
+
+<AccordionGroup>
+  <Accordion title="distribute_revenue">
+    Распределяет накопленный доход в USDC по настроенным направлениям. Это permissionless крэнк-операция — любой кошелёк может её запустить.
+
+    **Caller:** Permissionless (крэнк)
+
+    **Accounts:**
+    - `crank` (signer) — любой кошелёк
+    - `revenue_account` (mut) — не должен быть в процессе распределения (защита от reentrancy)
+    - `revenue_token_account` (mut) — USDC ATA, владелец — revenue_account
+    - `revenue_config` — содержит массив направлений и `areal_fee_destination`
+    - `areal_fee_account` (mut) — **должен совпадать с `revenue_config.areal_fee_destination`** (проверяется on-chain)
+    - Remaining accounts: один USDC токен-аккаунт для каждого из первых `active_count` направлений, в порядке массива. Инструкция перебирает направления 0..active_count и сопоставляет их 1:1 с remaining accounts — несоответствие приведёт к ошибке `DestinationAccountMismatch`.
+
+    **Validation:**
+    - `revenue_token_account.amount ≥ min_distribution_amount` (по умолчанию $100, считывает баланс ATA напрямую)
+    - `now - last_distribution_ts ≥ DISTRIBUTION_COOLDOWN` (7 дней)
+    - Сумма BPS активных направлений = 10,000
+    - `is_distributing == false` (защита от reentrancy)
+
+    <Note>
+      **Атомарность транзакций Solana:** Если транзакция завершается ошибкой на ЛЮБОМ шаге, ВСЕ изменения состояния откатываются — включая `is_distributing`. Дедлок невозможен в Solana, потому что неудачные транзакции не могут оставить частичное состояние. Защита от reentrancy защищает только от повторного CPI-входа в рамках одной транзакции.
+    </Note>
+
+    **Логика:**
+    1. Установить `is_distributing = true`
+    2. Считать `revenue_token_account.amount` (фактический баланс USDC на ATA)
+    3. Рассчитать комиссию протокола: `balance × 25 / 10,000` (0.25%, деление с округлением вверх)
+    4. Перевести комиссию на `areal_fee_account`
+    5. Распределить остаток пропорционально каждому активному направлению
+    6. Последнее направление получает остаток от округления (предотвращение пыли)
+    7. Обновить `last_distribution_ts = now`, увеличить `distribution_count`, добавить к `total_distributed`
+    8. Установить `is_distributing = false`
+    9. Эмитировать событие `RevenueDistributed`
+  </Accordion>
+</AccordionGroup>
+
+### Казначейство
+
+OT Treasury — это мультитокен PDA-кошелёк. Он может хранить USDC, RWT, OT или любой SPL-токен. Казначейство получает USDC автоматически из `distribute_revenue` (доля 20%). Другие токены (RWT, OT и т.д.) может отправить кто угодно через стандартный SPL-трансфер. ATA создаются извне (отправителем) перед переводом.
+
+<AccordionGroup>
+  <Accordion title="spend_treasury">
+    Переводит токены из казначейства на любой адрес назначения. Только governance.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount` | `u64` | Количество токенов для перевода |
+
+    **Caller:** Authority (Futarchy PDA)
+
+    **Accounts:**
+    - `authority` (signer) — должен совпадать с `ot_governance.authority`
+    - `ot_governance` — проверяет authority и `is_active`
+    - `ot_treasury` — Treasury PDA (подписывает перевод через seeds)
+    - `treasury_token_account` (mut) — исходный ATA, владелец — Treasury PDA
+    - `destination_token_account` (mut) — токен-аккаунт получателя (должен существовать перед вызовом — без init_if_needed)
+    - `token_mint` — минт переводимого токена
+
+    **Эффект:** SPL-перевод из treasury ATA → destination. Эмитирует событие `TreasurySpent`.
+
+    <Note>
+      ATA назначения должен быть создан до вызова `spend_treasury`. Если он не существует, SPL-перевод завершится ошибкой. Вызывающая сторона (исполнитель governance-предложения) несёт ответственность за то, чтобы ATA существовал.
+    </Note>
+  </Accordion>
+
+  <Accordion title="claim_yd_for_treasury">
+    Клеймит доход в RWT из Yield Distribution от имени Treasury PDA данного OT-проекта. Treasury PDA подписывает CPI-вызов к YD. Permissionless — любой крэнк может запустить.
+
+    **Основной сценарий:** Доля дохода неподходящих держателей (< $100 в холдингах) из ВСЕХ OT-проектов аллоцируется на **ARL OtTreasury PDA** в merkle-дереве. Крэнк вызывает эту инструкцию на **экземпляре ARL OT**, чтобы заклеймить этот доход как выручку протокола. RWT поступает в ARL Treasury и может быть потрачен governance ARL Futarchy.
+
+    **Кросс-проектный доход:** Любое OT Treasury может хранить OT-токены других проектов и получать с них доход. Если RCP Treasury хранит ARL OT на сумму ≥ $100, RCP Treasury появляется как лист в merkle-дереве ARL YD и зарабатывает RWT-доход. Крэнк вызывает `claim_yd_for_treasury` на **экземпляре RCP OT**, передавая аккаунты ARL YD distributor — RCP OtTreasury PDA подписывает клейм, и RWT поступает в RCP Treasury. Это позволяет межпроектные портфельные инвестиции: казначейства зарабатывают доход на кросс-проектных OT-позициях, управляемых Futarchy каждого проекта.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `cumulative_amount` | `u64` | Кумулятивная доля казначейства (из merkle-листа) |
+    | `proof` | `Vec<[u8; 32]>` | Путь merkle-доказательства |
+
+    **Caller:** Permissionless (крэнк)
+
+    **Accounts:**
+    - `crank` (signer, mut) — оплачивает инициализацию ClaimStatus при первом клейме
+    - `ot_treasury` — Treasury PDA, подписывает CPI-вызов к YD через seeds
+    - `treasury_rwt_ata` (mut) — RWT ATA казначейства, constraint: `owner == ot_treasury.key()`
+    - `ot_mint` — для деривации PDA
+    - YD CPI accounts: `yd_distributor`, `yd_claim_status`, `yd_reward_vault` (все UncheckedAccount)
+    - `yield_distribution_program` — constraint: `key == YD_PROGRAM_ID`
+    - `token_program`, `system_program`
+
+    **Логика:**
+    1. CPI → `yield_distribution::claim(cumulative_amount, proof)` с OtTreasury PDA в качестве claimant
+    2. RWT поступает в treasury_rwt_ata
+    3. Эмитировать `TreasuryYieldClaimed`
+
+    <Note>
+      **ARL Treasury = ARL OtTreasury PDA** `["ot_treasury", arl_ot_mint]`. Это тот же PDA, созданный `initialize_ot` для проекта ARL. Доход неподходящих держателей из всех OT-проектов — это выручка протокола, накапливающаяся в ARL Treasury. Governance ARL Futarchy контролирует расходы через `spend_treasury`.
+    </Note>
+  </Accordion>
+</AccordionGroup>
+
+### Управление направлениями
+
+<AccordionGroup>
+  <Accordion title="batch_update_destinations">
+    Атомарно заменяет всю конфигурацию направлений дохода. Очищает все существующие направления и записывает новые. Это единственная инструкция для управления направлениями — отдельных add/update/remove нет.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `destinations` | `Vec<BatchDestination>` | Новый полный набор направлений (1-10 записей) |
+
+    Каждый `BatchDestination`:
+
+    | Field | Type | Description |
+    |---|---|---|
+    | `address` | `Pubkey` | Целевой USDC токен-аккаунт |
+    | `allocation_bps` | `u16` | Аллокация в базисных пунктах (1-10,000) |
+    | `label` | `[u8; 32]` | Человекочитаемая метка |
+
+    **Caller:** Authority (Futarchy PDA)
+
+    **Accounts:**
+    - `authority` (signer) — должен совпадать с `ot_governance.authority`
+    - `ot_governance` — проверяет authority и `is_active`
+    - `revenue_config` (mut) — массив направлений перезаписывается
+    - `ot_mint` — для деривации PDA
+
+    **Validation:**
+    - 1 ≤ destinations.len() ≤ 10
+    - Каждый allocation_bps ∈ [1, 10,000]
+    - Каждый address ≠ `Pubkey::default()` (нет нулевого адреса)
+    - Каждый address ≠ `areal_fee_destination` (предотвращение коллизии с адресом комиссии)
+    - Нет дублирующихся адресов
+    - Общая сумма BPS = 10,000
+
+    <Warning>
+      **Нет on-chain валидации ATA.** Контракт НЕ проверяет, являются ли адреса направлений валидными инициализированными USDC токен-аккаунтами. Если governance установит невалидный адрес, `distribute_revenue` завершится ошибкой при трансфере с `DestinationAccountMismatch`. Офчейн-инструменты должны валидировать адреса перед подачей предложений.
+    </Warning>
+
+    **Эффект:** Очищает все 10 слотов, записывает новые направления, обновляет `active_count` и `config_version`. Эмитирует `DestinationConfigUpdated`.
+
+    <Note>
+      **CPI из Futarchy:** При вызове через `execute_proposal(UpdateDestinations)` Futarchy передаёт направления через `remaining_accounts` (Borsh-сериализованный `Vec<BatchDestination>`). Инструкция OT десериализует данные remaining_accounts в `Vec<BatchDestination>` и применяет как обычно. Futarchy проверяет `params_hash == sha256(borsh_serialize(destinations))` перед CPI, чтобы гарантировать, что исполнитель передаёт именно те направления, которые были предложены.
+    </Note>
+  </Accordion>
+</AccordionGroup>
+
+### Передача полномочий
+
+Двухэтапная передача governance authority. Предотвращает случайные передачи.
+
+<AccordionGroup>
+  <Accordion title="propose_authority_transfer">
+    Шаг 1: Текущий authority предлагает нового authority.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `new_authority` | `Pubkey` | Предлагаемый новый authority |
+
+    **Caller:** Текущий authority
+
+    **Accounts:**
+    - `authority` (signer) — должен совпадать с `ot_governance.authority`
+    - `ot_governance` (mut)
+
+    **Validation:** `new_authority ≠ current_authority` (нельзя передать самому себе)
+
+    **Эффект:** Устанавливает `ot_governance.pending_authority = Some(new_authority)`. Эмитирует `AuthorityTransferProposed`.
+
+    <Note>
+      Повторный вызов `propose_authority_transfer` **перезаписывает** любой существующий pending_authority без уведомления. Предыдущий предложенный authority теряет возможность принять передачу.
+    </Note>
+  </Accordion>
+
+  <Accordion title="accept_authority_transfer">
+    Шаг 2: Предложенный authority принимает передачу.
+
+    **Caller:** Предложенный новый authority (должен подписать)
+
+    **Accounts:**
+    - `new_authority` (signer) — должен совпадать с `ot_governance.pending_authority`
+    - `ot_governance` (mut)
+
+    **Validation:** `signer == ot_governance.pending_authority`
+
+    **Эффект:** Устанавливает `authority = new_authority`, очищает `pending_authority`. Эмитирует `AuthorityTransferAccepted`.
+  </Accordion>
+</AccordionGroup>
+
+## Аккаунты состояния
+
+### OtConfig
+
+Основная конфигурация токена. Выступает как mint authority для SPL-минта OT.
+
+| Field | Type | Description |
+|---|---|---|
+| `ot_mint` | `Pubkey` | Адрес SPL-минта токена |
+| `name` | `[u8; 32]` | Название токена, дополненное нулями |
+| `symbol` | `[u8; 10]` | Символ токена, дополненный нулями |
+| `decimals` | `u8` | Десятичные знаки токена |
+| `total_minted` | `u64` | Всего заминчено токенов |
+| `uri` | `[u8; 200]` | URI метаданных, дополненный нулями |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["ot_config", ot_mint]`
+
+### RevenueAccount
+
+Владеет USDC ATA, где накапливается доход. Баланс считывается напрямую из ATA — отслеживание состояния депозитов не требуется.
+
+| Field | Type | Description |
+|---|---|---|
+| `ot_mint` | `Pubkey` | OT, которому принадлежит этот аккаунт |
+| `total_distributed` | `u64` | Общая сумма распределённых USDC за всё время |
+| `distribution_count` | `u64` | Количество выполненных распределений |
+| `last_distribution_ts` | `i64` | Unix-timestamp последнего распределения |
+| `min_distribution_amount` | `u64` | Минимальный баланс ATA для запуска распределения (по умолчанию: 100_000_000 = $100) |
+| `is_distributing` | `bool` | Флаг защиты от reentrancy |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["revenue", ot_mint]`
+
+### RevenueConfig
+
+Хранит до 10 направлений дохода и адрес комиссии протокола.
+
+| Field | Type | Description |
+|---|---|---|
+| `ot_mint` | `Pubkey` | OT, которому принадлежит этот аккаунт |
+| `destinations` | `[RevenueDestination; 10]` | Массив направлений фиксированного размера |
+| `active_count` | `u8` | Количество активных направлений |
+| `config_version` | `u64` | Увеличивается при каждом изменении конфигурации |
+| `areal_fee_destination` | `Pubkey` | Куда отправляется комиссия протокола 0.25% |
+| `bump` | `u8` | PDA bump seed |
+
+**RevenueDestination (встроенная структура, не PDA):**
+
+| Field | Type | Description |
+|---|---|---|
+| `address` | `Pubkey` | Целевой USDC токен-аккаунт |
+| `allocation_bps` | `u16` | Аллокация в базисных пунктах |
+| `label` | `[u8; 32]` | Человекочитаемая метка (для UI/офчейн-использования) |
+
+Слоты 0..`active_count` — активные направления. Остальные слоты обнулены/не используются.
+
+**PDA Seed:** `["revenue_config", ot_mint]`
+
+### OtGovernance
+
+Governance authority и параметры. Контролирует минтинг и управление направлениями.
+
+| Field | Type | Description |
+|---|---|---|
+| `ot_mint` | `Pubkey` | OT, которому принадлежит этот аккаунт |
+| `authority` | `Pubkey` | Текущий governance authority (подписант для всех governance-операций) |
+| `pending_authority` | `Option<Pubkey>` | Ожидающий передачи authority (устанавливается propose, очищается accept) |
+| `is_active` | `bool` | Флаг активности governance (зарезервировано для будущего использования) |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["ot_governance", ot_mint]`
+
+### OtTreasury
+
+Казначейство проекта. Мультитокен PDA-кошелёк — может хранить USDC, RWT, OT или любой SPL-токен. Токен ATA создаются динамически (init_if_needed) при первом депозите токенов. PDA подписывает переводы через seeds.
+
+| Field | Type | Description |
+|---|---|---|
+| `ot_mint` | `Pubkey` | OT, которому принадлежит это казначейство |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["ot_treasury", ot_mint]`
+
+<Note>
+  Казначейство НЕ хранит адреса ATA в состоянии. ATA деривируются как стандартные Associated Token Accounts с Treasury PDA в качестве владельца. Любой SPL-токен может быть отправлен в казначейство путём создания ATA для соответствующего минта.
+</Note>
+
+<Note>
+  **Кросс-проектные инвестиции:** Казначейство может хранить OT-токены других проектов. Если объём холдингов ≥ $100, казначейство появляется в merkle-дереве YD другого проекта и зарабатывает RWT-доход — клеймится через `claim_yd_for_treasury`. Это позволяет межпроектное портфельное инвестирование, где governance Futarchy каждого проекта решает, какие OT-позиции открывать и когда продавать через `spend_treasury`.
+</Note>
+
+## PDA Seeds
+
+| Account | Seeds | Description |
+|---|---|---|
+| OtConfig | `"ot_config"`, `ot_mint` | Конфигурация токена, mint authority для OT |
+| RevenueAccount | `"revenue"`, `ot_mint` | Аккумулятор дохода, владеет USDC ATA |
+| RevenueConfig | `"revenue_config"`, `ot_mint` | Аллокации направлений + адрес комиссии |
+| OtGovernance | `"ot_governance"`, `ot_mint` | Governance authority |
+| OtTreasury | `"ot_treasury"`, `ot_mint` | Казначейство проекта, мультитокен-кошелёк |
+
+## Константы
+
+| Constant | Value | Description |
+|---|---|---|
+| `BPS_DENOMINATOR` | `10,000` | 100% в базисных пунктах |
+| `Areal_PROTOCOL_FEE_BPS` | `25` | Комиссия протокола 0.25% на распределения |
+| `MAX_DESTINATIONS` | `10` | Максимум направлений дохода на один OT |
+| `MIN_DISTRIBUTION_AMOUNT` | `100,000,000` | $100 USDC (6 десятичных знаков) минимум для распределения |
+| `DISTRIBUTION_COOLDOWN` | `604,800` | 7 дней в секундах — минимальный интервал между распределениями |
+| `MAX_DECIMALS` | `9` | Максимум десятичных знаков токена |
+| `MAX_NAME_LEN` | `32` | Максимум байт названия токена |
+| `MAX_SYMBOL_LEN` | `10` | Максимум байт символа токена |
+| `MAX_URI_LEN` | `200` | Максимум байт URI метаданных |
+| `YD_PROGRAM_ID` | hardcoded | ID программы Yield Distribution (проверяется в claim_yd_for_treasury) |
+
+## События
+
+| Event | Fields | When |
+|---|---|---|
+| `OtInitialized` | ot_mint, authority, decimals, timestamp | Токен создан |
+| `OtMinted` | ot_mint, recipient, amount, new_total_minted, timestamp | Токены заминчены |
+| `RevenueDistributed` | ot_mint, total_amount, protocol_fee, distribution_count, num_destinations, timestamp | Доход распределён |
+| `DestinationConfigUpdated` | ot_mint, config_version, active_count, timestamp | Направления изменены |
+| `AuthorityTransferProposed` | ot_mint, current_authority, pending_authority, timestamp | Передача предложена |
+| `AuthorityTransferAccepted` | ot_mint, old_authority, new_authority, timestamp | Передача принята |
+| `TreasurySpent` | ot_mint, token_mint, amount, destination, timestamp | Токены отправлены из казначейства |
+| `TreasuryYieldClaimed` | ot_mint, amount, timestamp | Доход неподходящих держателей заклеймлен для казначейства |
+
+## Коды ошибок
+
+| Error | Description |
+|---|---|
+| `Unauthorized` | Подписант не является governance authority |
+| `ZeroAmount` | Сумма должна быть > 0 |
+| `InvalidBpsTotal` | Аллокации направлений не суммируются до 10,000 |
+| `InvalidAllocationBps` | BPS не в диапазоне 1-10,000 |
+| `DuplicateDestination` | Один и тот же адрес использован дважды |
+| `EmptyDestinationList` | Пакетное обновление с пустым списком |
+| `TooManyDestinations` | Более 10 направлений |
+| `BelowMinDistribution` | Баланс ATA < $100 |
+| `DistributionCooldown` | Прошло менее 7 дней с последнего распределения |
+| `DistributionInProgress` | Reentrancy — распределение уже выполняется |
+| `InsufficientRemainingAccounts` | Недостаточно аккаунтов для всех направлений |
+| `DestinationAccountMismatch` | Remaining account не совпадает с направлением |
+| `MathOverflow` | Арифметическое переполнение |
+| `InvalidMintSupply` | ot_mint.supply ≠ 0 (минт должен быть свежим) |
+| `InvalidMintAuthority` | ot_mint.mint_authority ≠ deployer |
+| `FreezeAuthoritySet` | ot_mint.freeze_authority не равен None |
+| `InvalidName` | Пустое название |
+| `InvalidSymbol` | Пустой символ |
+| `NoPendingAuthority` | Нет передачи для принятия |
+| `InvalidPendingAuthority` | Подписант ≠ pending_authority |
+| `AuthorityTransferToSelf` | Нельзя передать самому себе |
+
+## Архитектура и руководство по интеграции
+
+### Карта PDA-аккаунтов
+
+5 PDA создаются `initialize_ot` (SPL-минт создаётся заранее извне для поддержки vanity-адресов):
+
+<CardGroup cols={3}>
+  <Card title="OtConfig" icon="gear">
+    **Seed:** `["ot_config", ot_mint]`
+
+    Mint authority для SPL-минта. Хранит name, symbol, decimals, total_minted, uri.
+
+    **Контролируется:** OtGovernance authority (для минтинга)
+  </Card>
+  <Card title="RevenueAccount" icon="money-bill">
+    **Seed:** `["revenue", ot_mint]`
+
+    Владеет USDC ATA, где накапливается доход. Кто угодно отправляет USDC сюда через SPL-трансфер. Отслеживает distribution_count, total_distributed. Имеет защиту от reentrancy.
+
+    **Используется:** `distribute_revenue` считывает баланс ATA напрямую
+  </Card>
+  <Card title="RevenueConfig" icon="sliders">
+    **Seed:** `["revenue_config", ot_mint]`
+
+    Массив из 10 слотов направлений (address + allocation_bps + label). Хранит `areal_fee_destination` (статический). `config_version` увеличивается при изменениях.
+
+    **Контролируется:** OtGovernance authority
+  </Card>
+</CardGroup>
+
+<CardGroup cols={2}>
+  <Card title="OtGovernance" icon="landmark">
+    **Seed:** `["ot_governance", ot_mint]`
+
+    Хранит `authority` (Futarchy PDA после бутстрапа), `pending_authority` для двухэтапной передачи. Контролирует: минтинг, расходы, направления.
+
+    **Связан с:** программой Futarchy (authority = Futarchy config PDA)
+  </Card>
+  <Card title="OtTreasury" icon="vault">
+    **Seed:** `["ot_treasury", ot_mint]`
+
+    Мультитокен PDA-кошелёк. Без фиксированных ATA — хранит любой SPL-токен динамически. Treasury PDA подписывает переводы через seeds.
+
+    **Получает:** 20% дохода через distribute. **Тратит:** только governance через `spend_treasury`. Вся история расходов отслеживается через события `TreasurySpent`.
+  </Card>
+</CardGroup>
+
+### Межпрограммная интеграция
+
+<AccordionGroup>
+  <Accordion title="→ Yield Distribution (получает 70% дохода)">
+    - `distribute_revenue` отправляет 70% **USDC** на YD Accumulator ATA
+    - Контракт YD конвертирует USDC → **RWT** (своп на DEX до NAV-цены + минтинг остатка по NAV)
+    - YD создаёт merkle-стримы, распределяющие **RWT** подходящим держателям OT
+    - Держатели клеймят **RWT** пропорционально их балансу OT через merkle-доказательства
+    - Доля неподходящих держателей (< $100 в холдингах) → лист **ARL OtTreasury PDA** в merkle-дереве (выручка протокола)
+    - `claim_yd_for_treasury` на экземпляре ARL OT (permissionless крэнк) клеймит эту долю — ARL OtTreasury PDA подписывает CPI к YD
+  </Accordion>
+
+  <Accordion title="→ Futarchy Governance (контролирует authority)">
+    - Futarchy config PDA = `ot_governance.authority` после бутстрапа
+    - Все governance-операции (минтинг, расходы, направления) требуют предложений Futarchy
+    - Futarchy Liquidity Nexus получает 10% дохода для DEX LP
+  </Accordion>
+
+  <Accordion title="→ RWT Engine (хранит OT в качестве обеспечения)">
+    - RWT Vault покупает/продаёт OT на DEX через `vault_swap`
+    - Баланс OT в RWT Vault влияет на RWT NAV (Net Asset Value)
+    - RWT Vault клеймит доход из YD-стримов через `claim_yield`
+  </Accordion>
+
+  <Accordion title="→ Native DEX (торговля OT)">
+    - OT торгуется в пулах OT/RWT и OT/USDC
+    - Liquidity Nexus управляет LP-позициями, используя 10% доли дохода
+    - Pool Rebalancer поддерживает концентрированную ликвидность вокруг NAV-цены
+  </Accordion>
+</AccordionGroup>
+
+### Модель полномочий
+
+<CardGroup cols={3}>
+  <Card title="🔧 Обновление программы" icon="wrench">
+    **Team Multisig (Squads)**
+
+    Может развёртывать новые версии контракта. Не может изменять on-chain состояние напрямую.
+  </Card>
+  <Card title="🏛️ Governance Authority" icon="landmark">
+    **OtGovernance.authority = Futarchy PDA**
+
+    - `mint_ot` — создание новых токенов
+    - `spend_treasury` — перемещение средств казначейства
+    - `batch_update_destinations` — изменение разделения дохода
+    - `propose_authority_transfer`
+  </Card>
+  <Card title="🌐 Permissionless" icon="globe">
+    **Любой кошелёк / крэнк-бот**
+
+    - SPL-трансфер USDC → Revenue ATA
+    - SPL-трансфер токенов → Treasury ATA
+    - `distribute_revenue` (если ≥ $100)
+    - `claim_yd_for_treasury`
+    - `accept_authority_transfer`
+  </Card>
+</CardGroup>
+
+<Warning>
+  **Неизменяемые после инициализации:** `areal_fee_destination` (статический **USDC** ATA Areal Finance) и `min_distribution_amount` ($100) не могут быть изменены governance. Только обновление программы может их изменить.
+</Warning>
+
+<Note>
+  **Два адреса комиссии Areal в протоколе.** OT и RWT Engine отправляют комиссии в **USDC** → Areal Finance USDC ATA. YD и DEX отправляют комиссии в **RWT** → Areal Finance RWT ATA. Это два разных ATA, принадлежащих одному и тому же кошельку Areal Finance. Разработчики должны использовать правильный ATA для каждого контракта.
+</Note>
+
+### Чеклист развёртывания
+
+Для нового OT-проекта деплоер должен:
+
+**Предусловия:** Native DEX (для адреса Nexus PDA) и Yield Distribution (для адреса Accumulator PDA) должны быть развёрнуты и инициализированы первыми — их адреса нужны для направлений дохода на шаге 3. Futarchy должен быть развёрнут до шага 5 (передача governance).
+
+1. **Создать vanity-минт** извне через `solana-keygen grind` + `spl-token create-token`
+2. **Вызвать `initialize_ot`** с параметрами проекта → создаёт 5 PDA + Revenue USDC ATA, передаёт mint authority в OtConfig PDA
+3. **Вызвать `batch_update_destinations`** для настройки разделения дохода:
+   - 70% → YD accumulator USDC ATA
+   - 20% → OtTreasury USDC ATA  
+   - 10% → Crank USDC ATA (крэнк маршрутизирует в Nexus через `nexus_deposit` для отслеживания principal)
+4. **Заминтить начальные токены** через `mint_ot` для ранних инвесторов / деплоера для распределения
+5. **Передать governance** в Futarchy config PDA через `propose_authority_transfer` + `accept_authority_transfer`
+
+<Warning>
+  Шаг 4 должен быть ДО шага 5. После передачи governance деплоер больше не может минтить напрямую — только через предложения Futarchy.
+</Warning>
+
+### Сводка потоков токенов
+
+| From | To | Mechanism | Who triggers |
+|------|-----|-----------|-------------|
+| Внешний USDC | RevenueAccount ATA | SPL-трансфер | Управляющий активом |
+| RevenueAccount | YD Accumulator (70%) | distribute_revenue | Крэнк |
+| RevenueAccount | Treasury (20%) | distribute_revenue | Крэнк |
+| RevenueAccount | Crank USDC ATA (10%) → Nexus через `nexus_deposit` | distribute_revenue + nexus_deposit | Крэнк |
+| RevenueAccount | Areal Fee (0.25%) | distribute_revenue | Крэнк |
+| Treasury | Любое направление | spend_treasury | Governance |
+| OtConfig (mint authority) | Любой получатель | mint_ot | Governance |
+| YD reward vault | Treasury RWT ATA | claim_yd_for_treasury (CPI к YD) | Крэнк |

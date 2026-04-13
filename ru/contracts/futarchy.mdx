@@ -1,0 +1,499 @@
+---
+title: "Futarchy"
+description: "Управление на уровне OT — держатели контролируют выпуск токенов, казну и распределение доходов"
+---
+
+# Futarchy
+
+<Card title="✅ Готов к разработке" icon="check" color="#48bb78">
+  Спецификация контракта прошла аудит бизнес-логики, проверку межпрограммной интеграции и верификацию модели полномочий. Разработчик может вести реализацию по этому документу.
+</Card>
+
+Контракт управления на уровне OT. Каждый OT-проект (RCP, ARL и т.д.) получает собственный экземпляр Futarchy. Держатели OT управляют тремя ключевыми решениями: выпуск новых токенов, расходование средств казны и изменение распределения доходов. V1: авторитет команды одобряет предложения. V2: предложения разрешаются через рынки предсказаний (futarchy).
+
+<Warning>
+  **Обновляемый контракт.** Полномочия на обновление программы = Team Multisig (Squads). Отделено от полномочий управления.
+</Warning>
+
+## Ключевые концепции
+
+<CardGroup cols={3}>
+  <Card title="8 инструкций" icon="code">
+    Инициализация, создание/одобрение/отмена/исполнение предложения, принятие OT-управления, передача полномочий
+  </Card>
+  <Card title="2 стейт-аккаунта" icon="database">
+    FutarchyConfig, Proposal
+  </Card>
+  <Card title="2 PDA-сида" icon="key">
+    futarchy_config, proposal
+  </Card>
+</CardGroup>
+
+## Чем управляют держатели
+
+<CardGroup cols={3}>
+  <Card title="🪙 Выпуск OT" icon="coins">
+    Создание новых OT-токенов для проекта.
+
+    CPI → `ownership_token::mint_ot`
+
+    Используется для: привлечения капитала, вознаграждения контрибьюторов, увеличения предложения.
+  </Card>
+  <Card title="💰 Расходование казны" icon="vault">
+    Перевод любого токена из OT Treasury на любой адрес назначения.
+
+    CPI → `ownership_token::spend_treasury`
+
+    Используется для: финансирования операций, оплаты расходов, инвестирования.
+  </Card>
+  <Card title="📊 Обновление распределения доходов" icon="chart-pie">
+    Изменение распределения доходов между держателями, казной и Nexus.
+
+    CPI → `ownership_token::batch_update_destinations`
+
+    Используется для: корректировки экономики протокола.
+  </Card>
+</CardGroup>
+
+<Note>
+  **Все OT-проекты равноправны.** ARL (Areal Finance) использует тот же контракт Futarchy, что и RCP (Rental Car Pool) или любой другой OT-проект. Никакого особого отношения. Единственное различие — что представляет OT; механика управления идентична.
+</Note>
+
+## V1 vs V2
+
+<CardGroup cols={2}>
+  <Card title="V1: Одобрение авторитетом" icon="user-check">
+    **Текущая реализация.**
+
+    - Авторитет (кошелёк команды) создаёт и одобряет предложения
+    - Единственный подписант = мгновенное одобрение
+    - Просто и быстро для ранней стадии
+    - Полномочия передаются Team Multisig после начального этапа
+  </Card>
+  <Card title="V2: Рынки предсказаний (будущее)" icon="crystal-ball">
+    **Планируемое обновление.**
+
+    - Держатели OT создают предложения
+    - Рынок предсказаний Futarchy определяет: «Увеличит ли это предложение стоимость OT?»
+    - Принятие решений на основе рынка
+    - Нет единого авторитета — децентрализованное управление
+  </Card>
+</CardGroup>
+
+## Инструкции
+
+### Инициализация
+
+<AccordionGroup>
+  <Accordion title="initialize_futarchy">
+    Создание управления для OT-проекта. Вызывается один раз для каждого OT.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `ot_mint` | `Pubkey` | OT, которым управляет данный экземпляр |
+
+    **Вызывающий:** Деплоер (однократно для каждого OT)
+
+    **Аккаунты:**
+    - `deployer` (signer, mut) — оплачивает создание
+    - `ot_mint` — минт OT-токена
+    - `config` (init) — PDA seed: `["futarchy_config", ot_mint]`
+    - `system_program`
+
+    **Создаёт:**
+    - `FutarchyConfig` PDA — конфигурация управления для данного OT
+
+    **Начальное состояние:**
+    - `authority = deployer` (передаётся Team Multisig после начального этапа)
+    - `ot_mint = ot_mint`
+    - `next_proposal_id = 0`
+    - `is_active = true`
+  </Accordion>
+</AccordionGroup>
+
+### Предложения
+
+<AccordionGroup>
+  <Accordion title="create_proposal">
+    Создание нового предложения для управления. V1: создаёт авторитет. V2: любой держатель OT выше порога.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `proposal_type` | `ProposalType` | `MintOt`, `SpendTreasury` или `UpdateDestinations` |
+    | `amount` | `u64` | Сумма для выпуска/расходования (0 для UpdateDestinations) |
+    | `destination` | `Pubkey` | Получатель для выпуска/расходования, или игнорируется для UpdateDestinations |
+    | `token_mint` | `Pubkey` | Минт токена для SpendTreasury (какой токен расходовать) |
+    | `params_hash` | `[u8; 32]` | Хеш полных параметров (для UpdateDestinations: хеш массива новых направлений) |
+
+    **Вызывающий:** Авторитет (V1) / Держатель OT выше порога (V2)
+
+    **Аккаунты:**
+    - `proposer` (signer, mut) — оплачивает аккаунт Proposal
+    - `config` — проверяет is_active
+    - `proposal` (init) — PDA seed: `["proposal", config, proposal_id]`
+    - `system_program`
+
+    **Валидация:**
+    - Config должен быть активен
+    - V1: proposer == config.authority
+    - V2 (будущее): proposer владеет >= threshold OT-токенов (порог TBD — вероятно настраиваемый в FutarchyConfig, например `min_proposal_ot_balance: u64`, устанавливается авторитетом)
+    - Для `MintOt` / `SpendTreasury`: `amount > 0` (запрещены предложения с нулевой суммой)
+    - Для `SpendTreasury` / `MintOt`: `destination ≠ Pubkey::default()` (запрещены получатели с нулевым адресом)
+    - Для `UpdateDestinations`: `params_hash ≠ [0; 32]` (проверка на пустой хеш)
+
+    **Результат:** Создаёт Proposal со статусом Active, увеличивает next_proposal_id. Генерирует событие `ProposalCreated`.
+
+    <Note>
+      **Ограничение частоты V1:** Не требуется — только авторитет может создавать предложения, что обеспечивает неявный контроль частоты. **Ограничение частоты V2 (будущее):** Когда любой держатель сможет предлагать, необходимо добавить кулдаун на предлагающего (например, 1 предложение в 24ч на кошелёк) и депозит за предложение (возвращаемый при исполнении/отмене) для предотвращения спама. Это должно быть добавлено при реализации V2.
+    </Note>
+  </Accordion>
+
+  <Accordion title="approve_proposal">
+    Одобрение предложения. V1: авторитет подписывает. V2: рынок предсказаний определяет.
+
+    **Вызывающий:** Авторитет (V1) / Автоматически через разрешение рынка (V2)
+
+    **Аккаунты:**
+    - `authority` (signer) — должен совпадать с `config.authority` (V1)
+    - `config`
+    - `proposal` (mut) — должен иметь статус Active
+
+    **Валидация:**
+    - `proposal.status == Active`
+
+    **Результат:** Устанавливает `proposal.status = Approved`. Генерирует событие `ProposalApproved`.
+  </Accordion>
+
+  <Accordion title="cancel_proposal">
+    Отмена активного предложения. Только авторитет может отменять. Нельзя отменить уже одобренные или исполненные предложения.
+
+    **Вызывающий:** Авторитет (V1)
+
+    **Аккаунты:**
+    - `authority` (signer) — должен совпадать с `config.authority`
+    - `config`
+    - `proposal` (mut) — должен иметь статус Active
+
+    **Валидация:**
+    - `proposal.status == Active`
+
+    **Результат:** Устанавливает `proposal.status = Cancelled`. Генерирует событие `ProposalCancelled`.
+  </Accordion>
+
+  <Accordion title="execute_proposal">
+    Исполнение одобренного предложения. Безразрешительное — кто угодно может запустить исполнение после одобрения. CPI к контракту OT в зависимости от proposal_type.
+
+    **Вызывающий:** Безразрешительное (Permissionless)
+
+    **Аккаунты:**
+    - `executor` (signer, mut) — оплачивает комиссии CPI
+    - `config`
+    - `proposal` (mut) — должен иметь статус Approved
+    - Аккаунты контракта OT (зависят от proposal_type — **порядок должен соответствовать layout инструкции OT**):
+      - **MintOt:** `ot_governance` (OT governance PDA `["ot_governance", ot_mint]`), `ot_config` (mut, `["ot_config", ot_mint]`), `ot_mint` (mut), `recipient_token_account` (mut, ATA `proposal.destination` для OT mint), `recipient` (`proposal.destination`), `payer` (signer, оплачивает инициализацию ATA при необходимости — может быть executor)
+      - **SpendTreasury:** `ot_governance` (`["ot_governance", ot_mint]`), `ot_treasury` (`["ot_treasury", ot_mint]`), `treasury_token_account` (mut, Treasury ATA для `proposal.token_mint`), `destination_token_account` (mut, ATA по адресу `proposal.destination` — должен существовать), `token_mint` (`proposal.token_mint`)
+      - **UpdateDestinations:** `ot_governance` (`["ot_governance", ot_mint]`), `revenue_config` (mut, `["revenue_config", ot_mint]`), `ot_mint`, плюс `remaining_accounts[0]` (сериализованный `Vec<BatchDestination>`)
+    - `ot_program` — constraint: `key == OT_PROGRAM_ID`
+    - `token_program`, `system_program`
+
+    <Note>
+      **Руководство для исполнителя:** Все адреса OT PDA выводятся из `config.ot_mint`. Исполнитель читает поля предложения (`amount`, `destination`, `token_mint`, `proposal_type`) и выводит необходимые аккаунты. Для UpdateDestinations исполнитель также должен получить сериализованные данные направлений, соответствующие `proposal.params_hash` (из офчейн-источника, опубликованного предлагающим).
+    </Note>
+
+    **Логика по ProposalType:**
+
+    **MintOt:**
+    1. CPI → `ownership_token::mint_ot(proposal.amount)`
+    2. Futarchy config PDA подписывает как авторитет OT governance
+    3. Новые OT-токены выпускаются на `proposal.destination`
+
+    **SpendTreasury:**
+    1. CPI → `ownership_token::spend_treasury(proposal.amount)`
+    2. Futarchy config PDA подписывает как авторитет OT governance
+    3. Токены переводятся из OT Treasury на `proposal.destination`
+    4. `proposal.token_mint` определяет, какой токен расходовать
+
+    **UpdateDestinations:**
+    1. Исполнитель передаёт полный массив направлений через `remaining_accounts`
+    2. Десериализация:
+       ```
+       // remaining_accounts[0].data contains Borsh-serialized Vec<BatchDestination>
+       let data = remaining_accounts[0].try_borrow_data()?;
+       let destinations: Vec<BatchDestination> = Vec::<BatchDestination>::deserialize(&mut &data[..])?;
+       ```
+    3. Проверка хеша: `sha256(remaining_accounts[0].data) == proposal.params_hash` — гарантирует, что исполнитель передал именно те направления, которые были предложены
+    4. CPI → `ownership_token::batch_update_destinations(destinations)` с направлениями в качестве параметра инструкции
+    5. Futarchy config PDA подписывает как авторитет OT governance через seeds `[b"futarchy_config", config.ot_mint.as_ref(), &[config.bump]]`
+
+    **Структура `BatchDestination`** (определена в контракте OT, используется здесь для сериализации):
+
+    | Field | Type | Description |
+    |---|---|---|
+    | `address` | `Pubkey` | Целевой USDC-токен аккаунт |
+    | `allocation_bps` | `u16` | Аллокация в базисных пунктах (1-10 000) |
+    | `label` | `[u8; 32]` | Человекочитаемая метка |
+
+    **Построение хеша:** `params_hash = sha256(borsh_serialize(destinations_vec))` где `destinations_vec: Vec<BatchDestination>`. Предлагающий вычисляет хеш офчейн при создании предложения; исполнитель должен передать идентичные сериализованные данные в `remaining_accounts[0]`.
+
+    <Note>
+      **Рабочий процесс исполнителя:** Предлагающий публикует `params_hash` и полные данные направлений офчейн (например, IPFS или API). Исполнитель скачивает данные, передаёт как `remaining_accounts[0]`, контракт проверяет совпадение хешей перед CPI. При несовпадении хешей → откат.
+    </Note>
+
+    **Валидация:**
+    - `proposal.status == Approved`
+    - Предложение ещё не исполнено
+
+    **Результат:** Устанавливает `proposal.status = Executed`, `executed_ts = now`. Генерирует событие `ProposalExecuted`.
+  </Accordion>
+</AccordionGroup>
+
+### Принятие OT Governance
+
+<AccordionGroup>
+  <Accordion title="claim_ot_governance">
+    Принятие полномочий OT governance от имени Futarchy config PDA. Вызывается во время деплоя после того, как OT предложил передачу полномочий этому экземпляру Futarchy. Безразрешительное — кто угодно может запустить, когда OT уже предложил передачу.
+
+    **Вызывающий:** Безразрешительное (Permissionless)
+
+    **Аккаунты:**
+    - `executor` (signer, mut)
+    - `config` — Futarchy config PDA (подписывает CPI как новый авторитет OT)
+    - `ot_governance` (mut) — аккаунт OT governance (pending_authority должен == config PDA)
+    - `ot_mint` — для вывода PDA
+    - `ot_program` — constraint: `key == OT_PROGRAM_ID`
+
+    **Валидация:**
+    - `ot_governance.pending_authority == config.key()` (OT должен был предложить именно этот Futarchy)
+
+    **Результат:** CPI → `ownership_token::accept_authority_transfer`. Futarchy config PDA подписывает как new_authority. Авторитет OT governance теперь = Futarchy config PDA. Генерирует событие `OtGovernanceClaimed`.
+  </Accordion>
+</AccordionGroup>
+
+### Передача полномочий
+
+Двухшаговая передача полномочий управления. Стандартный паттерн для всех контрактов.
+
+<AccordionGroup>
+  <Accordion title="propose_authority_transfer">
+    Шаг 1: Текущий авторитет предлагает нового авторитета.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `new_authority` | `Pubkey` | Предлагаемый новый авторитет |
+
+    **Вызывающий:** Текущий авторитет
+
+    **Аккаунты:**
+    - `authority` (signer) — должен совпадать с `config.authority`
+    - `config` (mut)
+
+    **Валидация:** `new_authority ≠ current authority` (нельзя передать самому себе)
+
+    **Результат:** Устанавливает `config.pending_authority = Some(new_authority)`. Генерирует событие `AuthorityTransferProposed`.
+
+    <Note>
+      Повторный вызов **перезаписывает** существующий pending_authority. Ранее предложенный авторитет теряет возможность принять передачу.
+    </Note>
+  </Accordion>
+
+  <Accordion title="accept_authority_transfer">
+    Шаг 2: Предложенный авторитет принимает.
+
+    **Вызывающий:** Предложенный новый авторитет (должен подписать)
+
+    **Аккаунты:**
+    - `new_authority` (signer) — должен совпадать с `config.pending_authority`
+    - `config` (mut)
+
+    **Валидация:** `signer == config.pending_authority`
+
+    **Результат:** Устанавливает `authority = new_authority`, очищает `pending_authority`. Генерирует событие `AuthorityTransferAccepted`.
+
+    <Note>
+      Это изменяет того, кто контролирует экземпляр Futarchy — НЕ авторитет OT governance. Авторитет OT governance остаётся = Futarchy config PDA независимо от того, кто управляет Futarchy.
+    </Note>
+  </Accordion>
+</AccordionGroup>
+
+## Стейт-аккаунты
+
+### FutarchyConfig
+
+Конфигурация управления для конкретного OT. Один на каждый OT-проект.
+
+| Field | Type | Description |
+|---|---|---|
+| `ot_mint` | `Pubkey` | OT, которым управляет данный экземпляр |
+| `authority` | `Pubkey` | Текущий авторитет управления (кошелёк команды V1, PDA рынка V2) |
+| `pending_authority` | `Option<Pubkey>` | Цель ожидающей передачи полномочий |
+| `next_proposal_id` | `u64` | Автоинкрементируемый счётчик предложений (также = общее число созданных предложений) |
+| `is_active` | `bool` | Флаг активности управления |
+| `bump` | `u8` | Bump seed PDA |
+
+**PDA Seed:** `["futarchy_config", ot_mint]`
+
+<Note>
+  FutarchyConfig PDA устанавливается как `ot_governance.authority` в контракте OT. Именно так Futarchy контролирует операции OT — подписывая как авторитет OT governance через CPI.
+</Note>
+
+### Proposal
+
+Отдельное предложение для управления. Создаётся для каждого действия.
+
+| Field | Type | Description |
+|---|---|---|
+| `proposal_id` | `u64` | Уникальный ID в рамках данного экземпляра Futarchy |
+| `ot_mint` | `Pubkey` | OT-проект |
+| `proposer` | `Pubkey` | Кто создал это предложение |
+| `proposal_type` | `ProposalType` | `MintOt`, `SpendTreasury` или `UpdateDestinations` |
+| `amount` | `u64` | Сумма для выпуска/расходования (зависит от контекста) |
+| `destination` | `Pubkey` | Получатель для выпуска/расходования |
+| `token_mint` | `Pubkey` | Минт токена для SpendTreasury |
+| `params_hash` | `[u8; 32]` | Хеш сериализованных параметров (для UpdateDestinations) |
+| `status` | `ProposalStatus` | `Active`, `Approved`, `Executed`, `Cancelled` |
+| `created_ts` | `i64` | Временная метка создания |
+| `executed_ts` | `i64` | Временная метка исполнения (0 если не исполнено) |
+| `bump` | `u8` | Bump seed PDA |
+
+**PDA Seed:** `["proposal", futarchy_config, proposal_id]`
+
+**Enum ProposalType:**
+- `MintOt` — выпуск новых OT-токенов
+- `SpendTreasury` — расходование из OT Treasury
+- `UpdateDestinations` — изменение распределения доходов
+
+**Enum ProposalStatus:**
+- `Active` — создано, ожидает одобрения
+- `Approved` — одобрено, готово к исполнению
+- `Executed` — исполнено успешно
+- `Cancelled` — отменено авторитетом через `cancel_proposal` (V1), или рынок определил «против» (V2)
+
+## PDA Seeds
+
+| Account | Seeds | Description |
+|---|---|---|
+| FutarchyConfig | `"futarchy_config"`, `ot_mint` | Конфигурация управления для конкретного OT |
+| Proposal | `"proposal"`, `futarchy_config`, `proposal_id` | Отдельное предложение |
+
+## Константы
+
+| Constant | Value | Description |
+|---|---|---|
+| `OT_PROGRAM_ID` | hardcoded | ID программы Ownership Token (валидируется в execute_proposal) |
+
+## События
+
+| Event | Fields | When |
+|---|---|---|
+| `FutarchyInitialized` | ot_mint, authority, timestamp | Управление создано |
+| `ProposalCreated` | proposal_id, ot_mint, proposer, proposal_type, amount, destination, timestamp | Предложение создано |
+| `ProposalApproved` | proposal_id, approver, timestamp | Предложение одобрено |
+| `ProposalCancelled` | proposal_id, authority, timestamp | Предложение отменено |
+| `ProposalExecuted` | proposal_id, proposal_type, executor, timestamp | Предложение исполнено через CPI |
+| `OtGovernanceClaimed` | ot_mint, futarchy_config, timestamp | Полномочия OT governance приняты |
+| `AuthorityTransferProposed` | current_authority, pending_authority, timestamp | Передача полномочий предложена |
+| `AuthorityTransferAccepted` | old_authority, new_authority, timestamp | Передача полномочий принята |
+
+## Коды ошибок
+
+| Error | Description |
+|---|---|
+| `Unauthorized` | Подписант не является авторитетом |
+| `GovernancePaused` | Config is_active = false |
+| `ProposalNotActive` | Статус предложения ≠ Active (для одобрения) |
+| `ProposalNotApproved` | Статус предложения ≠ Approved (для исполнения) |
+| `AlreadyExecuted` | Предложение уже исполнено |
+| `ProposalCancelled` | Предложение было отменено (для исполнения) |
+| `InvalidProposalType` | Неизвестный тип предложения |
+| `MathOverflow` | Арифметическое переполнение |
+| `SelfTransfer` | Нельзя передать полномочия самому себе |
+| `NoPendingAuthority` | Нет ожидающей передачи |
+| `InvalidPendingAuthority` | Подписант ≠ pending_authority |
+
+## Архитектура и руководство по интеграции
+
+### Межпрограммная интеграция
+
+<AccordionGroup>
+  <Accordion title="→ Ownership Token (исполнение предложений через CPI)">
+    - Futarchy config PDA = `ot_governance.authority` в контракте OT
+    - `execute_proposal` выполняет CPI к OT: `mint_ot`, `spend_treasury`, `batch_update_destinations`
+    - Config PDA подписывает как авторитет OT governance
+    - `OT_PROGRAM_ID` захардкожен и валидируется
+  </Accordion>
+</AccordionGroup>
+
+### Как Futarchy связан с OT
+
+```
+FutarchyConfig PDA ["futarchy_config", ot_mint]
+  │
+  │ is set as authority in:
+  ▼
+OtGovernance PDA ["ot_governance", ot_mint]
+  │
+  │ controls:
+  ▼
+OT Contract: mint_ot, spend_treasury, batch_update_destinations
+```
+
+Futarchy config PDA ЯВЛЯЕТСЯ авторитетом OT governance. Когда `execute_proposal` выполняет CPI к OT, Futarchy config PDA подписывает через seeds — контракт OT валидирует `signer == ot_governance.authority`. ✓
+
+### Модель полномочий
+
+<CardGroup cols={2}>
+  <Card title="🔧 Обновление программы" icon="wrench">
+    **Team Multisig (Squads)**
+
+    Может деплоить новые версии контракта.
+  </Card>
+  <Card title="🏛️ Авторитет управления" icon="landmark">
+    **Кошелёк команды (V1) / Рынок предсказаний (V2)**
+
+    - `create_proposal`
+    - `approve_proposal`
+    - `propose_authority_transfer`
+
+    В V1 команда создаёт и одобряет. В V2 держатели создают, рынки определяют.
+  </Card>
+</CardGroup>
+
+<Note>
+  `execute_proposal` является **безразрешительным** — после одобрения кто угодно может запустить исполнение. Это гарантирует, что предложения не могут быть заблокированы после одобрения.
+</Note>
+
+### Что команда контролирует напрямую (НЕ через Futarchy)
+
+Эти операции протокола управляются кошельками команды напрямую, НЕ через предложения Futarchy:
+
+- **DEX:** конфигурация, создатели пулов, ребалансировщик — через `dex_config.authority` (Team Multisig)
+- **RWT Engine:** менеджер, конфигурация распределения, административный выпуск, корректировки капитала — через `vault.authority` (Team Multisig)
+- **Yield Distribution:** конфигурация, полномочия публикации, дистрибьюторы — через `config.authority` (Team Multisig)
+- **Liquidity Nexus:** управляется напрямую командой (кошелёк менеджера Nexus)
+- **Pool Rebalancer:** конфигурация — через `config.authority` (Team Multisig)
+- **Экстренная пауза:** все контракты — через `pause_authority` (Team Multisig)
+
+<Note>
+  Futarchy управляет **решениями на уровне проекта OT** (выпуск, расходование, распределение). Инфраструктура на уровне протокола управляется командой до тех пор, пока децентрализованное управление (V2) не станет достаточно зрелым для этого.
+</Note>
+
+### Чеклист деплоя
+
+1. **Задеплоить контракт OT** и выполнить `initialize_ot` для проекта
+2. **Вызвать `initialize_futarchy`** для OT
+3. **Передать OT governance** на Futarchy config PDA:
+   - OT: `propose_authority_transfer(futarchy_config_pda)` (деплоер подписывает)
+   - Futarchy: `claim_ot_governance` (безразрешительное — Futarchy config PDA принимает через CPI)
+4. **Передать полномочия Futarchy** на Team Multisig через `propose_authority_transfer` + `accept_authority_transfer`
+
+<Warning>
+  Шаг 3 должен быть завершён до того, как деплоер потеряет доступ. После `claim_ot_governance` только предложения Futarchy могут выпускать/расходовать/обновлять направления.
+</Warning>
+
+### Сводка потоков токенов
+
+| From | To | Mechanism | Who triggers |
+|------|-----|-----------|-------------|
+| — | OT mint → получатель | execute_proposal (MintOt CPI) | Кто угодно (безразрешительное) |
+| OT Treasury | адрес назначения | execute_proposal (SpendTreasury CPI) | Кто угодно (безразрешительное) |
+| — | OT RevenueConfig | execute_proposal (UpdateDestinations CPI) | Кто угодно (безразрешительное) |

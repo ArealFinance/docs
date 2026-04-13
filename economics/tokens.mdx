@@ -1,0 +1,110 @@
+---
+title: Tokens
+description: Overview of the token primitives used by the Areal protocol
+---
+
+Areal uses a **multi-token architecture** where each token has a clearly defined role, scope, and economic function. No single token is expected to solve all functions of the system — instead, tokens are designed to complement each other across layers.
+
+<CardGroup cols={3}>
+  <Card title="RWT" icon="coins" color="#a56eff" href="/economics/rwt-real-world-token">
+    Base yield & liquidity token — aggregates real-world yield into one unified asset
+  </Card>
+  <Card title="Ownership Tokens" icon="key" color="#10b981" href="/economics/ownership-tokens">
+    Project-level ownership tokens — represent real, legally backed claims on RWA projects
+  </Card>
+  <Card title="ARL" icon="crown" color="#3b82f6" href="/economics/arl-protocol-token">
+    Protocol governance token — controls Areal through futarchy-based decision making
+  </Card>
+</CardGroup>
+
+<Info>
+  Each token operates at a different layer of the system. Together, they form a closed economic loop: Ownership Tokens generate yield from real assets → RWT aggregates this yield into unified liquidity → ARL governs the rules that connect everything.
+</Info>
+
+---
+
+## RWT — Real World Token
+
+<Tooltip tip="Real World Token — the primary utility token of the Areal protocol for unified liquidity and yield aggregation">**RWT**</Tooltip> is the protocol's base token designed to solve **liquidity fragmentation** in the RWA market.
+
+Instead of scattering capital across dozens of isolated pools, Areal aggregates yield from multiple real-world assets into one token. RWT accumulates diversified RWA yield through <Tooltip tip="Ownership Token — a tokenized representation of a specific real-world asset within the Areal protocol">Ownership Tokens</Tooltip> held in its vault, becoming the single point of access to the protocol's entire portfolio.
+
+<CardGroup cols={2}>
+  <Card title="Flatcoin nature" icon="chart-line">
+    RWT price is anchored to a dynamically growing **NAV Book Value** — not pegged to $1, but steadily appreciating as real-world yield flows into the vault
+  </Card>
+  <Card title="Permissionless minting" icon="unlock">
+    Anyone can mint RWT at any time at current NAV Book Value — no whitelists, no gatekeepers, no approvals
+  </Card>
+</CardGroup>
+
+<Card title="Deep dive: Real World Token" icon="arrow-right" href="/economics/rwt-real-world-token">
+  Vault mechanics, NAV Book Value, master pools, permissionless minting, and the full liquidity architecture
+</Card>
+
+---
+
+## Ownership Tokens
+
+<Tooltip tip="Ownership Token — represents real, legally enforceable ownership of a specific real-world asset within Areal">**Ownership Tokens (OTs)**</Tooltip> represent **real, legally enforceable ownership** of tangible and intangible assets within the Areal ecosystem.
+
+Each Ownership Token is tied to a **DAO Ownership Company** — a legal entity that officially holds all project assets. Token holders have a genuine claim on real-world value, not just a speculative digital asset.
+
+<CardGroup cols={2}>
+  <Card title="Revenue-generating" icon="money-bill-trend-up">
+    Assets produce real-world yield — rent, fees, royalties, interest — distributed to holders through governance
+  </Card>
+  <Card title="Freely tradeable" icon="arrow-right-arrow-left">
+    OTs trade on the open market, providing liquidity and transparent price discovery for every project
+  </Card>
+</CardGroup>
+
+<Card title="Deep dive: Ownership Tokens" icon="arrow-right" href="/economics/ownership-tokens">
+  DAO Ownership Companies, legal structure, revenue distribution, and futarchy governance at the project level
+</Card>
+
+---
+
+## ARL — Protocol Token
+
+<Tooltip tip="ARL — the governance and ownership token of the Areal protocol, backed by a DAO Ownership Company">**ARL**</Tooltip> is an <Tooltip tip="Ownership Token — represents real, legally enforceable ownership of a specific real-world asset within Areal">Ownership Token</Tooltip> of the **Areal protocol itself**.
+
+Just like any Ownership Token represents real ownership of a specific RWA project, ARL represents ownership of the Areal protocol — including all intellectual property, products, infrastructure, and economic flows. ARL holders collectively govern the protocol through [futarchy](/architecture/governance-and-futarchy).
+
+<CardGroup cols={2}>
+  <Card title="Four revenue streams" icon="chart-mixed">
+    DEX fees, RWT Engine, yield distribution fees, and treasury operations fund the Areal DAO
+  </Card>
+  <Card title="Protocol governance" icon="sliders">
+    ARL holders set all key parameters — minting fees, DEX commissions, distribution rules, risk limits
+  </Card>
+</CardGroup>
+
+<Card title="Deep dive: ARL Protocol Token" icon="arrow-right" href="/economics/arl-protocol-token">
+  Revenue sources, protocol governance, treasury operations, and how ARL relates to Ownership Tokens
+</Card>
+
+---
+
+## Summary
+
+<CardGroup cols={3}>
+  <Card title="Multi-token design" icon="diagram-project" color="#a56eff">
+    Three distinct tokens — each with a defined role, scope, and economic function
+  </Card>
+  <Card title="Real-world yield" icon="building-columns" color="#a56eff">
+    Revenue from tangible assets flows through the system — not speculation, but real income
+  </Card>
+  <Card title="Unified liquidity" icon="droplet" color="#a56eff">
+    RWT solves fragmentation by aggregating yield from all projects into one deep market
+  </Card>
+  <Card title="Legal ownership" icon="file-contract" color="#a56eff">
+    Ownership Tokens are backed by DAO Ownership Companies — real legal entities holding real assets
+  </Card>
+  <Card title="Market-driven governance" icon="scale-balanced" color="#a56eff">
+    ARL governs through futarchy — decisions evaluated by outcomes, not opinions
+  </Card>
+  <Card title="Closed economic loop" icon="arrows-rotate" color="#a56eff">
+    Yield, liquidity, and governance layers reinforce each other in a self-sustaining system
+  </Card>
+</CardGroup>
