@@ -1,6 +1,6 @@
 ---
 title: "Native DEX"
-description: "Permissioned AMM with standard curve and concentrated liquidity pools"
+description: "Permissioned AMM with standard curve pools and single-sided Monotonic Ladder master pools"
 ---
 
 # Native DEX
@@ -9,7 +9,7 @@ description: "Permissioned AMM with standard curve and concentrated liquidity po
   This contract specification has passed business logic audit, technical review, cross-program integration check (OT + RWT + YD), fee architecture verification, and crank flow analysis. A developer can implement from this document.
 </Card>
 
-Purpose-built AMM for trading OT and RWT tokens. Two pool types: constant-product (StandardCurve) and bin-based concentrated liquidity (Concentrated). Pool creation is whitelisted — only approved creators can launch pools. All swap fees split between LP holders (claimable from per-pool fee vault) and Areal Finance (protocol fee in RWT). Fees are charged **on top of the swap** in RWT to preserve pool capitalization. OT token pairs charge an additional 0.5% fee that goes to the OT project treasury (controlled by Futarchy). Pools holding OT tokens also earn RWT yield via Yield Distribution — auto-compounded into reserves via `compound_yield`.
+Purpose-built AMM for trading OT and RWT tokens. Two pool types: constant-product (**StandardCurve**) for OT/RWT and third-party pairs, and single-sided bin-based concentrated liquidity (**Monotonic Ladder**) for RWT/USDC and RWT/USDY master pools. Pool creation is whitelisted. Swap fees split between LP holders (claimable from per-pool fee vault) and Areal Finance (protocol fee in RWT), charged **on top of the swap** to preserve pool capitalization. OT pairs charge an additional 0.5% to the OT project treasury. Master pools route USDC→RWT trades to `rwt_engine::mint_rwt` when DEX ask is not competitive — no DEX fee on mint-path.
 
 <Warning>
   **Upgradeable contract.** Program upgrade authority = Team Multisig (Squads). Separate from config authority and pause authority.
@@ -18,8 +18,8 @@ Purpose-built AMM for trading OT and RWT tokens. Two pool types: constant-produc
 ## Key Concepts
 
 <CardGroup cols={3}>
-  <Card title="22 Instructions" icon="code">
-    Config, create pools, add/remove/zap liquidity, swap, shift, compound, nexus (init, deposit, withdraw profits, swap, add/remove LP, update manager), pause, authority
+  <Card title="23 Instructions" icon="code">
+    Config, create pools, add/remove/zap liquidity, swap (with mint-routing branch), grow, compress, compound, nexus (init, deposit, withdraw profits, swap, add/remove LP, update manager), pause, authority
   </Card>
   <Card title="6 State Accounts" icon="database">
     DexConfig, PoolState, PoolCreators, LpPosition, BinArray, LiquidityNexus
@@ -38,19 +38,24 @@ Purpose-built AMM for trading OT and RWT tokens. Two pool types: constant-produc
     - Simple, proven AMM math
     - Continuous pricing: `price = reserve_b / reserve_a`
     - LP shares: `sqrt(a × b)` on first add, proportional after
-    - Good for: general trading, deep liquidity
+    - Used for: OT/RWT pairs, third-party pairs
   </Card>
-  <Card title="Concentrated" icon="chart-bar">
-    **Bin-based liquidity (order book model)**
+  <Card title="Monotonic Ladder" icon="stairs">
+    **Single-sided concentrated liquidity (bid-only)**
 
-    - 70 bins per pool, configurable step size (default 0.1%)
-    - Bins below active = USDC only (bid). Bins above = RWT only (ask). Active bin = both.
-    - Users add/remove liquidity same as StandardCurve — bins managed by Rebalancer
-    - Swap walks through bins consuming liquidity, shifting active bin
-    - `shift_liquidity` (Rebalancer only) repositions range around NAV
-    - Good for: tight ranges around NAV, capital efficiency
+    - **1000 bins** per pool, log-scale, `bin_step_bps = 10` (0.1%) default → covers NAV growth of ~2.7× from initial anchor
+    - **Three zones:** permanent tail (immovable USDC at initial NAV − 1%), active bid wall (geometric density `r = 0.85` around NAV), organic ask (RWT accumulated from user sells; not pre-funded)
+    - **Nexus LP deposits USDC only** — no RWT pre-deposit
+    - Swap(USDC→RWT) routes to `rwt_engine::mint_rwt` when organic ask exhausted or DEX price > `NAV × 1.005` (mint becomes cheaper)
+    - `grow_liquidity` (Rebalancer) extends bid wall rightward as NAV rises — never moves permanent tail, never touches organic ask
+    - `compress_liquidity` (Rebalancer) recenters density on writedown — frozen ask RWT above new NAV retained for recovery
+    - Used exclusively for: RWT/USDY and RWT/USDC master pools
   </Card>
 </CardGroup>
+
+<Note>
+  **Why single-sided?** RWT has monotonically non-decreasing NAV and a permissionless `mint_rwt` instruction that produces RWT at a deterministic ceiling price of `NAV × 1.01`. This makes any pre-funded RWT ask-side above NAV × 1.005 economically dead capital — buyers would always prefer mint. The Monotonic Ladder puts 100% of Nexus LP into the scarce resource (USDC bid depth) and delegates ask-side to the vault itself via mint routing.
+</Note>
 
 ## Fee Architecture
 
@@ -59,7 +64,7 @@ Purpose-built AMM for trading OT and RWT tokens. Two pool types: constant-produc
     Applied to every swap. Default: 50 bps (0.5%). Max: 1,000 bps (10%). Set per pool at creation, copied from DexConfig.
   </Step>
   <Step title="Fee Split">
-    - **LP Fee** (default 50% of base) → in **RWT**, transferred to Yield Distribution reward vault. LP holders claim rewards via merkle proof — same flow as OT yield claims.
+    - **LP Fee** (default 50% of base) → in **RWT**, collected in a per-pool fee vault (RWT token account owned by pool PDA). LP holders claim anytime via `claim_lp_fees` — no vesting, no merkle proof, no off-chain server.
     - **Protocol Fee** (default 50% of base) → always in **RWT**, transferred to `areal_fee_destination` (Areal Finance RWT ATA).
   </Step>
   <Step title="Fees On Top (No Pool Dilution)">
@@ -73,6 +78,9 @@ Purpose-built AMM for trading OT and RWT tokens. Two pool types: constant-produc
   </Step>
   <Step title="OT Treasury Fee (OT pairs only)">
     Pools paired with an OT token charge an **additional 50 bps (0.5%)** on every swap — sent entirely in RWT to the OT project's Treasury RWT ATA (controlled by Futarchy). Total effective fee for OT pairs: **100 bps (1%)**. Non-OT pools (e.g., RWT/USDC) are unaffected — standard 50 bps only. The OT treasury fee is calculated on the same gross amount as the base fee (no compounding). Stored as `OT_TREASURY_FEE_BPS = 50` program constant — changeable only via program upgrade.
+  </Step>
+  <Step title="Mint-Path Fee Skip (master pools only)">
+    When a **Monotonic Ladder** master pool routes USDC→RWT to `rwt_engine::mint_rwt` (organic ask exhausted or best ask price > `NAV × 1.005`), **no DEX fee (LP or protocol) is charged**. The 1% mint fee — 0.5% to RWT vault (NAV accrual) + 0.5% to Areal DAO — already fulfills the fee role, and LPs did not provide the RWT that the user receives. Charging both would double-tax the same trade. The swap instruction detects the routing path and branches fee logic accordingly.
   </Step>
 </Steps>
 
@@ -96,7 +104,8 @@ Purpose-built AMM for trading OT and RWT tokens. Two pool types: constant-produc
   <Card title="⚖️ Rebalancer" icon="scale-balanced">
     **Pool Rebalancer wallet** (dedicated bot keypair)
 
-    - `shift_liquidity` — manage bin concentration
+    - `grow_liquidity` — extend bid wall rightward as NAV rises
+    - `compress_liquidity` — recenter density on writedown
 
     Set at init, changeable by authority via `update_dex_config`.
   </Card>
@@ -140,7 +149,7 @@ Purpose-built AMM for trading OT and RWT tokens. Two pool types: constant-produc
     |---|---|---|
     | `areal_fee_destination` | `Pubkey` | Areal Finance **RWT ATA** — receives protocol fees in RWT (static, immutable) |
     | `pause_authority` | `Pubkey` | Emergency pause signer (Team Multisig, immutable) |
-    | `rebalancer` | `Pubkey` | Pool Rebalancer wallet — can call shift_liquidity |
+    | `rebalancer` | `Pubkey` | Pool Rebalancer wallet — can call `grow_liquidity` and `compress_liquidity` |
 
     **Caller:** Deployer (one-time)
 
@@ -197,33 +206,48 @@ Purpose-built AMM for trading OT and RWT tokens. Two pool types: constant-produc
   </Accordion>
 
   <Accordion title="create_concentrated_pool">
-    Create a Concentrated (bin-based) pool with BinArray.
+    Create a **Monotonic Ladder** master pool with a 1000-slot BinArray. Used exclusively for RWT/USDC and RWT/USDY.
 
     | Parameter | Type | Description |
     |---|---|---|
-    | `bin_step_bps` | `u16` | Price step between bins (default: 10 = 0.1%) |
-    | `initial_active_bin` | `i32` | Starting active bin ID |
+    | `bin_step_bps` | `u16` | Log price step between bins (default: 10 = 0.1%) |
+    | `initial_active_bin` | `i32` | Starting active bin ID — anchors initial NAV in log-scale |
+    | `permanent_tail_offset_bps` | `i32` | Permanent-tail position below `initial_active_bin`. Default: 100 (= NAV − 1%). Immutable after init. |
 
     **Caller:** Whitelisted pool creator
 
     **Accounts:** Same as `create_pool` plus:
-    - `bin_array` (init) — PDA seed: `["bins", pool_state]`
+    - `bin_array` (init) — PDA seed: `["bins", pool_state]`. Size = **1000 bins × 24 bytes + overhead ≈ 32 KB**, rent ~0.22 SOL.
 
     **Validation:**
     - `bin_step_bps > 0`
     - One of `token_a_mint` or `token_b_mint` must be `RWT_MINT`
+    - The non-RWT mint must be `USDC_MINT` or `USDY_MINT` (the Monotonic Ladder pattern is defined only for these two pairs)
     - `token_a_mint < token_b_mint` (canonical order)
     - Creator must be whitelisted
-    - OT treasury validation same as `create_pool` (optional accounts, same derivation checks)
+    - `permanent_tail_offset_bps ≥ 30` (must be at least 0.3% below initial NAV so the active zone and the tail don't overlap)
+    - OT treasury validation: **must be absent** (master pools are not OT pairs)
 
-    **Initial state:** 70 empty bins centered around initial_active_bin. Only `target_bin_count` bins (default 40) are actively used by the Rebalancer — remaining bins serve as buffer for range shifts when NAV changes.
+    **Initial state:**
+    - 1000 empty bins. `active_bin_id = initial_active_bin`.
+    - `left_anchor_bin = initial_active_bin − permanent_tail_offset_bps / bin_step_bps` — immutable, marks the top of the permanent tail.
+    - `permanent_tail_floor_bin = left_anchor_bin − 70` — i.e., the tail spans 70 bins (≈ 0.7% at 0.1% step) immediately below the left anchor. Also immutable.
+    - No liquidity deployed at init — Nexus seeds via `nexus_add_liquidity` after pool creation.
+
+    <Note>
+      The Monotonic Ladder is **not** a general-purpose concentrated pool. Its geometry, fee branching, and rebalance semantics are specialized for the RWT/USDx pair type. OT/RWT pools use StandardCurve.
+    </Note>
   </Accordion>
 </AccordionGroup>
 
 ### Liquidity
 
 <Note>
-  **Unified LP interface.** Users interact with `add_liquidity` and `remove_liquidity` regardless of pool type. For Concentrated pools, the protocol (Pool Rebalancer) manages bin concentration internally via `shift_liquidity`. Users are isolated from bin management — they simply deposit tokens and receive proportional shares.
+  **Unified LP interface for StandardCurve pools.** Users interact with `add_liquidity`, `zap_liquidity`, and `remove_liquidity` on OT/RWT and third-party pairs. LPs receive proportional shares and earn per-pool fee-vault rewards via `claim_lp_fees`.
+
+  **Master pools (Monotonic Ladder) are seeded exclusively by Nexus.** User-level `add_liquidity` and `zap_liquidity` on RWT/USDC and RWT/USDY master pools **fail with `MasterPoolUserLpDisabled`**. Rationale: the Ladder is a single-sided USDC structure with protocol-managed geometry (permanent tail, active zone weights, mint routing). Accepting arbitrary user LP would break density invariants and create ask-side positions that undercut mint routing. Users who want yield exposure to master-pool flow can hold RWT directly (which appreciates via NAV growth) and arbitrage when market price lags NAV.
+
+  **Ask-side RWT entering master pools from user sells** is the only way RWT ever accumulates in master-pool bins. It does not mint LP shares — it is **organic inventory**, owned by the pool for consumption by future buyers via bin walk.
 </Note>
 
 <AccordionGroup>
@@ -260,30 +284,10 @@ Purpose-built AMM for trading OT and RWT tokens. Two pool types: constant-produc
       **Imbalanced deposits lose value.** If user deposits at a ratio that differs from pool ratio, they effectively receive shares based on the LESSER side. Use `zap_liquidity` for imbalanced amounts — it auto-swaps to match the pool ratio first. Off-chain UIs should calculate optimal amounts before calling `add_liquidity`.
     </Warning>
 
-    **Effect:** Transfers tokens to vaults, mints LP shares, updates reserves. For Concentrated pools, new liquidity is **immediately distributed across current active bins** proportionally — no waiting for Rebalancer. Emits `LiquidityAdded`.
+    **Effect:** Transfers tokens to vaults, mints LP shares, updates reserves. Emits `LiquidityAdded`.
 
     <Note>
-      **Concentrated pools — bin distribution on add:**
-      ```
-      // Distribute new tokens across active bin range proportionally
-      for each bin in [lower_active..upper_active]:
-        if bins_have_existing_liquidity:
-          // Proportional to existing weights
-          weight = bin.liquidity_a + bin.liquidity_b
-          share = weight / total_active_liquidity
-        else:
-          // First add: uniform distribution
-          share = 1 / active_bin_count
-        
-        if bin < active_bin_id:
-          bin.liquidity_b += amount_b * share  // USDC only (bid side)
-        elif bin > active_bin_id:
-          bin.liquidity_a += amount_a * share  // RWT only (ask side)
-        else:  // active bin
-          bin.liquidity_a += amount_a * share  // both tokens
-          bin.liquidity_b += amount_b * share
-      ```
-      The Rebalancer (`shift_liquidity`) only **shifts** the entire range when NAV changes — it does not handle new deposits. This ensures swaps always have access to all deposited liquidity.
+      **`add_liquidity` is available only on StandardCurve pools.** On Monotonic Ladder master pools (RWT/USDC, RWT/USDY) user-initiated `add_liquidity` and `zap_liquidity` fail with `MasterPoolUserLpDisabled`. Bid-side growth on master pools happens exclusively through `grow_liquidity` funded from the Nexus accumulator. See the Monotonic Ladder section in Two Pool Types for rationale.
     </Note>
   </Accordion>
 
@@ -375,94 +379,118 @@ Purpose-built AMM for trading OT and RWT tokens. Two pool types: constant-produc
     **Effect:** Pool PDA signs vault transfers. If `lp_position.shares == 0` after burn, the LpPosition account is closed and rent returned to provider. Emits `LiquidityRemoved`.
   </Accordion>
 
-  <Accordion title="shift_liquidity">
-    Shift the entire concentrated bin range to a new position (e.g., when NAV changes). **Rebalancer only** — users cannot call this. No tokens enter/leave vaults — internal bin redistribution only. Does NOT handle new deposits — `add_liquidity` distributes to bins immediately.
+  <Accordion title="grow_liquidity">
+    Extend the **active bid wall** rightward as NAV rises. **Rebalancer only**. Operates on Monotonic Ladder master pools. Draws fresh USDC from the Nexus accumulator and redistributes existing active-zone USDC so the geometric density peak sits at the new NAV. The **permanent tail** is never touched. The **organic ask** (RWT above active_bin) is never touched.
 
     | Parameter | Type | Description |
     |---|---|---|
-    | `nav_bin` | `i32` | Target NAV bin ID (center of new range). **Calculated off-chain** by the Rebalancer bot from `rwt_vault.nav_book_value` via RPC: `nav_bin = log(nav_price) / log(1 + bin_step_bps/10000)` |
-    | `target_bin_count` | `u16` | Total bins in range (split around nav_bin) |
+    | `new_nav_bin` | `i32` | Target NAV bin ID calculated off-chain by Rebalancer: `new_nav_bin = log(nav_book_value) / log(1 + bin_step_bps/10000)` |
+    | `active_zone_width` | `u16` | Total number of bins in the active bid wall (default: 40; ~4% price range at 0.1% step). Centered-right of new_nav_bin, extending down through the extended bid below |
 
     **Caller:** Rebalancer only (must match `dex_config.rebalancer`)
 
     **Accounts:**
-    - `rebalancer` (signer) — must match `dex_config.rebalancer`
-    - `dex_config` — for rebalancer validation
-    - `pool_state` (mut) — must be Concentrated type
+    - `rebalancer` (signer)
+    - `dex_config` — validates rebalancer
+    - `pool_state` (mut) — must be Monotonic Ladder type
     - `bin_array` (mut)
+    - `liquidity_nexus` (mut) — source of fresh USDC
+    - `nexus_usdc_ata` (mut) — Nexus's USDC account (debited)
+    - `pool_vault_b` (mut) — pool's USDC vault (credited)
+    - `token_program`
 
     **Validation:**
-    - Pool must be Concentrated type
-    - `target_bin_count > 0`
-    - `target_bin_count ≤ MAX_BINS` (70)
-    - Computed range `[nav_bin - count/2, nav_bin + count/2]` within BinArray bounds
-    - New range must differ from current range (prevents no-op rebalancing that wastes compute)
+    - Pool must be Monotonic Ladder type
+    - `new_nav_bin > pool_state.last_rebalance_nav_bin` (growth rebalance — strictly rightward). For leftward moves use `compress_liquidity`.
+    - `new_nav_bin − pool_state.left_anchor_bin ≤ MAX_BINS − 10` (leave buffer at the right edge of the BinArray — prevents overflow)
+    - Computed active-zone lower bound `new_nav_bin − active_zone_width/2 ≥ left_anchor_bin + 1` (cannot overlap permanent tail)
+    - `pool_state.is_active`
 
-    **Logic (diff-based, no full collect):**
-    1. **Compute targets:** For each bin in range, calculate target liquidity using pyramid formula (asymmetric 2:1, centered on nav_bin).
-       - Bid side bins (below nav_bin): **USDC only**, pyramid weighted
-         `target_usdc(bin) = total_pool_usdc * 2/3 * weight(bin) / total_bid_weight`
-         `weight(bin) = bin - lower + 1` (closer to NAV = more)
-       - `nav_bin`: **both RWT + USDC** (peak of pyramid)
-       - Ask side bins (above nav_bin): **RWT only**, pyramid weighted
-         `target_rwt(bin) = total_pool_rwt * 1/3 * weight(bin) / total_ask_weight`
-         `weight(bin) = upper - bin + 1` (closer to NAV = more)
-    2. **Compute deltas and rebalance:**
+    **Logic (asymmetric: grow right, redistribute existing):**
+
+    1. **Define ranges:**
        ```
-       lower = nav_bin - target_bin_count / 2
-       upper = nav_bin + target_bin_count / 2
-       total_bid_weight = sum(bin - lower + 1 for bin in [lower..nav_bin])
-       total_ask_weight = sum(upper - bin + 1 for bin in [nav_bin..upper])
-
-       for each bin in [0..MAX_BINS]:
-         if bin < lower or bin > upper:
-           // Drain bins outside new range
-           surplus_usdc += bin.liquidity_b;  bin.liquidity_b = 0
-           surplus_rwt  += bin.liquidity_a;  bin.liquidity_a = 0
-         elif bin < nav_bin:
-           // Bid side: USDC only
-           target = total_pool_usdc * 2/3 * (bin - lower + 1) / total_bid_weight
-           delta = target - bin.liquidity_b  // i128
-           if delta > 0: deficit_usdc += delta
-           else: surplus_usdc += abs(delta)
-         elif bin > nav_bin:
-           // Ask side: RWT only
-           target = total_pool_rwt * 1/3 * (upper - bin + 1) / total_ask_weight
-           delta = target - bin.liquidity_a
-           if delta > 0: deficit_rwt += delta
-           else: surplus_rwt += abs(delta)
-         else:
-           // nav_bin: both tokens (peak of pyramid)
-
-       // Apply: distribute surplus to deficit bins proportionally
-       // surplus_usdc == deficit_usdc (conservation invariant)
-       // surplus_rwt  == deficit_rwt  (conservation invariant)
-       // Dust from integer division stays in reserves
+       tail_lower    = pool_state.permanent_tail_floor_bin
+       tail_upper    = pool_state.left_anchor_bin
+       old_active_lo = pool_state.active_zone_lower
+       new_active_lo = new_nav_bin − active_zone_width / 2
+       new_active_up = new_nav_bin                         // active zone ends at NAV; above NAV is organic ask
        ```
 
-    **`active_bin_id` is NOT changed** — only swaps move the active bin. Shift only repositions where liquidity sits.
+    2. **Compute target density weights (geometric, `r = GEOMETRIC_R_BPS / 10000`, default 8500 = 0.85):**
+       ```
+       for bin in [new_active_lo .. new_active_up]:
+         d = new_nav_bin − bin                  // distance to peak (0 at NAV, larger below)
+         weight(bin) = r^d
+       total_weight = sum(weight(bin))
+       ```
 
-    **No liquidity gap:** Unlike "collect all → redistribute", bins always contain liquidity during shift. Tokens flow directly from excess bins to deficit bins.
+    3. **Determine required USDC:**
+       ```
+       current_active_usdc = sum(bin.liquidity_b for bin in [old_active_lo .. new_nav_bin])
+       nexus_available     = nexus_usdc_ata.balance
+       // Target: geometric-weighted capital in the new active zone, scaled up by the growth factor
+       target_total_usdc   = current_active_usdc * GROWTH_SCALING + nexus_available
+       ```
 
-    **Pyramid distribution:**
+    4. **Pull from Nexus:** transfer `nexus_available` USDC from `nexus_usdc_ata` → `pool_vault_b`. Nexus accumulator is drained toward zero (residual stays for next cycle).
+
+    5. **Redistribute across new active zone:**
+       ```
+       for bin in [new_active_lo .. new_active_up]:
+         target_bin_usdc = target_total_usdc * weight(bin) / total_weight
+       
+       // Diff rebalance: move USDC from over-funded to under-funded bins within the active zone.
+       // Bins in [old_active_lo .. new_active_lo − 1] are NOT drained — they become extended bid.
+       ```
+
+    6. **Permanent tail:** `[tail_lower .. tail_upper]` untouched. Never rebalanced in any operation.
+    7. **Organic ask:** `[new_nav_bin + 1 .. MAX_BINS]` untouched. Contains RWT from prior user sells, if any.
+    8. **Update state:** `pool_state.last_rebalance_nav_bin = new_nav_bin`, `pool_state.active_zone_lower = new_active_lo`, `active_bin_id` NOT changed by grow_liquidity (only swaps move it).
+
+    **Ladder shape after multiple growths:**
     ```
-                   bid (USDC 2x)    NAV    ask (RWT 1x)
-                              ██████│███
-                           █████████│██████
-                        ████████████│█████████
-                     ███████████████│████████████
-                  ██████████████████│██████████████
-               █████████████████████│████████████████
-            ████████████████████████│██████████████████
-         ███████████████████████████│████████████████████
-      ██████████████████████████████│██████████████████████
-    ────────────────────────────────┼────────────────────────
-    bin: lower ──── dешевле ─────── NAV ─────── дороже ──── upper
+    permanent tail       extended bid         active bid wall    organic ask
+    ▁▁▁▁                 ▂▂▃▃▃▄▄▄▄▄          ▅▆▇█              ▁░░                    (time t0)
+    ▁▁▁▁                 ▂▂▃▃▃▄▄▄▄▄▄▄▄▄▄    ▅▆▇█              ░░                     (after grow at t1)
+    ▁▁▁▁                 ▂▂▃▃▃▄▄▄▄▄▄▄▄▄▄▄▄▄ ▅▆▇█              ░                      (after grow at t2)
+    └ NAV-1% floor       └ old active zones  └ current NAV     └ RWT (user sells)
     ```
 
-    **Why asymmetric:** Bid side (2x USDC) prioritizes buying RWT below NAV — this is the primary market use case. Ask side (1x RWT) provides buffer above NAV for zap_liquidity and small trades, but large buys above NAV go to `mint_rwt` instead (cheaper at NAV price).
+    **Effect:** USDC enters pool via Nexus. Pool capitalization grows strictly. Emits `LiquidityGrown`.
+  </Accordion>
 
-    **Effect:** No tokens enter/leave vaults. Dust from integer division stays in reserves. Emits `LiquidityShifted`.
+  <Accordion title="compress_liquidity">
+    Recenter the active bid wall on a **lower** NAV after governance writedown (`rwt_engine::adjust_capital`). **Rebalancer only**. Rare. No token inflow — purely a weight redistribution within existing capital.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `new_nav_bin` | `i32` | Lower target NAV bin ID |
+    | `active_zone_width` | `u16` | Same semantics as `grow_liquidity` |
+
+    **Caller:** Rebalancer only
+
+    **Accounts:**
+    - `rebalancer` (signer), `dex_config`, `pool_state` (mut), `bin_array` (mut)
+
+    **Validation:**
+    - Pool must be Monotonic Ladder type
+    - `new_nav_bin < pool_state.last_rebalance_nav_bin` (leftward only; for rightward use `grow_liquidity`)
+    - `new_nav_bin > pool_state.left_anchor_bin + 10` (new NAV must stay above the permanent tail)
+
+    **Logic:**
+
+    1. **Define new active zone:** `[new_nav_bin − active_zone_width/2 .. new_nav_bin]`.
+    2. **Absorb former active zone into extended bid:** bins that were in the active zone but now sit above `new_nav_bin` (they held USDC at peak density) merge into the extended bid — they become natural stress-buffer depth immediately.
+    3. **Recompute geometric density weights** around `new_nav_bin` using only the existing USDC capital in the new active zone (no Nexus pull on compress).
+    4. **Redistribute USDC** within the new active zone per weights. Former extended bid bins far below new NAV stay as-is.
+    5. **Organic ask is NOT touched.** RWT that was in ask bins above the old NAV but is now above the even-lower new NAV remains there as a **frozen ask wall** — if NAV recovers via future yield, those positions become productive again without any rebalance.
+    6. **Permanent tail is NOT touched.**
+    7. **Update state:** `pool_state.last_rebalance_nav_bin = new_nav_bin`, `pool_state.active_zone_lower = new_active_lo`.
+
+    **Capital conservation:** total USDC in pool vault is unchanged. Total RWT in pool vault is unchanged. Only the weight distribution within the active zone changes.
+
+    **Effect:** Emits `LiquidityCompressed`.
   </Accordion>
 </AccordionGroup>
 
@@ -590,6 +618,51 @@ Purpose-built AMM for trading OT and RWT tokens. Two pool types: constant-produc
     - Pool and DEX must be active
 
     **Effect:** User sends input → vault. Pool sends output → user. LP fee → pool fee_vault (claimable by LP holders). Protocol fee → areal_fee_account. OT treasury fee → ot_treasury_fee_account (OT pairs only). All fees in RWT, charged on top of swap — pool reserves unaffected. Emits `SwapExecuted`.
+
+    ---
+
+    **Monotonic Ladder mint-routing branch (USDC→RWT on master pools only):**
+
+    Before executing the standard bin walk for `a_to_b = false` on a Monotonic Ladder pool, the swap instruction evaluates whether mint would give the user a better price:
+
+    ```
+    nav = rwt_vault.nav_book_value                                 // read via CPI or account
+    best_ask_price = price_at_bin(active_bin_id + 1)              // cheapest RWT in the pool
+    has_organic_ask = exists bin > active_bin_id with liquidity_a > 0
+    
+    mint_cheaper_threshold = nav * (10_000 + 50) / 10_000          // NAV × 1.005 (DEX becomes non-competitive above this)
+    
+    if !has_organic_ask OR best_ask_price > mint_cheaper_threshold:
+        // Route to mint — no DEX fee charged
+        CPI rwt_engine::mint_rwt(amount_in_usdc)
+          accounts = {
+            user, rwt_vault, rwt_mint, user_deposit (USDC),
+            user_rwt, capital_accumulator_ata, dao_fee_account
+          }
+        // User pays 1% mint fee inside rwt_engine — split 0.5% vault / 0.5% DAO
+        // No LP fee, no DEX protocol fee. Pool state untouched.
+        emit SwapRoutedToMint { user, usdc_in, rwt_out, nav }
+        return
+    
+    // Otherwise: standard bin walk from active_bin_id upward, consuming organic RWT
+    // Standard DEX fees apply (LP + protocol) as in base logic above
+    ```
+
+    **Required additional accounts for mint-route path (must be passed by caller; unused on bin-walk path):**
+    - `rwt_vault` (mut) — passed when pool is master pool
+    - `rwt_mint` (mut)
+    - `capital_accumulator_ata` (mut) — vault's USDC ATA
+    - `dao_fee_account` (mut) — matches `rwt_vault.areal_fee_destination`
+    - `user_rwt` (mut)
+
+    **Why this works:**
+    - Mint always succeeds if RWT Engine is not paused. Vault accepts unlimited USDC at current NAV + 1%.
+    - Organic ask depletes naturally via this routing (when it exists) until its price rises above mint_cheaper_threshold.
+    - Ask-side above `NAV × 1.005` is never filled by LPs — routing makes it unnecessary. LP capital is not "waiting for nothing" in those bins.
+
+    <Note>
+      Master-pool swap instruction must check `pool_state.pool_type` and `!a_to_b && non_rwt_mint_is_USDC_or_USDY` before invoking the mint-route branch. StandardCurve pools and OT/RWT pools never route to mint.
+    </Note>
   </Accordion>
 </AccordionGroup>
 
@@ -984,7 +1057,7 @@ Global singleton. One per protocol deployment.
 | `base_fee_bps` | `u16` | Default swap fee (default: 50 = 0.5%) |
 | `lp_fee_share_bps` | `u16` | LP's share of fee (default: 5,000 = 50%) |
 | `areal_fee_destination` | `Pubkey` | Areal Finance **RWT ATA** — receives protocol fees in RWT |
-| `rebalancer` | `Pubkey` | Pool Rebalancer wallet — only signer allowed to call `shift_liquidity` |
+| `rebalancer` | `Pubkey` | Pool Rebalancer wallet — only signer allowed to call `grow_liquidity` and `compress_liquidity` |
 | `is_active` | `bool` | Global DEX kill switch |
 | `bump` | `u8` | PDA bump seed |
 
@@ -996,7 +1069,7 @@ One per token pair. Stores reserves, shares, fees.
 
 | Field | Type | Description |
 |---|---|---|
-| `pool_type` | `PoolType` | `StandardCurve` or `Concentrated` |
+| `pool_type` | `PoolType` | `StandardCurve` or `MonotonicLadder` |
 | `token_a_mint` | `Pubkey` | Token A mint |
 | `token_b_mint` | `Pubkey` | Token B mint |
 | `vault_a` | `Pubkey` | Token A vault (authority = pool PDA) |
@@ -1009,8 +1082,12 @@ One per token pair. Stores reserves, shares, fees.
 | `total_fees_accumulated` | `u64` | Lifetime total fees (LP + protocol) |
 | `fee_vault` | `Pubkey` | RWT token account for LP fee collection (authority = pool PDA) |
 | `cumulative_fees_per_share` | `u128` | Running sum of `fee_lp * PRECISION / total_lp_shares` — used for O(1) per-holder fee accounting |
-| `bin_step_bps` | `u16` | Bin step (0 for StandardCurve) |
-| `active_bin_id` | `i32` | Current active bin (Concentrated only) |
+| `bin_step_bps` | `u16` | Log bin step (0 for StandardCurve; typically 10 = 0.1% for MonotonicLadder) |
+| `active_bin_id` | `i32` | Current active bin (MonotonicLadder only) |
+| `left_anchor_bin` | `i32` | Top of permanent tail (MonotonicLadder only, immutable) |
+| `permanent_tail_floor_bin` | `i32` | Bottom of permanent tail (MonotonicLadder only, immutable) |
+| `last_rebalance_nav_bin` | `i32` | NAV bin of the most recent `grow_liquidity` or `compress_liquidity` call (MonotonicLadder only) |
+| `active_zone_lower` | `i32` | Lower bound of current active bid wall (MonotonicLadder only) |
 | `ot_treasury_fee_destination` | `Option<Pubkey>` | RWT ATA of OT Treasury PDA. When `Some`, additional 50 bps fee charged on swaps and sent here. `None` for non-OT pools (e.g., RWT/USDC). Set at creation, **immutable**. |
 | `bump` | `u8` | PDA bump seed |
 
@@ -1047,15 +1124,15 @@ Per (pool, provider) LP tracking. Created on first add via `init_if_needed`.
 
 ### BinArray
 
-Concentrated liquidity bins. One per Concentrated pool.
+Monotonic Ladder liquidity bins. One per MonotonicLadder pool.
 
 | Field | Type | Description |
 |---|---|---|
 | `pool` | `Pubkey` | Associated pool |
-| `bins` | `[Bin; 70]` | Array of bins. Each bin: `liquidity_a: u64` (RWT), `liquidity_b: u64` (USDC). Below active: only liquidity_b. Above active: only liquidity_a. Active bin: both. |
+| `bins` | `[Bin; 1000]` | Log-scale bins. Each bin: `liquidity_a: u64` (RWT), `liquidity_b: u64` (USDC). Below active: USDC only (bid — permanent tail + extended bid + active bid wall). Above active: RWT only (organic ask, not pre-funded). Active bin: both. |
 | `lower_bin_id` | `i32` | ID of bins[0] |
-| `bin_step_bps` | `u16` | Price step between bins |
-| `active_bin_id` | `i32` | Current active bin |
+| `bin_step_bps` | `u16` | Log price step between bins (e.g., 10 = 0.1%) |
+| `active_bin_id` | `i32` | Current active bin (moved only by swaps) |
 | `bump` | `u8` | PDA bump seed |
 
 **PDA Seed:** `["bins", pool_state]`
@@ -1101,7 +1178,10 @@ Areal Finance LP management PDA. Singleton — one per DEX. Owns token ATAs and 
 | `DEFAULT_BASE_FEE_BPS` | `50` | 0.5% swap fee |
 | `DEFAULT_LP_FEE_SHARE_BPS` | `5,000` | 50% of fee to LP |
 | `MAX_FEE_BPS` | `1,000` | 10% max fee cap |
-| `MAX_BINS` | `70` | Bins per concentrated pool |
+| `MAX_BINS` | `1000` | Bins per MonotonicLadder pool |
+| `GEOMETRIC_R_BPS` | `8500` | Density ratio for active bid wall (r = 0.85) |
+| `ACTIVE_ZONE_WIDTH` | `40` | Bins in the active bid wall |
+| `DEFAULT_PERMANENT_TAIL_OFFSET_BPS` | `100` | Permanent tail sits at initial_NAV − 1% |
 | `DEFAULT_BIN_STEP_BPS` | `10` | 0.1% between bins |
 | `MAX_POOL_CREATORS` | `10` | Max whitelisted creators |
 | `MIN_LIQUIDITY` | `1,000` | Min shares on first add (dust prevention) |
@@ -1205,9 +1285,10 @@ Areal Finance LP management PDA. Singleton — one per DEX. Owns token ATAs and 
     - LP swap fees are handled separately via per-pool fee vault (`claim_lp_fees`)
   </Accordion>
 
-  <Accordion title="← Pool Rebalancer (shift_liquidity)">
-    - Rebalancer bot calls `shift_liquidity` to reposition concentrated LP around NAV
-    - Rebalancer wallet signs as signer (dedicated keypair, not PDA)
+  <Accordion title="← Pool Rebalancer (grow_liquidity / compress_liquidity)">
+    - Rebalancer bot calls `grow_liquidity` on Monotonic Ladder pools when NAV rises past the 1% deviation threshold — extends bid wall rightward using Nexus USDC
+    - Rebalancer bot calls `compress_liquidity` after governance writedown — recenters density on the new (lower) NAV; organic ask RWT above new NAV remains as frozen ask wall
+    - Rebalancer wallet signs as signer (dedicated keypair, not PDA) — cannot extract funds
   </Accordion>
 </AccordionGroup>
 

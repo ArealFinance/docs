@@ -74,6 +74,7 @@
                 "pages": [
                   "economics/tokens",
                   "economics/rwt-real-world-token",
+                  "economics/rwt-engine",
                   "economics/ownership-tokens",
                   "economics/arl-protocol-token",
                   "economics/treasury"
@@ -138,6 +139,7 @@
                 "group": "April 2026",
                 "icon": "calendar",
                 "pages": [
+                  "changelog/2026-04-17-monotonic-ladder",
                   "changelog/2026-04-13-lp-fee-claim",
                   "changelog/2026-04-13-ot-swap-fee"
                 ]
@@ -184,6 +186,7 @@
                 "pages": [
                   "ru/economics/tokens",
                   "ru/economics/rwt-real-world-token",
+                  "ru/economics/rwt-engine",
                   "ru/economics/ownership-tokens",
                   "ru/economics/arl-protocol-token",
                   "ru/economics/treasury"
@@ -248,6 +251,7 @@
                 "group": "Апрель 2026",
                 "icon": "calendar",
                 "pages": [
+                  "ru/changelog/2026-04-17-monotonic-ladder",
                   "ru/changelog/2026-04-13-lp-fee-claim",
                   "ru/changelog/2026-04-13-ot-swap-fee"
                 ]

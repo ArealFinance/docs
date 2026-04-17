@@ -100,18 +100,15 @@ Liquidity in the master pools is always concentrated around NAV Book Value, ensu
 
 Assets held in the RWT Vault generate real-world yield — rent, interest, revenue. This yield is distributed according to a fixed allocation model:
 
-<CardGroup cols={2}>
+<CardGroup cols={3}>
   <Card title="70% → Book Value Growth" icon="chart-line">
-    The majority of yield is reinvested into the vault, directly increasing NAV Book Value and appreciating the price of each RWT.
+    The majority of yield stays in the vault, directly increasing NAV Book Value and appreciating the price of each RWT.
   </Card>
-  <Card title="15% → RWT Liquidity" icon="droplet">
-    Allocated to deepen liquidity in the master pools, ensuring efficient trading with minimal slippage.
-  </Card>
-  <Card title="5% → Areal Treasury" icon="building-columns">
+  <Card title="15% → ARL Treasury" icon="building-columns">
     Directed to the [Areal Treasury](/economics/treasury) for protocol development, operations, and ecosystem growth.
   </Card>
-  <Card title="10% → Areal Treasury" icon="shield-check">
-    Additional allocation to the [Areal Treasury](/economics/treasury) for protocol safety buffer and ecosystem resilience.
+  <Card title="15% → Liquidity Nexus" icon="droplet">
+    Allocated to deepen liquidity in the master pools, ensuring efficient trading with minimal slippage.
   </Card>
 </CardGroup>
 
@@ -138,36 +135,53 @@ For example, if NAV Book Value is $1.50:
 
 ---
 
-## Master Liquidity Pools
+## Master Liquidity Pools — Monotonic Ladder
 
-RWT has two master liquidity pools on Areal's [native DEX](/architecture/liquidity-and-native-dex), providing the primary entry and exit points for the ecosystem:
+RWT has two master liquidity pools on Areal's [native DEX](/architecture/liquidity-and-native-dex), providing unified entry and exit liquidity:
 
 <CardGroup cols={2}>
   <Card title="RWT / USDY" icon="coins">
-    Primary pool paired with **USDY** — a yield-bearing stablecoin by Ondo Finance. This pool allows RWT holders to benefit from stablecoin yield while providing liquidity.
+    Primary pool paired with **USDY** — a yield-bearing stablecoin by Ondo Finance. Holders benefit from embedded USDY yield on top of RWT's NAV appreciation.
   </Card>
   <Card title="RWT / USDC" icon="dollar-sign">
-    Secondary pool paired with **USDC** — the most widely used stablecoin. Provides a straightforward entry point for new participants.
+    Secondary pool paired with **USDC** — the most widely used stablecoin. Straightforward entry point for new participants.
   </Card>
 </CardGroup>
 
-Both pools are **concentrated liquidity pools**, with liquidity centered around the current NAV Book Value within a range of **50 bins**. This concentration ensures deep liquidity exactly where trading occurs, maximizing capital efficiency.
+Both pools use the **Monotonic Ladder** — a single-sided concentrated liquidity architecture designed around three structural properties of RWT:
+
+- **NAV is monotonically non-decreasing** in normal operation
+- **`mint_rwt` provides a synthetic ask-side at `NAV × 1.01`** — always available, unlimited depth
+- **Exit-side depth is the scarce resource** that LP capital should actually provide
+
+As a result, 100% of Nexus LP capital is deployed on the **bid side** (USDC). Ask-side liquidity is either **organic** (accumulated from user sell orders) or **synthetic** (routed to mint when the pool is non-competitive). Capital efficiency is roughly 2× a symmetric two-sided design, and LPs carry no "ask-side IL" from NAV appreciation.
+
+<Card title="How the ladder works" icon="arrow-right" href="/architecture/liquidity-and-native-dex">
+  Three zones (permanent tail, active bid wall, organic ask), mint-routing, growth and writedown mechanics
+</Card>
 
 ---
 
-## Automatic Rebalancing
+## Growth and Rebalancing
 
-To keep liquidity aligned with the current fair price, the protocol implements **automatic rebalancing** of master pools.
+### Growth rebalance (NAV rises)
 
-When the current NAV Book Value deviates from the previous NAV Book Value by more than **1%**, an automatic rebalancing is triggered:
+When NAV growth pushes the active bin out of sync by more than **1%**, the Pool Rebalancer calls `grow_liquidity`:
 
-1. Liquidity positions in master pools are withdrawn
-2. The new NAV Book Value is calculated based on updated vault asset values
-3. Liquidity is redistributed and reformed around the new NAV Book Value
-4. The 50-bin concentrated range is re-centered on the updated price
+1. Extends the bid wall rightward with fresh USDC bins funded from the Nexus accumulator
+2. Redistributes geometric density weights around the new NAV
+3. Older bid bins below new NAV become an **extended bid wall** — still productive as stress buffer
+4. The **permanent tail** (thin USDC layer at initial NAV − 1%) is never shifted
+5. The organic ask-side is never touched
+
+Over time the pool builds a cumulative, monotonically expanding bid structure — deeper at every historical price level RWT has ever traded at.
+
+### Writedown rebalance (rare)
+
+If governance executes `adjust_capital` to reduce NAV (e.g., writedown on underlying OT positions), `compress_liquidity` recomputes density centered on the new NAV. Bid bins previously above the new NAV merge back into the extended bid — immediately productive. Organic ask RWT above the new NAV remains as a **frozen ask wall** awaiting NAV recovery. The permanent tail is untouched.
 
 <Note>
-  This mechanism ensures that liquidity is **always concentrated around the fair price** of RWT, preventing stale liquidity positions and maintaining efficient markets regardless of how NAV Book Value changes over time.
+  The ladder **never destroys capital**. Growth adds to it, writedown compresses it, but no LP position is drained or forfeited in the process. This is structurally impossible in symmetric CL-AMM rebalancing models.
 </Note>
 
 ---
@@ -195,13 +209,13 @@ Agents will be responsible for:
     RWT is backed by a diversified vault of Ownership Tokens representing real-world assets
   </Card>
   <Card title="Transparent yield model" icon="chart-mixed" color="#a56eff">
-    70% to Book Value growth, 15% to liquidity, 10% to reserves, 5% to treasury
+    70% to Book Value growth, 15% to ARL Treasury, 15% to Liquidity Nexus
   </Card>
   <Card title="NAV Book Value pricing" icon="calculator" color="#a56eff">
     Price anchored to fair value: total vault assets divided by total RWT supply
   </Card>
-  <Card title="Auto-rebalanced liquidity" icon="arrows-rotate" color="#a56eff">
-    Master pools automatically rebalance when NAV Book Value shifts by more than 1%
+  <Card title="Monotonic Ladder liquidity" icon="stairs" color="#a56eff">
+    Single-sided, cumulatively growing bid structure with mint as synthetic ask. Capital never destroyed on rebalance.
   </Card>
   <Card title="Permissionless minting" icon="unlock" color="#a56eff">
     Anyone can mint RWT at NAV Book Value price — no gatekeepers, no approvals

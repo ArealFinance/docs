@@ -50,10 +50,10 @@ Futarchy is purpose-built for RWA because real assets demand disciplined, outcom
 Areal's decentralized exchange is built specifically for **yield-bearing tokens**. Unlike standard AMMs, the Areal DEX passes through the embedded yield of tokens in liquidity pools to LP providers — on top of regular swap fees.
 
 The DEX supports two pool types:
-- **Concentrated liquidity pools** (bin-based) — for RWT / USDY and RWT / USDC master pools, centered around NAV Book Value
+- **Monotonic Ladder pools** (single-sided, bin-based) — for RWT / USDY and RWT / USDC master pools. Nexus LP provides USDC only; RWT ask-side is organic (from user sells) or synthetic (routed to `mint_rwt` when DEX is non-competitive).
 - **Standard curve pools** (x * y = k) — for RWT / Ownership Token pairs and RWT / third-party assets (tokenized equities, blue-chip tokens)
 
-All pairs are denominated in RWT, creating a unified trading hub. Non-OT pairs (RWT/USDC, RWT/USDY) charge a **0.5% base fee** split 50/50 (0.25% LP providers, 0.25% Areal Treasury). OT pairs charge **1% total** (0.5% base + 0.5% OT Treasury), distributed as: 0.25% LP, 0.25% Areal Treasury, 0.5% Project Reserve. All fees are charged on top of the swap in RWT — pool capitalization is never diluted. LP fees are collected in a per-pool fee vault and claimable instantly via `claim_lp_fees`.
+All pairs are denominated in RWT, creating a unified trading hub. Non-OT pairs (RWT/USDC, RWT/USDY) charge a **0.5% base fee** on bin-path trades, split 50/50 (0.25% LP providers, 0.25% Areal Treasury). On the mint-path (master pools only), no DEX fee is charged — the 1% mint fee already compensates the DAO. OT pairs charge **1% total** (0.5% base + 0.5% OT Treasury), distributed as: 0.25% LP, 0.25% Areal Treasury, 0.5% Project Reserve. All DEX fees are charged on top of the swap in RWT — pool capitalization is never diluted. LP fees are collected in a per-pool fee vault and claimable instantly via `claim_lp_fees`.
 
 <Card title="Deep dive: Liquidity & Native DEX" icon="arrow-right" href="/architecture/liquidity-and-native-dex">
   Yield pass-through mechanics, pool types, fee structure, and how the DEX drives the Areal economy

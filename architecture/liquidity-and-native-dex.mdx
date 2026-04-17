@@ -54,16 +54,65 @@ The Areal DEX supports two fundamentally different pool architectures, each opti
   </Card>
 </CardGroup>
 
-### Concentrated Liquidity Pools (Bin-Based)
+### Concentrated Liquidity Pools — Monotonic Ladder
 
-Concentrated pools distribute liquidity across **discrete price bins**. LPs choose the price range where their capital is deployed, and only active bins (around the current price) participate in trading.
+Master pools (**RWT / USDY** and **RWT / USDC**) use a custom bin-based design called the **Monotonic Ladder** — purpose-built for the structural properties of RWT:
 
-This architecture is used **exclusively for RWT master pools**:
+- **NAV grows monotonically** in normal operation — 70% of yield accrues to book value, and RWT has no redeem contract
+- **`mint_rwt` is an always-on synthetic ask-side** at a deterministic price of `NAV × 1.01` (NAV + 1% mint fee)
+- **Exit-side depth is the scarce resource** that LPs should actually provide
 
-- **RWT / USDY** — primary pool concentrated around the current [NAV Book Value](/economics/rwt-real-world-token) within a range of **50 bins**
-- **RWT / USDC** — secondary pool with the same concentrated structure
+These properties enable a **single-sided concentrated pool** design that symmetric AMMs cannot match in capital efficiency.
 
-Liquidity is automatically rebalanced when NAV Book Value shifts by more than 1%, ensuring that depth is always centered on the fair price. Concentrated pools deliver **maximum capital efficiency** — the same amount of capital provides significantly deeper liquidity compared to standard pools.
+#### Three zones of liquidity
+
+<CardGroup cols={3}>
+  <Card title="Permanent Tail" icon="shield-halved">
+    A thin, never-shifted insurance layer of USDC bins anchored at initial NAV − 1% (e.g., $0.99 → $0.997 for initial NAV $1.00). ~5% of total Nexus LP. Never rebalanced — exists for the protocol's entire lifetime as the historical floor.
+  </Card>
+  <Card title="Active Bid Wall" icon="water">
+    Dense USDC bins spanning NAV − 3% through NAV. Geometric density (`r = 0.85`) peaks at the active bin. ~95% of Nexus LP capital lives here. This is the productive depth that absorbs everyday sell flow.
+  </Card>
+  <Card title="Organic Ask" icon="seedling">
+    RWT bins above the active bin — **not pre-funded**. Accumulates organically from user sell orders (RWT entering the pool in exchange for USDC). Acts as the cheapest ask until mint becomes more competitive.
+  </Card>
+</CardGroup>
+
+#### Mint as synthetic ask-side
+
+The master-pool `swap` instruction routes USDC→RWT orders intelligently:
+
+1. If organic ask bins exist AND their price ≤ `NAV × 1.005` (i.e., cheaper than mint including DEX fees) → normal bin-based swap
+2. Otherwise → CPI to `rwt_engine::mint_rwt`; user receives RWT minted at `NAV × 1.01`. No DEX swap fee is charged on this path — the 1% mint fee already compensates the DAO.
+
+The ask-side is therefore **effectively unbounded at a deterministic ceiling price**. No LP capital is locked above NAV "waiting for a buyer" — that role is played by the vault itself through mint.
+
+#### Growth: rightward extension, never shift
+
+When NAV rises by more than 1% relative to the pool's active bin, the Pool Rebalancer calls `grow_liquidity`:
+
+1. Extends the active bid wall rightward with fresh USDC bins funded from the Nexus accumulator
+2. Recomputes geometric density weights so the peak sits at the new NAV
+3. Older bid bins (now further below NAV) become an **extended bid wall** — still productive as stress buffer for any future drawdown
+4. The permanent tail is never touched
+5. The organic ask is never touched (it's user inventory, not LP)
+
+Over time the pool builds a cumulative, monotonically expanding bid structure — **deeper at every historical price level RWT has ever traded at.**
+
+#### Writedown: compression, not destruction
+
+If governance executes `adjust_capital` to reduce NAV (e.g., writedown on underlying OT positions), the Rebalancer calls `compress_liquidity`:
+
+1. Recomputes bid density centered on the new (lower) NAV
+2. Bid bins previously above the new NAV merge into the extended bid — immediately productive again
+3. Organic ask RWT above the new NAV remains as a **frozen ask wall**, awaiting NAV recovery
+4. The permanent tail is untouched
+
+Capital is never destroyed — only redistributed or parked in place for future use.
+
+<Info>
+  The ladder is **single-sided by design**: Nexus LP provides USDC only. RWT in the pool is always organic (from user sells) or synthetic (routed to `mint_rwt`). This eliminates the "ask-side IL" that plagues traditional two-sided CL pools when the anchor price grows.
+</Info>
 
 ### Standard Curve Pools
 
@@ -73,6 +122,25 @@ Standard pools use the classic **constant-product formula (x * y = k)**, spreadi
 - **RWT / third-party tokens** — tokenized equities, blue-chip crypto assets (SOL, ETH, BTC), additional stablecoins
 
 All pairs are denominated in **RWT**, creating a unified trading hub that drives volume, deepens RWT liquidity, and generates continuous trading interest across the entire ecosystem.
+
+---
+
+## Access Model
+
+The Areal DEX separates **trading access** from **pool-creation authority**:
+
+<CardGroup cols={2}>
+  <Card title="Permissionless for users" icon="globe">
+    Swapping, adding or removing liquidity, and claiming LP rewards are open to any wallet — no KYC, no whitelist, no approvals.
+  </Card>
+  <Card title="Whitelisted pool creation" icon="lock">
+    Launching a new pool is restricted to approved creators (currently up to 10 wallets, managed by the DEX authority). This prevents duplicate, low-quality, or adversarial pools and preserves liquidity depth around canonical pairs.
+  </Card>
+</CardGroup>
+
+<Note>
+  The pool-creation whitelist is a deliberate design choice for the early stage of the protocol. Over time, governance may relax it — for example, permitting OT project DAOs to spawn their own OT/RWT pool directly. Until then, all trading activity remains fully open while the listing process is curated.
+</Note>
 
 ---
 
@@ -92,7 +160,7 @@ More arbitrage means more volume, more fees, and deeper liquidity — a self-rei
 
 The Areal DEX applies a **base swap fee of 0.5%** on all pairs, with an **additional 0.5% OT Treasury fee** on Ownership Token pairs. All fees are charged **on top of the swap** in RWT — pool reserves are never reduced by fees, preserving total pool capitalization.
 
-### Non-OT pairs (RWT/USDC, RWT/USDY) — 0.5% total
+### Non-OT pairs (RWT/USDC, RWT/USDY) — 0.5% total on bin-path
 
 <CardGroup cols={2}>
   <Card title="0.25% → Liquidity providers" icon="droplet">
@@ -103,6 +171,10 @@ The Areal DEX applies a **base swap fee of 0.5%** on all pairs, with an **additi
   </Card>
 </CardGroup>
 
+<Note>
+  **Mint-path fees (master pools only).** When a USDC→RWT swap is routed to `mint_rwt` because DEX ask is not competitive, **no DEX swap fee is charged**. The user pays only the 1% mint fee (0.5% to vault NAV, 0.5% to Areal DAO). LPs are not involved in the mint path, so no LP fee is owed. This prevents double-taxing the same trade.
+</Note>
+
 ### OT pairs (OT/RWT) — 1% total
 
 <CardGroup cols={3}>
@@ -112,7 +184,7 @@ The Areal DEX applies a **base swap fee of 0.5%** on all pairs, with an **additi
   <Card title="0.25% → Areal Treasury" icon="building-columns">
     Protocol revenue
   </Card>
-  <Card title="0.50% → Project Reserve" icon="vault">
+  <Card title="0.50% → OT Treasury" icon="vault">
     OT Treasury controlled by Futarchy governance
   </Card>
 </CardGroup>
@@ -149,17 +221,17 @@ Areal liquidity pools serve a dual purpose — they are not only trading venues 
 ## Summary
 
 <CardGroup cols={3}>
-  <Card title="Yield-bearing DEX" icon="seedling" color="#a56eff">
-    LPs earn swap fees plus the embedded yield of tokens in the pool — not just trading commissions
+  <Card title="Monotonic Ladder" icon="stairs" color="#a56eff">
+    Master pools use a single-sided, cumulatively growing bid structure that exploits RWT's monotonic NAV — no capital wasted on ask-side
   </Card>
-  <Card title="RWT & OT pairs" icon="link" color="#a56eff">
-    Unique pairs where both sides generate yield from real-world assets
+  <Card title="Mint as synthetic ask" icon="wand-magic-sparkles" color="#a56eff">
+    USDC→RWT routed to `mint_rwt` when DEX ask is non-competitive — unlimited depth at deterministic ceiling price
   </Card>
-  <Card title="Third-party assets" icon="globe" color="#a56eff">
-    Tokenized equities, blue-chip tokens, and stablecoins deepen liquidity and drive volume
+  <Card title="Permanent floor" icon="shield-halved" color="#a56eff">
+    A never-shifted USDC tail at initial NAV − 1% serves as the historical insurance layer for the protocol's entire lifetime
   </Card>
   <Card title="0.5%–1% swap fee" icon="percent" color="#a56eff">
-    0.5% base (LP + Areal Treasury) on all pairs; +0.5% OT Treasury on OT pairs. Fees on top, pool reserves intact.
+    0.5% base (LP + Areal Treasury) on bin-path; +0.5% OT Treasury on OT pairs. Mint-path skips DEX fee.
   </Card>
   <Card title="Arbitrage-driven volume" icon="arrows-rotate" color="#a56eff">
     NAV anchoring and yield-bearing pairs create natural arbitrage opportunities that drive trading activity

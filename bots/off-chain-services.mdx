@@ -19,7 +19,7 @@ Six bots that automate protocol operations. All run on a single VPS, share one R
 
 | Bot | Contract | Instruction | Frequency | Wallet Role |
 |-----|----------|-------------|-----------|-------------|
-| [Pool Rebalancer](#pool-rebalancer) | Native DEX | `shift_liquidity` | Every 60s (if deviation > 1%) | `dex_config.rebalancer` |
+| [Pool Rebalancer](#pool-rebalancer) | Native DEX | `grow_liquidity` / `compress_liquidity` | Every 60s (if deviation > 1%) | `dex_config.rebalancer` |
 | [Merkle Publisher](#merkle-publisher) | Yield Distribution | `publish_root` | Every 10 min | `config.publish_authority` |
 | [Revenue Crank](#revenue-crank) | Ownership Token | `distribute_revenue` | Every hour (if conditions met) | Permissionless |
 | [Convert & Fund Crank](#convert--fund-crank) | Yield Distribution | `convert_to_rwt` | After each revenue distribution | Permissionless |
@@ -30,7 +30,7 @@ Six bots that automate protocol operations. All run on a single VPS, share one R
 
 ## Pool Rebalancer
 
-Repositions concentrated liquidity bins in DEX pools to track the RWT NAV price. Reads on-chain NAV from RWT Engine, calculates target bin, calls `shift_liquidity` when deviation exceeds threshold.
+Maintains the **Monotonic Ladder** geometry of master pools (RWT/USDC, RWT/USDY). Reads on-chain NAV from RWT Engine and — depending on direction of NAV movement — calls `grow_liquidity` (rising NAV) or `compress_liquidity` (writedown). Does not touch StandardCurve pools.
 
 ### How It Works
 
@@ -39,23 +39,19 @@ Repositions concentrated liquidity bins in DEX pools to track the RWT NAV price.
     Query RWT Engine on-chain: `rwt_vault.nav_book_value`. This is the target price for RWT.
   </Step>
   <Step title="Read Pool State">
-    For each concentrated pool: query `pool_state.active_bin_id` and `bin_array`. Calculate current pool price from active bin: `price = (1 + bin_step_bps/10000) ^ active_bin_id`.
+    For each master pool: query `pool_state.last_rebalance_nav_bin`, `pool_state.active_zone_lower`, and `bin_array`. Compute current reference price: `price = (1 + bin_step_bps/10000) ^ last_rebalance_nav_bin`.
   </Step>
   <Step title="Check Deviation">
-    `deviation = abs(pool_price - nav_price) / nav_price`. If `deviation > REBALANCE_THRESHOLD` → rebalance needed.
+    `deviation = (nav_price − ref_price) / ref_price` (signed). If `abs(deviation) > REBALANCE_THRESHOLD` → rebalance needed.
   </Step>
   <Step title="Calculate NAV Bin">
-    Convert NAV price to bin ID:
     ```
-    nav_bin = log(nav_price) / log(1 + bin_step_bps/10000)
+    new_nav_bin = log(nav_price) / log(1 + bin_step_bps/10000)
     ```
   </Step>
-  <Step title="Execute Shift">
-    Call `native_dex::shift_liquidity(nav_bin, TARGET_BIN_COUNT)`. Bot wallet signs as rebalancer. On-chain, DEX computes target pyramid distribution and diff-rebalances:
-    - Asymmetric pyramid (2:1 bid/ask centered on NAV)
-    - Moves tokens from excess bins → deficit bins (no full collect)
-    - `active_bin_id` NOT changed — only swaps move price
-    - Liquidity always present — no gap during rebalance
+  <Step title="Route: Growth vs Compression">
+    - If `new_nav_bin > pool_state.last_rebalance_nav_bin` → **growth path**. Call `native_dex::grow_liquidity(new_nav_bin, ACTIVE_ZONE_WIDTH)`. DEX pulls USDC from Nexus accumulator, extends active bid wall right, redistributes geometric density around new NAV. Permanent tail untouched. Organic ask untouched.
+    - If `new_nav_bin < pool_state.last_rebalance_nav_bin` (governance writedown) → **compression path**. Call `native_dex::compress_liquidity(new_nav_bin, ACTIVE_ZONE_WIDTH)`. DEX recenters density on lower NAV. Former active zone above new NAV becomes extended bid. Organic ask above new NAV freezes in place for future recovery.
   </Step>
 </Steps>
 
@@ -63,9 +59,10 @@ Repositions concentrated liquidity bins in DEX pools to track the RWT NAV price.
 
 | Parameter | Default | Description |
 |---|---|---|
-| `REBALANCE_THRESHOLD` | `0.01` (1%) | Min NAV deviation to trigger rebalance |
-| `TARGET_BIN_COUNT` | `40` | Number of bins to concentrate around NAV |
-| `CHECK_INTERVAL_SECS` | `60` | How often to check deviation (seconds) |
+| `REBALANCE_THRESHOLD` | `0.01` (1%) | Min absolute NAV deviation to trigger rebalance |
+| `ACTIVE_ZONE_WIDTH` | `40` | Bins in the geometric active bid wall |
+| `GEOMETRIC_R_BPS` | `8500` | Geometric density ratio (r = 0.85). Controls how tightly capital concentrates at the active bin |
+| `CHECK_INTERVAL_SECS` | `60` | How often to check deviation |
 
 ### On-Chain Interaction
 
@@ -73,20 +70,22 @@ Repositions concentrated liquidity bins in DEX pools to track the RWT NAV price.
 |--------|-------------|----------|
 | Read NAV | — | `rwt_vault` (read) |
 | Read bins | — | `pool_state`, `bin_array` (read) |
-| Shift | `native_dex::shift_liquidity` | `rebalancer` (signer), `dex_config`, `pool_state` (mut), `bin_array` (mut) |
+| Grow | `native_dex::grow_liquidity` | `rebalancer` (signer), `dex_config`, `pool_state` (mut), `bin_array` (mut), `liquidity_nexus` (mut), `nexus_usdc_ata` (mut), `pool_vault_b` (mut), `token_program` |
+| Compress | `native_dex::compress_liquidity` | `rebalancer` (signer), `dex_config`, `pool_state` (mut), `bin_array` (mut) |
 
 ### Permissions
 
-- **CAN:** call `shift_liquidity` on any concentrated pool
-- **CANNOT:** swap, add/remove liquidity, change config, pause pools
-- **If compromised:** can only shift bins (no fund extraction). Team replaces via `update_dex_config(rebalancer: new_wallet)`
+- **CAN:** call `grow_liquidity` / `compress_liquidity` on master pools
+- **CANNOT:** swap, add/remove liquidity, change config, pause pools, extract funds
+- **If compromised:** at worst can trigger redundant rebalances (compute waste) or pick suboptimal `new_nav_bin` within ±1 bin rounding. Cannot drain pool or Nexus — both `grow_liquidity` and `compress_liquidity` conserve capital by design. Team replaces via `update_dex_config(rebalancer: new_wallet)`.
 
 ### Skip Conditions
 
 - Pool is paused (`pool_state.is_active == false`)
-- Pool has no liquidity (`reserve_a == 0 || reserve_b == 0`)
+- Pool is not a Monotonic Ladder pool (StandardCurve pools need no rebalancing)
 - Deviation below threshold
-- Last rebalance < 30 seconds ago (debounce)
+- Nexus accumulator empty AND growth path (waits for next Nexus deposit before growing)
+- Last rebalance < 60 seconds ago (debounce)
 
 ---
 

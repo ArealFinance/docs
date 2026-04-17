@@ -1,0 +1,126 @@
+---
+title: "Monotonic Ladder — Single-Sided Master Pool Redesign"
+description: "Master pools (RWT/USDC, RWT/USDY) replace the symmetric 2:1 pyramid with a single-sided, cumulatively growing bid structure and mint as synthetic ask-side."
+hidePagination: true
+---
+
+<div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "1.5rem" }}>
+  <span className="changelog-tag changelog-tag-breaking">Breaking</span>
+  <span className="changelog-date">April 17, 2026</span>
+</div>
+
+## Overview
+
+The concentrated liquidity design for RWT master pools has been redesigned from a **symmetric 2:1 pyramid with periodic range-shifts** to a **Monotonic Ladder** — a single-sided, cumulatively growing bid structure that uses `rwt_engine::mint_rwt` as a synthetic ask-side.
+
+This change doubles effective capital efficiency of Nexus LP, eliminates ask-side impermanent-loss-style drift on NAV appreciation, and replaces stateful range repositioning with additive growth.
+
+## Why Change
+
+The prior 2:1 pyramid was a direct adaptation of standard CL-AMM patterns (Meteora, Trader Joe). It assumed RWT price could drift in both directions, so both sides of the book needed pre-funded liquidity. Three properties of RWT invalidate that assumption:
+
+1. **NAV is monotonically non-decreasing** in normal operation (70% of yield accrues to book value, no redeem)
+2. **`mint_rwt` is an always-on ask-side** at deterministic price `NAV × 1.01`. Any pre-funded RWT above `NAV × 1.005` is economically dead capital — buyers always prefer mint
+3. **Exit liquidity is the scarce resource** — holders need deep bid; buyers already have unlimited mint depth
+
+The new design fits these properties exactly.
+
+## What Changed
+
+### Before (Symmetric Pyramid)
+
+```
+70-bin BinArray, 40 active bins centered on NAV
+Asymmetric 2:1 pyramid: 2/3 USDC below NAV, 1/3 RWT above NAV
+shift_liquidity: moves entire range when NAV drifts > 1%
+  — drains old far-left/far-right bins
+  — redistributes to new range around current NAV
+  — effectively "sells" old-NAV RWT when NAV rises (ask-side IL)
+```
+
+**Problems:**
+- ~33% of LP capital sat in RWT ask-side that was economically dead (mint cheaper)
+- Rebalance on NAV growth forced LPs out of appreciating RWT positions
+- BinArray size limited cumulative growth to ~7% before hitting bounds
+- No distinction between "permanent stress buffer" and "active trading zone"
+
+### After (Monotonic Ladder)
+
+```
+1000-bin log-scale BinArray (MAX_BINS = 1000)
+Three zones:
+  1. Permanent tail: thin USDC at [initial_NAV - 1% .. initial_NAV - 0.3%]
+     — immutable, never shifted, historical floor for protocol lifetime
+  2. Active bid wall: dense USDC, geometric density r = 0.85
+     — peak at active_bin, extends leftward through extended bid
+  3. Organic ask: RWT accumulated from user sells
+     — not pre-funded, not managed by Rebalancer
+
+Nexus LP deposits USDC only. RWT never pre-deposited to master pools.
+
+Instructions:
+  shift_liquidity        → removed
+  grow_liquidity         → NEW: extends bid wall rightward as NAV rises
+                           Pulls fresh USDC from Nexus accumulator
+                           Permanent tail and organic ask untouched
+  compress_liquidity     → NEW: recenters density on lower NAV after writedown
+                           Frozen ask-wall preserved for recovery
+                           Capital never destroyed
+
+Swap (USDC → RWT, master pools only):
+  If organic ask exists AND price ≤ NAV × 1.005:
+    → bin-walk swap, LP and protocol fees apply
+  Else:
+    → CPI rwt_engine::mint_rwt
+    → NO DEX fee charged (mint fee already compensates DAO)
+```
+
+**Benefits:**
+- 100% of Nexus LP is productive (bid-side only) — ~2× capital efficiency
+- LPs never forced to sell RWT on NAV appreciation (no ask-side IL)
+- Cumulative structure: every historical NAV level retains bid depth forever
+- 1000-bin array at 0.1% step covers NAV × 2.7 growth (~10+ years at 7% APY)
+- Mint routing guarantees deterministic worst-case ask price
+- Self-reinforcing depth flywheel: NAV↑ → yield↑ → Nexus USDC inflow↑ → bid depth↑
+
+## Breaking Changes
+
+### Contract interface
+
+| Instruction | Status |
+|---|---|
+| `shift_liquidity` | **Removed** |
+| `grow_liquidity` | **New** — signature includes `liquidity_nexus` and `nexus_usdc_ata` accounts |
+| `compress_liquidity` | **New** — no Nexus accounts (capital-neutral) |
+| `swap` | **Changed** — master-pool USDC→RWT path now branches on ask availability and mint price; additional accounts required (`rwt_vault`, `rwt_mint`, `capital_accumulator_ata`, `dao_fee_account`, `user_rwt`) |
+| `create_concentrated_pool` | **Changed** — new `permanent_tail_offset_bps` parameter; non-RWT side must be USDC or USDY; BinArray sized for 1000 bins |
+| `add_liquidity` / `zap_liquidity` | **Restricted** — fails with `MasterPoolUserLpDisabled` on Monotonic Ladder pools (StandardCurve unaffected) |
+
+### State
+
+- `BinArray` PDA size: ~32 KB (was ~2 KB for 70 bins). Rent: ~0.22 SOL per master pool.
+- `PoolState` adds: `left_anchor_bin`, `permanent_tail_floor_bin`, `last_rebalance_nav_bin`, `active_zone_lower`.
+
+### Off-chain services
+
+- **Pool Rebalancer** logic split into growth path (`grow_liquidity`) and compression path (`compress_liquidity`). Adds checks for Nexus accumulator availability before growth calls.
+
+## Unchanged
+
+- StandardCurve pools (OT/RWT, third-party pairs) — no change in behavior, math, or fee structure
+- Per-pool fee vault and `claim_lp_fees` model (for bin-path swaps)
+- `compound_yield` for OT pools (unchanged)
+- OT Treasury fee on OT pairs (unchanged)
+- `mint_rwt` mechanics (no change in fee split or NAV accounting)
+
+## Migration
+
+This is a protocol-design change, not a live-state migration — master pools have not yet launched on mainnet. Developers implementing from the updated spec should disregard prior `shift_liquidity` references and the 70-bin / 2:1 pyramid semantics.
+
+## Related Documents
+
+- [Liquidity & Native DEX](/architecture/liquidity-and-native-dex) — user-facing explanation of the ladder
+- [Native DEX contract spec](/contracts/native-dex) — full instruction definitions
+- [RWT — Real World Token](/economics/rwt-real-world-token) — master pool section
+- [Treasury](/economics/treasury) — Nexus funding flow
+- [Off-Chain Services](/bots/off-chain-services) — Pool Rebalancer logic

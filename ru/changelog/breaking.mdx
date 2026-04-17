@@ -13,6 +13,15 @@ hidePagination: true
 ---
 
 <div className="changelog-entry">
+  <div className="changelog-date">17 апреля 2026</div>
+
+  ### [Monotonic Ladder — Редизайн одностороннего мастер-пула](/ru/changelog/2026-04-17-monotonic-ladder)
+
+  Мастер-пулы (RWT/USDC, RWT/USDY) заменяют симметричную пирамиду 2:1 на одностороннюю, кумулятивно растущую bid-структуру. Nexus LP предоставляет только USDC; RWT ask-side органический или маршрутизируется в `mint_rwt` как синтетический ask. `shift_liquidity` удалена; добавлены `grow_liquidity` и `compress_liquidity`.
+
+</div>
+
+<div className="changelog-entry">
   <div className="changelog-date">13 апреля 2026</div>
 
   ### [LP Fee Reward Model — Per-Pool Fee Vault](/ru/changelog/2026-04-13-lp-fee-claim)

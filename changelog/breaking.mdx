@@ -13,6 +13,15 @@ Breaking changes that may require action from integrators or users.
 ---
 
 <div className="changelog-entry">
+  <div className="changelog-date">April 17, 2026</div>
+
+  ### [Monotonic Ladder — Single-Sided Master Pool Redesign](/changelog/2026-04-17-monotonic-ladder)
+
+  Master pools (RWT/USDC, RWT/USDY) replace the symmetric 2:1 pyramid with a single-sided, cumulatively growing bid structure. Nexus LP provides USDC only; RWT ask-side is organic or routed to `mint_rwt` as synthetic ask. `shift_liquidity` removed; `grow_liquidity` and `compress_liquidity` added.
+
+</div>
+
+<div className="changelog-entry">
   <div className="changelog-date">April 13, 2026</div>
 
   ### [LP Fee Reward Model — Per-Pool Fee Vault](/changelog/2026-04-13-lp-fee-claim)
