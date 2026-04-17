@@ -1,0 +1,333 @@
+---
+title: Agent Layer
+description: Four specialized AI agents with narrowly-scoped action surfaces, least-privilege permissions, and full audit trails
+---
+
+<Warning>
+  **Forward-looking roadmap.** The specialized agents described below are the target V2 design. Current operations run team-operated bots covering equivalent functional roles but without the formal separation, least-privilege bounds, or autonomous decision logic outlined here. See the [Overview](/agent-economy/overview) for V1/V2 transition detail.
+</Warning>
+
+## Design Principles
+
+Every agent in the system is designed against four non-negotiable constraints:
+
+<CardGroup cols={2}>
+  <Card title="Single function" icon="bullseye">
+    Each agent has exactly one purpose. Accumulation Agent accumulates OTs. Rebalancer manages pool geometry. Yield Harvester claims and reinvests yield. LP Manager handles Nexus positions. No agent crosses into another's domain.
+  </Card>
+  <Card title="Bounded action surface" icon="shield">
+    An agent can call a published, minimal set of instructions — nothing else. Its keypair is rejected by any instruction outside that set. The surface is enumerated on-chain as `allowed_instructions: Vec<u8>` per agent role.
+  </Card>
+  <Card title="Policy-free" icon="ban">
+    Agents do not decide *what* to do. They optimize *how* and *when* within governance-set parameters. An agent cannot ask "should we buy more of this OT?" — it can only ask "given the target allocation, what's the best execution path right now?"
+  </Card>
+  <Card title="Auditable per action" icon="file-waveform">
+    Every agent action emits a structured event containing the StrategyConfig version it read, the target state it computed, and the on-chain result. Forensic reconstruction requires no off-chain logs.
+  </Card>
+</CardGroup>
+
+---
+
+## The Four Agents
+
+### 1. Accumulation Agent
+
+**Purpose.** Acquire Ownership Tokens for the RWT Vault to hit governance-set allocation targets.
+
+**Action surface:**
+- `rwt_engine::vault_swap` — restricted to swaps where `token_in ∈ {USDC}` and `token_out ∈ StrategyConfig.allowed_ot_mints`
+- Cannot call any other vault instruction
+
+**Reads:**
+- `RwtVault.total_invested_capital`, `.current_ot_positions`
+- `StrategyConfig.allowed_ot_mints`, `.max_alloc_per_ot_bps`, `.max_total_ot_exposure_bps`, `.max_daily_swap_volume_usdc`, `.max_single_swap_volume_usdc`, `.max_slippage_bps`, `.allowed_swap_venues`
+- On-chain OT market prices via DEX pool states
+
+**Decides:**
+- *Which* OT to acquire right now — chosen to minimize distance between current and target allocation, within allowed set
+- *How much* to swap — bounded by `max_single_swap_volume_usdc` and remaining `max_daily_swap_volume_usdc` budget
+- *Which venue* to route through — picks lowest-slippage pool among `allowed_swap_venues`
+- *When* to act — waits for deviation from target to exceed `rebalance_deviation_bps`
+
+**Cannot:**
+- Swap to any mint outside `allowed_ot_mints`
+- Exceed per-OT allocation cap
+- Exceed daily volume budget
+- Route through unapproved venue
+- Touch USDY, LP positions, yield distribution, or any non-OT assets
+- Change any strategy parameter
+
+**Audit event:**
+```
+AccumulationActionExecuted {
+  agent: Pubkey,
+  config_version: u64,
+  target_ot: Pubkey,
+  amount_in_usdc: u64,
+  amount_out_ot: u64,
+  venue: Pubkey,
+  slippage_bps: u16,
+  daily_volume_remaining: u64,
+  target_allocation_before_bps: u16,
+  target_allocation_after_bps: u16,
+  timestamp: i64,
+}
+```
+
+**Lifecycle:**
+- Deployed via `initialize_agent(role: Accumulation, keypair: new_agent_pk)` — governance proposal
+- Replaced via `rotate_agent(role: Accumulation, new_keypair: ...)` — governance proposal, 24h timelock
+- Compromised agent: detected by anomalous events or governance review → kill switch activates → replacement rotation
+
+---
+
+### 2. Rebalancer Agent
+
+**Purpose.** Maintain Monotonic Ladder geometry on master pools as NAV evolves.
+
+**Action surface:**
+- `native_dex::grow_liquidity` — rightward extension on NAV growth
+- `native_dex::compress_liquidity` — leftward compression on writedown
+- Cannot call any other DEX instruction
+
+**Reads:**
+- `RwtVault.nav_book_value`
+- `PoolState.last_rebalance_nav_bin`, `.active_zone_lower`, `.active_bin_id`
+- `BinArray` for current distribution
+- `StrategyConfig.rebalance_deviation_bps`, `.rebalance_cooldown_secs`, `.geometric_density_r_bps`, `.max_active_zone_width`
+
+**Decides:**
+- *When* a rebalance is warranted — deviation threshold crossed AND cooldown elapsed
+- *Target bin* derived deterministically from NAV
+- *Active zone width* within governance-set max
+- *Direction* — growth vs compression path based on sign of deviation
+
+**Cannot:**
+- Change bin_step_bps or permanent_tail_floor_bin (those are immutable pool state)
+- Touch bins below `left_anchor_bin` (permanent tail)
+- Extract any tokens
+- Act outside cooldown window
+- Exceed configured active_zone_width
+
+**Audit event:**
+```
+RebalanceExecuted {
+  agent: Pubkey,
+  config_version: u64,
+  pool: Pubkey,
+  path: GrowthPath | CompressionPath,
+  old_nav_bin: i32,
+  new_nav_bin: i32,
+  nexus_usdc_pulled: u64,  // zero for compression
+  bins_affected: u32,
+  timestamp: i64,
+}
+```
+
+**Critical property:** Rebalancer cannot cause fund loss. `grow_liquidity` is additive (adds Nexus USDC); `compress_liquidity` is conservative (redistributes existing capital without debiting). Formal verification target.
+
+---
+
+### 3. Yield Harvester Agent
+
+**Purpose.** Claim yield distributed to the RWT Vault and route it per governance-defined split.
+
+**Action surface:**
+- `rwt_engine::claim_yield` — claim RWT from Yield Distribution merkle tree on behalf of vault
+- Cannot call any other vault instruction
+
+**Reads:**
+- Merkle proofs from Yield Distribution off-chain publisher
+- `StrategyConfig.yield_split` (book_value_bps / arl_treasury_bps / nexus_bps)
+- Claim eligibility from `MerkleDistributor` accounts
+
+**Decides:**
+- *When* to claim — typically when unclaimed balance exceeds a threshold worth the gas
+- *Batching* — combines multiple pending distributions into one transaction when possible
+
+**Cannot:**
+- Change the split (that's a governance parameter)
+- Move RWT anywhere other than the split destinations
+- Swap claimed tokens
+- Skip the split (attempting to route elsewhere reverts)
+
+**Audit event:**
+```
+YieldHarvested {
+  agent: Pubkey,
+  config_version: u64,
+  total_claimed_rwt: u64,
+  to_book_value: u64,
+  to_arl_treasury: u64,
+  to_nexus: u64,
+  split_version: u64,  // which yield_split config applied
+  timestamp: i64,
+}
+```
+
+**Why separate from Accumulation:** Different compromise model. Yield Harvester can at worst mis-time a claim (no funds stolen). Giving it the `vault_swap` authority would widen its surface unnecessarily.
+
+---
+
+### 4. LP Manager Agent
+
+**Purpose.** Manage Nexus LP positions on the native DEX — both master pool funding and strategic third-party pairs.
+
+**Action surface:**
+- `native_dex::nexus_deposit` — accept incoming USDC/RWT into Nexus accumulator
+- `native_dex::nexus_swap` — swap between tokens Nexus holds (e.g., USDC ↔ RWT for funding balance)
+- `native_dex::nexus_add_liquidity` — provide LP to non-master pools
+- `native_dex::nexus_remove_liquidity` — withdraw LP when governance reallocates
+- Cannot call any other instruction
+
+**Reads:**
+- `LiquidityNexus.usdc_balance`, `.rwt_balance`, `.lp_positions`
+- `StrategyConfig.master_pool_funding_priority`, `.min_nexus_usdc_reserve_bps`, `.permanent_tail_refill_enabled`
+- Pool-specific state
+
+**Decides:**
+- *When* to route USDC to Rebalancer (for `grow_liquidity`) vs. hold as reserve
+- *Which* third-party pair to top up if governance has approved multiple
+- *When* to rebalance internal USDC/RWT mix for Nexus operations
+
+**Cannot:**
+- Deploy below `min_nexus_usdc_reserve_bps` floor
+- Add liquidity to any pool not in governance whitelist
+- Extract tokens to any destination other than Areal Treasury (via `nexus_claim_rewards`)
+- Call `grow_liquidity` or `compress_liquidity` — those belong to Rebalancer
+
+**Audit event:**
+```
+NexusActionExecuted {
+  agent: Pubkey,
+  config_version: u64,
+  action: Deposit | Swap | AddLiquidity | RemoveLiquidity,
+  pool: Option<Pubkey>,
+  usdc_delta: i128,  // signed
+  rwt_delta: i128,
+  reserve_after_bps: u16,
+  timestamp: i64,
+}
+```
+
+---
+
+## Blast Radius Analysis
+
+The value of the separation: consider each compromise scenario.
+
+| Compromised agent | Worst-case loss | Why bounded |
+|---|---|---|
+| **Accumulation Agent** | Slippage on swaps up to daily volume cap; forced buys of worst-priced whitelisted OTs | Cannot exceed daily cap; cannot buy unwhitelisted; cannot touch non-OT assets |
+| **Rebalancer Agent** | Wasted compute on redundant rebalances within cooldown limit; suboptimal bin placement | Cannot extract funds; cannot touch permanent tail; conservation invariants hold |
+| **Yield Harvester Agent** | Mistimed claims; slightly higher gas costs | Claim destinations hard-coded in split; no swap authority |
+| **LP Manager Agent** | Mis-allocated LP within whitelist; slippage on Nexus-internal swaps | Cannot deploy below reserve floor; cannot exit whitelist; cannot extract to external wallets |
+| **All four simultaneously** | Bounded by sum of per-agent caps | Governance kill-switch activates → all agents frozen within one block of pause authority signing |
+
+Contrast with a monolithic manager holding equivalent authority: compromise of one key = full vault drain bounded only by the reserve balance and DEX liquidity. Orders-of-magnitude difference in expected loss.
+
+---
+
+## Agent Identity and Rotation
+
+### Identity
+
+Each agent is a single keypair stored on-chain as:
+
+```rust
+pub struct AgentRegistry {
+    pub accumulation_agent: Pubkey,
+    pub rebalancer_agent: Pubkey,
+    pub yield_harvester_agent: Pubkey,
+    pub lp_manager_agent: Pubkey,
+    pub kill_switch_authority: Pubkey,  // separate — pause authority, Team Multisig
+    pub rotation_history: Vec<RotationRecord>,  // last N rotations for audit
+    pub bump: u8,
+}
+```
+
+Every instruction validates `signer == AgentRegistry.<role>_agent` before executing.
+
+### Rotation
+
+Rotation is a governance action:
+
+```
+rotate_agent(role: AgentRole, new_keypair: Pubkey)
+  caller: authority (from passed futarchy proposal)
+  effect: AgentRegistry.<role>_agent = new_keypair, emits AgentRotated
+  timelock: 24h operational (agents are replaceable without ecosystem-wide impact)
+  audit: rotation_history gets appended with {old_key, new_key, proposal_id, ts}
+```
+
+If a key is suspected compromised, the emergency path is:
+
+1. Pause Authority (Team Multisig) activates kill switch instantly
+2. Rotation proposal submitted through futarchy
+3. 24h timelock elapses
+4. Rotation applies; kill switch deactivation runs its own 7-day timelock
+5. Parallel audit of the compromise scope during the deactivation window
+
+This preserves the instant-halt / slow-resume safety asymmetry.
+
+---
+
+## Interaction Pattern
+
+A typical epoch (e.g., 24 hours) looks like:
+
+```
+00:00  LP Manager deposits incoming USDC from crank routing (yield + revenue)
+00:15  Yield Harvester batches the day's merkle claims → split applied
+01:00  Accumulation Agent assesses deviation; executes first OT swap if triggered
+04:00  Rebalancer detects NAV drift > 1% → calls grow_liquidity
+04:02  LP Manager tops up Nexus USDC reserve from idle balance
+...
+23:00  End-of-day summary event series consolidates in explorer
+```
+
+Four agents acting in parallel on orthogonal domains. None blocks another. Each is bounded, logged, and replaceable.
+
+---
+
+## What Agents Will Not Do
+
+<CardGroup cols={2}>
+  <Card title="No opinion formation" icon="brain-circuit">
+    Agents do not "decide that real estate is hot this quarter". They execute allocation targets set by governance. The phrase "AI picks the portfolio" is explicitly not the model.
+  </Card>
+  <Card title="No cross-function" icon="route">
+    Accumulation Agent will not "also do yield harvesting while it's there". Each agent calls exactly its published instruction set. Cross-function requires a new specialized agent via governance.
+  </Card>
+  <Card title="No market-making on user orders" icon="handshake-slash">
+    Agents do not take the other side of user trades. They execute protocol-level operations against DEX liquidity on the same terms as any other participant.
+  </Card>
+  <Card title="No discretionary intervention" icon="hand">
+    Agents do not "pause during a volatile market". That's a governance decision, enforced via kill switch. Agents execute uniformly within their bounds regardless of market conditions.
+  </Card>
+</CardGroup>
+
+---
+
+## Summary
+
+<CardGroup cols={3}>
+  <Card title="Single-function agents" icon="bullseye" color="#a56eff">
+    Accumulation, Rebalancer, Yield Harvester, LP Manager — each does exactly one thing
+  </Card>
+  <Card title="Bounded surfaces" icon="shield" color="#a56eff">
+    Each agent can call only its published instruction set; all other attempts revert on-chain
+  </Card>
+  <Card title="Policy-free execution" icon="ban" color="#a56eff">
+    Agents optimize how and when — never what. Strategy lives one layer up.
+  </Card>
+  <Card title="Audit trail by design" icon="file-waveform" color="#a56eff">
+    Every action emits structured events referencing the config version it executed against
+  </Card>
+  <Card title="Compromise containment" icon="shield-halved" color="#a56eff">
+    Bounded blast radius per agent; simultaneous compromise still bounded by StrategyConfig
+  </Card>
+  <Card title="Governance rotation" icon="arrows-rotate" color="#a56eff">
+    Agents are replaceable via futarchy with 24h timelock; emergency halt via kill switch is instant
+  </Card>
+</CardGroup>

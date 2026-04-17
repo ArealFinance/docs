@@ -55,7 +55,8 @@
                 "pages": [
                   "areal/problem",
                   "areal/solution",
-                  "areal/vision"
+                  "areal/vision",
+                  "areal/roadmap"
                 ]
               },
               {
@@ -81,10 +82,22 @@
                 ]
               },
               {
+                "group": "Agent Economy",
+                "icon": "robot",
+                "pages": [
+                  "agent-economy/overview",
+                  "agent-economy/strategy-layer",
+                  "agent-economy/agent-layer",
+                  "agent-economy/safety-and-invariants"
+                ]
+              },
+              {
                 "group": "Security",
                 "icon": "shield",
                 "pages": [
                   "security/legal-architecture",
+                  "security/decentralization-roadmap",
+                  "security/geographic-restrictions",
                   "security/risk-disclosure",
                   "security/disclaimer"
                 ]
@@ -132,7 +145,8 @@
                   "changelog/updates",
                   "changelog/fixes",
                   "changelog/breaking",
-                  "changelog/security"
+                  "changelog/security",
+                  "changelog/compliance"
                 ]
               },
               {
@@ -167,7 +181,8 @@
                 "pages": [
                   "ru/areal/problem",
                   "ru/areal/solution",
-                  "ru/areal/vision"
+                  "ru/areal/vision",
+                  "ru/areal/roadmap"
                 ]
               },
               {
@@ -193,10 +208,22 @@
                 ]
               },
               {
+                "group": "Agent Economy",
+                "icon": "robot",
+                "pages": [
+                  "ru/agent-economy/overview",
+                  "ru/agent-economy/strategy-layer",
+                  "ru/agent-economy/agent-layer",
+                  "ru/agent-economy/safety-and-invariants"
+                ]
+              },
+              {
                 "group": "Безопасность",
                 "icon": "shield",
                 "pages": [
                   "ru/security/legal-architecture",
+                  "ru/security/decentralization-roadmap",
+                  "ru/security/geographic-restrictions",
                   "ru/security/risk-disclosure",
                   "ru/security/disclaimer"
                 ]
@@ -244,7 +271,8 @@
                   "ru/changelog/updates",
                   "ru/changelog/fixes",
                   "ru/changelog/breaking",
-                  "ru/changelog/security"
+                  "ru/changelog/security",
+                  "ru/changelog/compliance"
                 ]
               },
               {

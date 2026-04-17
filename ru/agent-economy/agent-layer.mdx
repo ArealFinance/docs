@@ -1,0 +1,333 @@
+---
+title: Agent Layer
+description: Четыре специализированных AI-агента с узко очерченными поверхностями действий, минимальными привилегиями и полными аудит-следами
+---
+
+<Warning>
+  **Стратегическая дорожная карта.** Специализированные агенты, описанные ниже, — целевой дизайн V2. Текущие операции выполняются ботами под управлением команды, покрывающими эквивалентные функциональные роли, но без формальной сепарации, границ минимальных привилегий или логики автономных решений, описанных здесь. См. [Overview](/ru/agent-economy/overview) для деталей перехода V1/V2.
+</Warning>
+
+## Принципы дизайна
+
+Каждый агент в системе спроектирован против четырёх обязательных ограничений:
+
+<CardGroup cols={2}>
+  <Card title="Одна функция" icon="bullseye">
+    У каждого агента ровно одна цель. Accumulation Agent накапливает OT. Rebalancer управляет геометрией пула. Yield Harvester забирает и реинвестирует доходность. LP Manager обрабатывает позиции Nexus. Ни один агент не пересекается с доменом другого.
+  </Card>
+  <Card title="Ограниченная поверхность действий" icon="shield">
+    Агент может вызывать опубликованный, минимальный набор инструкций — ничего более. Его keypair отклоняется любой инструкцией за пределами этого набора. Поверхность перечислена on-chain как `allowed_instructions: Vec<u8>` на каждую агентскую роль.
+  </Card>
+  <Card title="Без политики" icon="ban">
+    Агенты не решают *что* делать. Они оптимизируют *как* и *когда* внутри параметров, заданных governance. Агент не может спросить «стоит ли купить больше этого OT?» — он может спросить только «при целевой аллокации, каков лучший путь исполнения сейчас?»
+  </Card>
+  <Card title="Аудируемо на каждое действие" icon="file-waveform">
+    Каждое действие агента эмитирует структурированное событие, содержащее версию StrategyConfig, которую он читал, целевое состояние, которое он вычислил, и on-chain результат. Форенсическая реконструкция не требует off-chain логов.
+  </Card>
+</CardGroup>
+
+---
+
+## Четыре агента
+
+### 1. Accumulation Agent
+
+**Цель.** Приобретать Ownership Tokens для RWT Vault для достижения целей аллокации, заданных governance.
+
+**Поверхность действий:**
+- `rwt_engine::vault_swap` — ограничен swap'ами, где `token_in ∈ {USDC}` и `token_out ∈ StrategyConfig.allowed_ot_mints`
+- Не может вызывать никакие другие инструкции vault
+
+**Читает:**
+- `RwtVault.total_invested_capital`, `.current_ot_positions`
+- `StrategyConfig.allowed_ot_mints`, `.max_alloc_per_ot_bps`, `.max_total_ot_exposure_bps`, `.max_daily_swap_volume_usdc`, `.max_single_swap_volume_usdc`, `.max_slippage_bps`, `.allowed_swap_venues`
+- On-chain цены OT через состояния пулов DEX
+
+**Решает:**
+- *Какой* OT приобрести сейчас — выбран для минимизации дистанции между текущей и целевой аллокацией, внутри разрешённого набора
+- *Сколько* свопить — ограничено `max_single_swap_volume_usdc` и оставшимся бюджетом `max_daily_swap_volume_usdc`
+- *Через какую площадку* маршрутизировать — выбирает пул с наименьшим slippage среди `allowed_swap_venues`
+- *Когда* действовать — ждёт отклонения от цели, превышающее `rebalance_deviation_bps`
+
+**Не может:**
+- Свопить на любой mint вне `allowed_ot_mints`
+- Превысить лимит аллокации на OT
+- Превысить дневной бюджет объёма
+- Маршрутизировать через неодобренную площадку
+- Трогать USDY, LP-позиции, распределение доходности или любые не-OT активы
+- Менять любой параметр стратегии
+
+**Событие аудита:**
+```
+AccumulationActionExecuted {
+  agent: Pubkey,
+  config_version: u64,
+  target_ot: Pubkey,
+  amount_in_usdc: u64,
+  amount_out_ot: u64,
+  venue: Pubkey,
+  slippage_bps: u16,
+  daily_volume_remaining: u64,
+  target_allocation_before_bps: u16,
+  target_allocation_after_bps: u16,
+  timestamp: i64,
+}
+```
+
+**Жизненный цикл:**
+- Развёртывается через `initialize_agent(role: Accumulation, keypair: new_agent_pk)` — предложение governance
+- Заменяется через `rotate_agent(role: Accumulation, new_keypair: ...)` — предложение governance, timelock 24ч
+- Скомпрометированный агент: обнаруживается по аномальным событиям или обзору governance → активируется kill switch → ротация замены
+
+---
+
+### 2. Rebalancer Agent
+
+**Цель.** Поддерживать геометрию Monotonic Ladder мастер-пулов по мере эволюции NAV.
+
+**Поверхность действий:**
+- `native_dex::grow_liquidity` — расширение вправо при росте NAV
+- `native_dex::compress_liquidity` — сжатие влево при уценке
+- Не может вызывать никакие другие инструкции DEX
+
+**Читает:**
+- `RwtVault.nav_book_value`
+- `PoolState.last_rebalance_nav_bin`, `.active_zone_lower`, `.active_bin_id`
+- `BinArray` для текущего распределения
+- `StrategyConfig.rebalance_deviation_bps`, `.rebalance_cooldown_secs`, `.geometric_density_r_bps`, `.max_active_zone_width`
+
+**Решает:**
+- *Когда* ребалансировка оправдана — порог отклонения пересечён И cooldown истёк
+- *Целевой bin* детерминированно выведен из NAV
+- *Ширина активной зоны* внутри максимума, заданного governance
+- *Направление* — путь роста vs сжатия на основе знака отклонения
+
+**Не может:**
+- Менять `bin_step_bps` или `permanent_tail_floor_bin` (это неизменяемое состояние пула)
+- Трогать bin'ы ниже `left_anchor_bin` (permanent tail)
+- Извлекать любые токены
+- Действовать вне окна cooldown
+- Превысить сконфигурированную ширину активной зоны
+
+**Событие аудита:**
+```
+RebalanceExecuted {
+  agent: Pubkey,
+  config_version: u64,
+  pool: Pubkey,
+  path: GrowthPath | CompressionPath,
+  old_nav_bin: i32,
+  new_nav_bin: i32,
+  nexus_usdc_pulled: u64,  // ноль для сжатия
+  bins_affected: u32,
+  timestamp: i64,
+}
+```
+
+**Критическое свойство:** Rebalancer не может причинить потерю средств. `grow_liquidity` аддитивен (добавляет USDC из Nexus); `compress_liquidity` консервативен (перераспределяет существующий капитал без списания). Цель формальной верификации.
+
+---
+
+### 3. Yield Harvester Agent
+
+**Цель.** Забирать доходность, распределённую в RWT Vault, и маршрутизировать её по распределению, определённому governance.
+
+**Поверхность действий:**
+- `rwt_engine::claim_yield` — забрать RWT из merkle tree Yield Distribution от имени vault
+- Не может вызывать никакие другие инструкции vault
+
+**Читает:**
+- Merkle-доказательства от off-chain publisher Yield Distribution
+- `StrategyConfig.yield_split` (`book_value_bps` / `arl_treasury_bps` / `nexus_bps`)
+- Правомочность claim из аккаунтов `MerkleDistributor`
+
+**Решает:**
+- *Когда* забирать — обычно когда невостребованный баланс превышает порог, оправдывающий gas
+- *Батчинг* — объединяет несколько ожидающих распределений в одной транзакции, когда возможно
+
+**Не может:**
+- Менять распределение (это параметр governance)
+- Перемещать RWT куда-либо, кроме назначений распределения
+- Свопить забранные токены
+- Пропустить распределение (попытка маршрутизировать в другое место отклоняется)
+
+**Событие аудита:**
+```
+YieldHarvested {
+  agent: Pubkey,
+  config_version: u64,
+  total_claimed_rwt: u64,
+  to_book_value: u64,
+  to_arl_treasury: u64,
+  to_nexus: u64,
+  split_version: u64,  // какая версия yield_split применилась
+  timestamp: i64,
+}
+```
+
+**Почему отделён от Accumulation:** другая модель компрометации. Yield Harvester в худшем случае может неудачно выбрать время claim (никакие средства не украдены). Дача ему полномочий `vault_swap` ненужно расширяла бы его поверхность.
+
+---
+
+### 4. LP Manager Agent
+
+**Цель.** Управлять LP-позициями Nexus на нативном DEX — как финансирование мастер-пулов, так и стратегические пары со сторонними токенами.
+
+**Поверхность действий:**
+- `native_dex::nexus_deposit` — принимать входящий USDC/RWT в аккумулятор Nexus
+- `native_dex::nexus_swap` — свопить между токенами, которые держит Nexus (напр. USDC ↔ RWT для балансировки финансирования)
+- `native_dex::nexus_add_liquidity` — предоставлять LP в не-мастер пулы
+- `native_dex::nexus_remove_liquidity` — забирать LP, когда governance перераспределяет
+- Не может вызывать никакие другие инструкции
+
+**Читает:**
+- `LiquidityNexus.usdc_balance`, `.rwt_balance`, `.lp_positions`
+- `StrategyConfig.master_pool_funding_priority`, `.min_nexus_usdc_reserve_bps`, `.permanent_tail_refill_enabled`
+- Состояние конкретного пула
+
+**Решает:**
+- *Когда* маршрутизировать USDC в Rebalancer (для `grow_liquidity`) vs. держать как резерв
+- *Какую* стороннюю пару пополнить, если governance одобрил несколько
+- *Когда* ребалансировать внутренний баланс USDC/RWT для операций Nexus
+
+**Не может:**
+- Разворачивать ниже уровня `min_nexus_usdc_reserve_bps`
+- Добавлять ликвидность в любой пул, не в whitelist governance
+- Извлекать токены в любое место назначения, кроме Казначейства Areal (через `nexus_claim_rewards`)
+- Вызывать `grow_liquidity` или `compress_liquidity` — это роль Rebalancer
+
+**Событие аудита:**
+```
+NexusActionExecuted {
+  agent: Pubkey,
+  config_version: u64,
+  action: Deposit | Swap | AddLiquidity | RemoveLiquidity,
+  pool: Option<Pubkey>,
+  usdc_delta: i128,  // знаковое
+  rwt_delta: i128,
+  reserve_after_bps: u16,
+  timestamp: i64,
+}
+```
+
+---
+
+## Анализ радиуса поражения
+
+Ценность сепарации: рассмотрим каждый сценарий компрометации.
+
+| Скомпрометированный агент | Потеря в худшем случае | Почему ограничено |
+|---|---|---|
+| **Accumulation Agent** | Slippage на swap'ах до дневного лимита объёма; вынужденные покупки OT с худшими ценами из whitelist | Не может превысить дневной лимит; не может купить не из whitelist; не может трогать не-OT активы |
+| **Rebalancer Agent** | Потраченные вычисления на избыточные ребалансировки внутри лимита cooldown; субоптимальное размещение bin'ов | Не может извлекать средства; не может трогать permanent tail; инварианты сохранения держатся |
+| **Yield Harvester Agent** | Неудачное время claim'ов; слегка более высокие gas-расходы | Назначения claim захардкожены в распределении; нет полномочий swap |
+| **LP Manager Agent** | Неправильно размещённое LP внутри whitelist; slippage на внутренних swap'ах Nexus | Не может разворачивать ниже минимума резерва; не может выйти из whitelist; не может извлекать во внешние кошельки |
+| **Все четыре одновременно** | Ограничено суммой лимитов на агента | Kill switch governance активируется → все агенты заморожены в пределах одного блока после подписания pause authority |
+
+Контраст с монолитным менеджером, держащим эквивалентные полномочия: компрометация одного ключа = полный слив vault, ограниченный только балансом резерва и ликвидностью DEX. Разница в ожидаемой потере — на порядки.
+
+---
+
+## Идентичность агента и ротация
+
+### Идентичность
+
+Каждый агент — единичный keypair, хранимый on-chain как:
+
+```rust
+pub struct AgentRegistry {
+    pub accumulation_agent: Pubkey,
+    pub rebalancer_agent: Pubkey,
+    pub yield_harvester_agent: Pubkey,
+    pub lp_manager_agent: Pubkey,
+    pub kill_switch_authority: Pubkey,  // отдельная — pause authority, Team Multisig
+    pub rotation_history: Vec<RotationRecord>,  // последние N ротаций для аудита
+    pub bump: u8,
+}
+```
+
+Каждая инструкция проверяет `signer == AgentRegistry.<role>_agent` перед исполнением.
+
+### Ротация
+
+Ротация — governance-действие:
+
+```
+rotate_agent(role: AgentRole, new_keypair: Pubkey)
+  вызывающий: authority (из прошедшего предложения futarchy)
+  эффект: AgentRegistry.<role>_agent = new_keypair, эмитирует AgentRotated
+  timelock: 24ч operational (агенты заменяемы без влияния на экосистему)
+  аудит: rotation_history дополняется {old_key, new_key, proposal_id, ts}
+```
+
+Если ключ подозревается скомпрометированным, аварийный путь:
+
+1. Pause Authority (Team Multisig) активирует kill switch мгновенно
+2. Предложение ротации отправляется через futarchy
+3. Истекает 24ч timelock
+4. Ротация применяется; деактивация kill switch запускает свой собственный 7-дневный timelock
+5. Параллельный аудит охвата компрометации в окне деактивации
+
+Это сохраняет асимметрию мгновенной остановки / медленного возобновления безопасности.
+
+---
+
+## Паттерн взаимодействия
+
+Типичная эпоха (напр. 24 часа) выглядит так:
+
+```
+00:00  LP Manager депонирует входящий USDC от маршрутизации crank (доходность + выручка)
+00:15  Yield Harvester батчит дневные merkle claim'ы → распределение применяется
+01:00  Accumulation Agent оценивает отклонение; исполняет первый swap OT, если триггер
+04:00  Rebalancer обнаруживает дрейф NAV > 1% → вызывает grow_liquidity
+04:02  LP Manager пополняет резерв USDC Nexus из простаивающего баланса
+...
+23:00  Серия итоговых событий дня консолидируется в explorer
+```
+
+Четыре агента действуют параллельно на ортогональных доменах. Никто не блокирует другого. Каждый — ограничен, залогирован, заменяем.
+
+---
+
+## Что агенты НЕ будут делать
+
+<CardGroup cols={2}>
+  <Card title="Никакого формирования мнения" icon="brain-circuit">
+    Агенты не «решают, что недвижимость в тренде в этом квартале». Они исполняют цели аллокации, заданные governance. Фраза «AI выбирает портфель» явно не является моделью.
+  </Card>
+  <Card title="Никакого пересечения функций" icon="route">
+    Accumulation Agent не будет «заодно делать сбор доходности». Каждый агент вызывает ровно свой опубликованный набор инструкций. Пересечение функций требует нового специализированного агента через governance.
+  </Card>
+  <Card title="Никакого market-making на ордерах пользователей" icon="handshake-slash">
+    Агенты не берут другую сторону сделок пользователей. Они исполняют операции на уровне протокола против ликвидности DEX на тех же условиях, что и любой другой участник.
+  </Card>
+  <Card title="Никакого дискреционного вмешательства" icon="hand">
+    Агенты не «приостанавливаются в волатильный рынок». Это решение governance, исполняемое через kill switch. Агенты исполняют равномерно в своих границах независимо от рыночных условий.
+  </Card>
+</CardGroup>
+
+---
+
+## Резюме
+
+<CardGroup cols={3}>
+  <Card title="Агенты единой функции" icon="bullseye" color="#a56eff">
+    Accumulation, Rebalancer, Yield Harvester, LP Manager — каждый делает ровно одну вещь
+  </Card>
+  <Card title="Ограниченные поверхности" icon="shield" color="#a56eff">
+    Каждый агент может вызывать только свой опубликованный набор инструкций; все другие попытки отклоняются on-chain
+  </Card>
+  <Card title="Исполнение без политики" icon="ban" color="#a56eff">
+    Агенты оптимизируют как и когда — никогда что. Стратегия живёт слоем выше.
+  </Card>
+  <Card title="Аудит-след по дизайну" icon="file-waveform" color="#a56eff">
+    Каждое действие эмитирует структурированные события, ссылающиеся на версию конфига, против которой оно исполнилось
+  </Card>
+  <Card title="Сдерживание компрометации" icon="shield-halved" color="#a56eff">
+    Ограниченный радиус поражения на агента; одновременная компрометация всё равно ограничена StrategyConfig
+  </Card>
+  <Card title="Ротация через governance" icon="arrows-rotate" color="#a56eff">
+    Агенты заменяемы через futarchy с timelock 24ч; аварийная остановка через kill switch мгновенна
+  </Card>
+</CardGroup>

@@ -1,0 +1,301 @@
+---
+title: Agent Economy — Overview
+description: Roadmap for the Areal protocol's transition to community-governed, agent-executed management of RWA portfolios
+---
+
+<Warning>
+  **Forward-looking roadmap.** This section describes the **target design** for the Areal protocol's next evolution — community-driven strategy configuration executed by autonomous AI agents within on-chain enforced bounds. None of this is currently deployed. Live operations use team-operated bots under the constraints of the existing contracts described in [Smart Contracts](/contracts/native-dex). This section exists to make the intended trajectory legible to contributors, integrators, and prospective ARL holders — not as a statement of current operational state.
+</Warning>
+
+## In Plain Language
+
+> **Nobody runs your money. The community writes the rules, software follows them, and the protocol makes breaking them impossible.**
+
+Most places where you put money work by trusting someone — a fund manager, a team, a committee — to decide what happens next. If they're skilled and honest, you do well. If not, you hope. Your experience depends on their judgement, their integrity, and their availability.
+
+Areal is built on a different premise: **remove the deciding human entirely**. The work of managing a portfolio is split into three clear pieces, and none of them is "a person making a call".
+
+<CardGroup cols={3}>
+  <Card title="The community sets the rules" icon="people-group" color="#a56eff">
+    What the vault can hold, how much of each asset, when to rebalance, what risks are acceptable. Every rule change is voted on. Every rule is public.
+  </Card>
+  <Card title="Software follows the rules" icon="gears" color="#a56eff">
+    Small specialized programs do the mechanical work — buying, selling, rebalancing. They have no opinions, no hunches, no shortcuts. They execute exactly what the community decided.
+  </Card>
+  <Card title="The protocol enforces the rules" icon="shield-halved" color="#a56eff">
+    Even if a program went rogue, or someone sneaked in a harmful change, the protocol itself refuses to perform anything outside the current rules. Breaking them is mathematically impossible.
+  </Card>
+</CardGroup>
+
+### Think of it like a smart home thermostat
+
+You set the temperature you want — say 22°C. The thermostat doesn't decide what temperature you want. It takes your setting and runs the heating to get there. It can't set the house on fire — safety sensors intervene first. You can always turn it off.
+
+Areal's vault works the same way, just scaled up:
+
+| Your home | The Areal vault |
+|---|---|
+| You pick the temperature | The community votes on the strategy |
+| The thermostat runs the heating | Helper programs execute within the strategy |
+| Safety sensors prevent fires | Protocol rules prevent harmful transactions |
+| You can always turn it off | Anyone with 1% of ARL can halt the protocol by staking it |
+
+The heating system doesn't *decide* what temperature you want. It does what you set, within physical safety limits. The vault is the same: community sets the goal, programs pursue it, the protocol keeps it safe.
+
+### What this means for you
+
+<CardGroup cols={2}>
+  <Card title="No “trust us” required" icon="handshake-slash">
+    You don't have to trust a team's judgement. Every decision is either a community vote with public results, or a mechanical action inside clearly published rules. Nothing happens because "the manager thought it was a good idea."
+  </Card>
+  <Card title="You see changes before they take effect" icon="eye">
+    When the community proposes a new rule, there's a waiting period — 24 hours for small changes, 7 days for big ones. If you disagree, you have time to leave your position before it applies.
+  </Card>
+  <Card title="Nothing can touch your money" icon="lock">
+    No team member, no program, no bad actor can move funds outside the current rules. Not because they promise not to — because the protocol won't let them.
+  </Card>
+  <Card title="An emergency stop backed by skin in the game" icon="circle-stop">
+    Anyone holding **1% of total ARL supply** can halt the protocol instantly by staking that ARL as a bond. The stake freezes while the team reviews whether the halt was justified. If it was — the stake is returned (plus a bounty for catching the problem). If it was a false alarm or abuse — the stake goes to the protocol treasury. Users never lose access to their tokens during a halt.
+  </Card>
+</CardGroup>
+
+### What a typical day looks like
+
+<Steps>
+  <Step title="Quiet days (most of the time)">
+    Real-world assets in the vault earn yield — rent from property, interest from credit, royalties from IP. Your token's underlying value grows automatically. No action from you required.
+  </Step>
+  <Step title="When the market drifts">
+    If prices move enough, helper programs rebalance liquidity within the community-set rules. Nothing dramatic — just maintaining the target shape. You see it in events on-chain, nothing changes in your wallet.
+  </Step>
+  <Step title="When someone proposes a change">
+    A community member submits a proposal — for example, "add this new real-estate project to the approved list." The community evaluates it by trading on outcome markets (the one with the better expected result wins). If approved, the waiting period begins before the rule changes.
+  </Step>
+  <Step title="When something looks wrong">
+    Anyone can **flag** anomalies through on-chain reports, community channels, or bug bounties. And anyone with conviction enough to stake **1% of ARL supply** can **trigger** the emergency halt instantly. The stake is frozen for 7 days while the team (or, in the future, futarchy) decides whether the halt was justified. Justified → stake returned with a bounty. Spurious → stake forfeited to the Areal Treasury. Users keep full access throughout; only agent activity freezes.
+  </Step>
+</Steps>
+
+### What this approach is NOT
+
+<CardGroup cols={2}>
+  <Card title="Not “AI picks your investments”" icon="brain-circuit" color="#e67e22">
+    Helper programs don't decide what to buy. They follow allocation targets the community has already set. If the rule says "no more than 25% in any one asset," the program literally can't exceed that — the protocol rejects the transaction.
+  </Card>
+  <Card title="Not “set and forget forever”" icon="rotate" color="#e67e22">
+    The strategy evolves as the ecosystem grows. You can participate in proposing or voting on changes, or you can just hold your tokens and let the community handle governance. Both are fine.
+  </Card>
+  <Card title="Not a replacement for due diligence" icon="magnifying-glass-plus" color="#e67e22">
+    This approach reduces the risk of bad management — it doesn't eliminate the risk that the underlying assets lose value, or that a new regulation affects the protocol, or that the market does something unexpected.
+  </Card>
+  <Card title="Not “trustless”" icon="scale-unbalanced" color="#e67e22">
+    You still trust that the code does what it says, that real-world assets perform, that the community makes reasonable decisions collectively. What you don't have to trust: any single person or team to manage your money well.
+  </Card>
+</CardGroup>
+
+### Want the technical version?
+
+The rest of this page explains *why* this approach was chosen and *how* the pieces fit together. The [Strategy](/agent-economy/strategy-layer), [Agent](/agent-economy/agent-layer), and [Safety](/agent-economy/safety-and-invariants) pages go deeper into exactly how each piece works. Read as much as you want — none of it is required to use the protocol safely.
+
+---
+
+## The Problem With "Managed Portfolios"
+
+The default framing for actively-managed DeFi vaults — "our team manages a portfolio for you" — carries three deep, compounding risks that Areal needs to eliminate before scale:
+
+<CardGroup cols={2}>
+  <Card title="Regulatory exposure" icon="gavel" color="#e74c3c">
+    The Howey Test's "efforts of others" prong maps directly onto a discretionary human manager making allocation decisions. Under current US guidance, that framing is a strong signal toward security classification — regardless of what the documentation calls the token.
+  </Card>
+  <Card title="Trust concentration" icon="user-lock" color="#e74c3c">
+    A manager role with authority to swap, mint, or rebalance at will is a single point of failure. Compromise, collusion, or mis-judgement translates directly into holder losses. The blast radius is the entire vault.
+  </Card>
+  <Card title="Auditability gap" icon="file-magnifying-glass" color="#e74c3c">
+    "Why did you make this trade?" has no on-chain answer when the decision lived in a human head. Post-hoc reasoning is not verification. Good outcomes become luck; bad outcomes become unprovable malpractice.
+  </Card>
+  <Card title="Narrative drift" icon="triangle-exclamation" color="#e74c3c">
+    Marketing says "decentralized". Implementation says "we'll handle it". This gap widens over time as shortcuts accumulate, and eventually becomes indefensible to regulators, auditors, and holders alike.
+  </Card>
+</CardGroup>
+
+Areal's answer is not to hire better managers. It is to **remove discretionary management from the system entirely** by decomposing it into three layers with no single actor making business decisions.
+
+---
+
+## The Three-Layer Separation
+
+<Card title="Strategy Layer — community via futarchy" icon="scale-balanced" color="#a56eff">
+  - **Defines** — what the protocol should do
+  - **Set by** — ARL holders through decision markets
+  - **Governs** — allocation caps, whitelists, yield splits, risk limits, concentration thresholds, venue approval
+  - **Change** — two-tier timelock (24h operational / 7d critical)
+</Card>
+
+<div style={{ textAlign: "center", fontSize: "1.5em", color: "#9ca3af", margin: "12px 0" }}>▼</div>
+
+<Card title="Agent Layer — specialized AI agents" icon="robot" color="#a56eff">
+  - **Defines** — how and when, within the strategy bounds
+  - **Reads** — StrategyConfig PDA as hard constraints
+  - **Does** — optimization, timing, routing — never policy
+  - **Emits** — structured audit events for every action
+  - **Limits** — least-privilege; one agent per function
+</Card>
+
+<div style={{ textAlign: "center", fontSize: "1.5em", color: "#9ca3af", margin: "12px 0" }}>▼</div>
+
+<Card title="Contract Layer — on-chain invariants" icon="shield-check" color="#a56eff">
+  - **Enforces** — must-not. Every instruction validates against StrategyConfig before mutating state
+  - **Provides** — kill switch, per-tx caps, slippage protection, circuit breakers, whitelist checks
+  - **Trust** — none required beyond the contract code itself
+</Card>
+
+<Info>
+  The critical property: **no layer alone can move value**. Strategy can change parameters but cannot execute. Agents can execute but cannot exceed parameters. Contracts can reject, pause, or halt but cannot decide. An attacker or bad actor would need to subvert all three layers simultaneously to produce a harmful outcome — and each layer has distinct authority, distinct upgrade path, and distinct threat model.
+</Info>
+
+<CardGroup cols={3}>
+  <Card title="Strategy Layer" icon="scale-balanced" href="/agent-economy/strategy-layer">
+    Futarchy-governed parameters that bind agent behaviour. StrategyConfig PDA schema, timelock model, proposal templates.
+  </Card>
+  <Card title="Agent Layer" icon="robot" href="/agent-economy/agent-layer">
+    Four specialized agents with narrowly-scoped action surfaces. Permissions, audit trails, replacement lifecycle.
+  </Card>
+  <Card title="Safety & Invariants" icon="shield-check" href="/agent-economy/safety-and-invariants">
+    On-chain enforcement, kill switch, circuit breakers, formal verification goals, incident response playbook.
+  </Card>
+</CardGroup>
+
+---
+
+## Why This Matters
+
+### Legal positioning
+
+Under the Howey analysis, a token representing participation in a common enterprise with profits from the efforts of others typically falls into the security framework. Areal's architecture directly challenges the "efforts of others" prong:
+
+- **Strategy** is not set by Areal Finance, a team, or any designated manager. It is set by ARL holders through futarchy markets — distributed decision-making with economic stake.
+- **Execution** is deterministic code. Agents are constrained optimizers, not discretionary actors. Their scope is published on-chain and verifiable by any participant.
+- **Returns** flow from the underlying real-world asset operations of each project's DAO Ownership Company, not from Areal's skill at picking or managing assets.
+
+This is the same logic that shields infrastructure protocols like Ethereum or Solana itself — the protocol doesn't manage anything, participants do. Areal aims for the same structural positioning for RWA.
+
+See [Legal Architecture](/security/legal-architecture) for the formal Howey-test analysis. The Agent Economy model strengthens that position materially.
+
+### Trust reduction
+
+Every layer is designed to eliminate a class of trust assumption:
+
+<CardGroup cols={2}>
+  <Card title="No discretionary manager" icon="user-slash">
+    Nobody — not the Areal team, not a multisig, not a DAO committee — can decide "let's swap OT_A for OT_B today". Swaps happen because StrategyConfig permits them and an agent optimized timing within those bounds.
+  </Card>
+  <Card title="Least-privilege agents" icon="key-skeleton">
+    Accumulation Agent cannot touch LP positions. LP Manager cannot mint RWT. Yield Harvester cannot change allocation. Compromise of one keypair affects one function — not the entire vault.
+  </Card>
+  <Card title="Parameter-bound execution" icon="lock">
+    Even if every agent wallet were compromised simultaneously, the worst-case damage is bounded by the current StrategyConfig (daily volume caps, slippage limits, concentration bounds). Governance can kill-switch within minutes.
+  </Card>
+  <Card title="Verifiable change history" icon="clock-rotate-left">
+    Every StrategyConfig update went through a published futarchy proposal with conditional markets. Every agent action emits an event referencing the config version it executed against. Forensic reconstruction is exact.
+  </Card>
+</CardGroup>
+
+### Auditability by design
+
+The system produces a complete, machine-readable audit trail:
+
+```
+Proposal #142  →  StrategyConfig v23  →  AgentAction #8841  →  State delta
+  (ARL holders)    (timelock: 24h)       (AccumulationAgent)    (vault +500 RCP)
+```
+
+Every agent action links back to the exact StrategyConfig version it read, which links back to the futarchy proposal that set that version. No action is ever "because Alice thought it was a good idea" — every action has an on-chain provenance chain.
+
+### Blast radius containment
+
+Four specialized agents instead of one monolithic manager means:
+
+- Compromise of Accumulation Agent cannot drain Nexus LP positions
+- Compromise of Yield Harvester cannot change which OTs are whitelisted
+- Compromise of Rebalancer cannot exceed max_daily_swap_volume
+- Compromise of all four still cannot violate StrategyConfig or kill-switch
+
+Each agent is individually replaceable by governance without affecting the others.
+
+---
+
+## The V1 → V2 Transition
+
+<Warning>
+  **Honest naming.** Current deployment does not include AI agents. It includes **team-operated bots** running the mechanical roles this section will eventually cover. Using the word "agent" for a deterministic script would be marketing dishonesty. The framework below describes what the role *becomes* when the system matures — and the guardrails that already make that transition safe.
+</Warning>
+
+### Current state (V1)
+
+- **Rebalancer bot** (team keypair) calls `grow_liquidity` / `compress_liquidity` on deviation triggers
+- **Vault Manager bot** (team keypair) calls `vault_swap` to acquire OTs per governance-approved accumulation targets
+- **Nexus Manager bot** (team keypair) calls `nexus_swap` / `nexus_add_liquidity` / `nexus_remove_liquidity`
+- **Cranks** (permissionless) handle yield claims, revenue distribution, merkle publication
+- **Governance** (Team Multisig as current authority) approves all strategy parameter changes directly — not yet via conditional markets
+
+All bots already have the least-privilege constraint: none can extract funds, all operate through instructions that validate against on-chain config.
+
+### Target state (V2)
+
+- **Strategy Layer**: every parameter governed by futarchy conditional markets, two-tier timelock enforced by contract
+- **Agent Layer**: four specialized autonomous agents replace the current team-operated bots; their strategy is read from StrategyConfig PDA
+- **Contract Layer**: StrategyConfig enforcement on every mutating instruction; richer circuit breakers; formal verification of critical invariants
+
+### Transition path
+
+<Steps>
+  <Step title="Phase 1 — StrategyConfig scaffolding">
+    Deploy `StrategyConfig` PDA for each managed surface (RWT Vault, Nexus, Treasury). Existing bots begin reading it as hard constraints. Parameters continue to be set by Team Multisig during this phase.
+  </Step>
+  <Step title="Phase 2 — Futarchy-driven updates">
+    Once Futarchy V2 (described in [Governance & Futarchy](/architecture/governance-and-futarchy)) ships, all `update_strategy_config` calls must originate from a resolved futarchy proposal rather than direct multisig execution. Team Multisig retains only pause / kill-switch authority.
+  </Step>
+  <Step title="Phase 3 — Specialized agents">
+    Team-operated bots are retired one function at a time, replaced by specialized AI agents that optimize within StrategyConfig bounds. Each replacement is itself a governance decision with a trial period and reversibility.
+  </Step>
+  <Step title="Phase 4 — Formal verification">
+    Critical invariants (fund conservation, StrategyConfig enforcement, kill-switch reachability) are formally verified. Security audits move from "trust the team" to "trust the proofs".
+  </Step>
+</Steps>
+
+Each phase is reversible. If Phase 3 agents underperform team bots on measurable dimensions (slippage, capital efficiency, yield capture), governance reverts to bot operation. The system is designed to be evolutionary, not dogmatic.
+
+---
+
+## What This Section Does Not Claim
+
+<CardGroup cols={2}>
+  <Card title="Not deployed" icon="ban">
+    Nothing in Strategy Layer / Agent Layer / Safety pages is currently live. Use the existing contract specs in [Contracts](/contracts/native-dex) as the source of truth for current behaviour.
+  </Card>
+  <Card title="Not a commitment to dates" icon="calendar-xmark">
+    Phase progression depends on audit outcomes, governance decisions, and technical readiness. No dates are attached. No promises are made.
+  </Card>
+  <Card title="Not “AI does investing”" icon="hand">
+    Agents are constrained optimizers, not discretionary managers. They do not pick what to buy — they execute *how* to buy what governance decided.
+  </Card>
+  <Card title="Not a substitute for due diligence" icon="magnifying-glass">
+    This framework reduces operational risk — it does not eliminate RWA-level, legal, or macroeconomic risk. See [Risk Disclosure](/security/risk-disclosure).
+  </Card>
+</CardGroup>
+
+---
+
+## Further Reading
+
+<CardGroup cols={3}>
+  <Card title="Strategy Layer" icon="scale-balanced" href="/agent-economy/strategy-layer">
+    How futarchy configures the bounds agents operate within
+  </Card>
+  <Card title="Agent Layer" icon="robot" href="/agent-economy/agent-layer">
+    Four specialized agents and their action surfaces
+  </Card>
+  <Card title="Safety & Invariants" icon="shield-check" href="/agent-economy/safety-and-invariants">
+    On-chain enforcement, kill switch, circuit breakers
+  </Card>
+</CardGroup>

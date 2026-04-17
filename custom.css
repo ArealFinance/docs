@@ -269,6 +269,11 @@ html.dark .intro-gradient {
   color: #3182ce;
 }
 
+.changelog-tag-compliance {
+  background-color: rgba(56, 178, 172, 0.12);
+  color: #2c7a7b;
+}
+
 html.dark .changelog-tag-update {
   background-color: rgba(165, 110, 255, 0.18);
   color: #c9a0ff;
@@ -292,6 +297,11 @@ html.dark .changelog-tag-breaking {
 html.dark .changelog-tag-security {
   background-color: rgba(66, 153, 225, 0.18);
   color: #63b3ed;
+}
+
+html.dark .changelog-tag-compliance {
+  background-color: rgba(56, 178, 172, 0.18);
+  color: #4fd1c5;
 }
 
 /* Changelog entry styling */

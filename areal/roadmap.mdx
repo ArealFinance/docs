@@ -1,0 +1,192 @@
+---
+title: Roadmap
+description: How Areal evolves from V1 (launch) to V2 (fully autonomous) — capability comparison, transition phases, and honest state disclosure
+---
+
+> **Areal evolves in two major phases: V1 lays the foundation, V2 removes the training wheels.**
+
+We deliberately separate the launch-capable protocol from its fully autonomous endgame. **V1** is what ships to mainnet — complete, auditable, useful. **V2** is the target architecture that progressively removes the residual trust assumptions from V1.
+
+<Warning>
+  **Current state: pre-launch.** Design and contract specifications are complete. Implementation, external audit, and initial mainnet deployment are in progress. Neither V1 nor V2 is live on mainnet yet. This page describes the intended trajectory — not current operational state.
+</Warning>
+
+## At a glance
+
+| Capability | V1 — first mainnet | V2 — target |
+|---|---|---|
+| Smart contracts | 5 core contracts deployed | Same + `StrategyConfig` PDAs per surface |
+| Governance decisions | Team Multisig approves proposals | Futarchy conditional markets decide |
+| Strategy parameters | Direct multisig update | Futarchy + 24h/7d two-tier timelock |
+| Rebalancing | Team-operated bot | Autonomous **Rebalancer Agent** |
+| Vault accumulation | Team-operated bot | Autonomous **Accumulation Agent** |
+| LP management | Team-operated bot | Autonomous **LP Manager Agent** |
+| Yield harvesting | Permissionless crank | Autonomous **Yield Harvester Agent** |
+| Emergency halt trigger | Halt Bond (1% ARL stake) | Halt Bond (1% ARL stake) |
+| Halt verdict authority | Team Multisig reviews | Futarchy proposal decides |
+| Invariant verification | Internal review + external audit | Formal verification of critical properties |
+
+---
+
+## V1 — first mainnet launch
+
+What ships when the protocol goes live:
+
+<CardGroup cols={2}>
+  <Card title="Complete smart contract suite" icon="file-code">
+    All five contracts — Native DEX (Monotonic Ladder master pools + StandardCurve), RWT Engine, Ownership Token, Yield Distribution, Futarchy — audited, deployed to mainnet, open-sourced.
+  </Card>
+  <Card title="Team Multisig as interim authority" icon="users-gear">
+    Until futarchy V2 activates, Team Multisig holds config authority. All parameter changes are executed through the multisig with public on-chain disclosure of every proposal and its rationale.
+  </Card>
+  <Card title="Team-operated bots" icon="robot">
+    Pool Rebalancer, Vault Manager, Nexus Manager, Merkle Publisher, and three permissionless cranks operate as deterministic scripts. Each has minimal scoped permissions — no bot can extract funds, only operate within published instruction sets.
+  </Card>
+  <Card title="Full user functionality" icon="user-check">
+    Permissionless `mint_rwt`, DEX swaps, LP provision on StandardCurve pools, yield claims via merkle proofs, OT trading. Every economic primitive live from day one.
+  </Card>
+  <Card title="Halt Bond mechanism live" icon="circle-stop">
+    Any holder of 1% of ARL supply can halt the protocol by staking ARL. Team Multisig acts as V1 verdict reviewer. Pause Authority and governance emergency paths also available.
+  </Card>
+  <Card title="DAO Ownership Companies" icon="building-columns">
+    Legal framework operational. Areal protocol itself has its DAO Ownership Company; each onboarded RWA project forms its own entity under the same reference template.
+  </Card>
+</CardGroup>
+
+### V1 — honest limitations
+
+<CardGroup cols={2}>
+  <Card title="Governance is team-approved, not market-driven" icon="triangle-exclamation" color="#e67e22">
+    Futarchy conditional markets are not yet live. Team Multisig is the proposal-executing authority. Decisions are transparent and publicly disclosed, but the market-as-arbiter property is deferred to V2.
+  </Card>
+  <Card title="Agents are scripts, not autonomous" icon="triangle-exclamation" color="#e67e22">
+    Team-operated bots execute well-defined mechanical roles. Parameter tuning and strategy adjustments are human decisions. Autonomous optimization within bounds is a V2 feature.
+  </Card>
+  <Card title="Trust in Team Multisig is load-bearing" icon="triangle-exclamation" color="#e67e22">
+    Compromise or malicious action by the multisig could delay V2 activation and reshape V1 parameters. User funds remain protected by contract invariants — but protocol operation is multisig-dependent.
+  </Card>
+  <Card title="Formal verification is partial" icon="triangle-exclamation" color="#e67e22">
+    V1 ships after external security audit but without full formal verification of critical invariants. Proofs are a V2 deliverable.
+  </Card>
+</CardGroup>
+
+---
+
+## V2 — removing the training wheels
+
+What V2 adds, what it removes:
+
+<CardGroup cols={2}>
+  <Card title="Add — Futarchy conditional markets" icon="scale-balanced" color="#10b981">
+    Pass/fail markets with TWAP resolution replace Team Multisig as the governance authority. Every parameter change and strategic decision becomes a market-priced outcome. ARL holders participate by trading, not voting.
+  </Card>
+  <Card title="Add — StrategyConfig enforcement" icon="sliders" color="#10b981">
+    Per-surface `StrategyConfig` PDAs bind every agent action with on-chain enforced bounds. Parameters update only through resolved futarchy proposals with 24h operational / 7d critical timelocks.
+  </Card>
+  <Card title="Add — Specialized autonomous agents" icon="robot" color="#10b981">
+    Accumulation, Rebalancer, Yield Harvester, and LP Manager agents replace team-operated bots one at a time. Each single-function, least-privileged, governance-rotatable. See [Agent Layer](/agent-economy/agent-layer).
+  </Card>
+  <Card title="Add — Formal verification" icon="calculator" color="#10b981">
+    Critical invariants — fund conservation, kill-switch reachability, timelock enforcement, config monotonicity — move from internal review to mechanical proof by independently-verified toolchains.
+  </Card>
+  <Card title="Remove — Team discretion over strategy" icon="users-slash" color="#e74c3c">
+    Team Multisig retains only Pause Authority (safety backstop). All config and strategy decisions route through community futarchy governance. The "efforts of others" Howey prong weakens materially.
+  </Card>
+  <Card title="Remove — Halt Bond review bottleneck" icon="gavel" color="#e74c3c">
+    Halt Bond verdicts move from Team Multisig to a dedicated futarchy proposal. Economic halt becomes fully permissionless at both the trigger layer (V1 already) and the verdict layer (new in V2).
+  </Card>
+</CardGroup>
+
+---
+
+## Transition phases
+
+The path from V1 to V2 is incremental. Each phase is reversible via governance if it underperforms expected outcomes.
+
+<Steps>
+  <Step title="Phase 0 — Audit & mainnet launch (V1)">
+    Complete external security audits by at least two independent firms. Execute multisig key ceremony. Team Multisig accepts authority. Deploy Monotonic Ladder master pools with bootstrap Nexus LP. Initialize RWT Vault with first approved OT positions. Team-operated bots come online. First onboarded RWA projects launch Ownership Tokens.
+
+    **Exit criteria:** protocol is operationally live, all user flows functional, no critical issues observed for 30+ days.
+  </Step>
+
+  <Step title="Phase 1 — StrategyConfig scaffolding">
+    Deploy `StrategyConfig` PDAs per surface (RWT Vault, Nexus, Treasury). Existing team-operated bots start reading the config as hard constraints — bot behaviour becomes verifiably bounded by published parameters. Team Multisig continues direct parameter updates during this phase. No user-facing change.
+
+    **Exit criteria:** all bot actions validate against StrategyConfig; no anomalies from the new check path; monitoring infrastructure captures all config reads.
+  </Step>
+
+  <Step title="Phase 2 — Futarchy V2 activation">
+    Deploy audited futarchy contract with live conditional markets. All `update_strategy_config` calls require a resolved futarchy proposal — direct multisig parameter updates revert with `UpdateMustOriginateFromProposal`. Team Multisig retains Pause Authority only. This is the biggest single shift in governance posture.
+
+    **Exit criteria:** at least 10 successful proposals resolved through futarchy; pass/fail markets demonstrate sufficient liquidity and price discovery; no governance deadlocks observed.
+  </Step>
+
+  <Step title="Phase 3 — Agent rotation">
+    Team-operated bots retire one function at a time, replaced by specialized autonomous agents. Each replacement is itself a governance proposal with trial period and reversibility. Suggested order: Rebalancer → Yield Harvester → LP Manager → Accumulation (least-stake → highest-stake domain).
+
+    **Exit criteria per agent:** autonomous performance ≥ bot performance on measurable metrics (slippage, capital efficiency, yield capture) over a 90-day trial; no critical incidents traced to the agent; community vote ratifies retention.
+  </Step>
+
+  <Step title="Phase 4 — Formal verification">
+    Critical invariants proven mechanically via Coq, Isabelle, or Solana-specific verification tools. Independent third-party verification of the proofs themselves. Trust shifts from "trust the team" to "trust the proofs". Bug bounty scaled proportionally to verified surface area.
+
+    **Exit criteria:** formal proofs of fund conservation, kill-switch reachability, and timelock enforcement reviewed by a second independent party. Proofs published alongside contract source.
+  </Step>
+</Steps>
+
+Phases 1-4 are **independent** — Phase 1 can ship without Phase 2 ready; any single agent can be replaced without waiting for all four to be autonomous-ready. Progress is gated by quality, not by sequence.
+
+---
+
+## What we don't promise
+
+<CardGroup cols={2}>
+  <Card title="No dates" icon="calendar-xmark" color="#e67e22">
+    Phase progression depends on audit outcomes, governance readiness, and community feedback. We deliberately do not publish target dates — doing so would incentivize rushing safety-critical work. Progress is announced when it ships, not when we hope it will ship.
+  </Card>
+  <Card title="No guaranteed V2" icon="sitemap" color="#e67e22">
+    V2 is the target. If governance decides during transition that V1 is operating well enough, or that specific V2 components should evolve differently, phases can be re-ordered, revised, or deprecated. V2 is a destination, not a contract.
+  </Card>
+  <Card title="No surprise upgrades" icon="bell" color="#e67e22">
+    Every phase transition requires an advance on-chain proposal with the full 7-day critical-tier timelock window. No phase advances without community visibility, published rationale, and exit opportunity for anyone who disagrees.
+  </Card>
+  <Card title="No rollback of economic primitives" icon="lock" color="#e67e22">
+    The economic model — Monotonic Ladder, mint-routing, Yield Distribution, OT structure, DAO Ownership Companies — is stable across V1 and V2. Evolution is in governance and operations, not in the underlying financial mechanics holders rely on.
+  </Card>
+</CardGroup>
+
+---
+
+## State snapshot
+
+<CardGroup cols={2}>
+  <Card title="Is anything live on mainnet?" icon="circle-question">
+    **Not yet.** Design is complete; implementation, external audit, and key ceremonies are in progress.
+  </Card>
+  <Card title="What blocks V1 launch?" icon="list-check">
+    External security audits (≥2 independent firms), at least one RWA project partner with signed DAO Ownership Company, bootstrap Nexus LP capital, multisig key ceremony, and final legal review.
+  </Card>
+  <Card title="What blocks V2 launch?" icon="list-check">
+    V1 operating stably ≥90 days, futarchy V2 contract audited, StrategyConfig PDAs designed and verified, at least one agent passing 90-day trial against its bot equivalent.
+  </Card>
+  <Card title="Can V1 run forever?" icon="infinity">
+    **Technically yes.** V2 is preferred for trust reduction, but V1 is fully functional. If governance decides V1 parameters and operations are sufficient, V2 phases may pause indefinitely. The design is evolutionary, not deterministic.
+  </Card>
+</CardGroup>
+
+---
+
+## Further reading
+
+<CardGroup cols={3}>
+  <Card title="Smart Contracts (V1)" icon="file-code" href="/contracts/native-dex">
+    Complete V1 specifications — all five contracts with instructions, state accounts, and fee architecture
+  </Card>
+  <Card title="Agent Economy (V2)" icon="robot" href="/agent-economy/overview">
+    Detailed V2 design — three-layer separation, StrategyConfig, specialized agents, safety model
+  </Card>
+  <Card title="Governance & Futarchy" icon="scale-balanced" href="/architecture/governance-and-futarchy">
+    V1 vs V2 governance semantics — why market-driven decisions replace multisig execution
+  </Card>
+</CardGroup>

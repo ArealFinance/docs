@@ -1,0 +1,427 @@
+---
+title: Safety & Invariants
+description: On-chain enforcement model, kill switch, circuit breakers, formal verification goals, and incident response playbook
+---
+
+<Warning>
+  **Forward-looking roadmap.** The enforcement model described here is the target architecture. Current contracts enforce a subset of these invariants; the rest are planned work tracked via this page as the authoritative design target. See the [Overview](/agent-economy/overview) for V1/V2 transition detail.
+</Warning>
+
+## Why the Contract Layer Is Non-Negotiable
+
+The Strategy Layer defines *what* should happen. The Agent Layer makes it *happen efficiently*. The Contract Layer is the final backstop that ensures nothing harmful happens, **even if the other two layers are compromised or misaligned**.
+
+Every mutating instruction in the protocol performs the same three checks before executing:
+
+```
+1. Signer validation   → is the caller the agent role allowed to call this?
+2. Config validation   → does the action respect current StrategyConfig bounds?
+3. Invariant check     → would the action violate a hard-coded invariant?
+
+If any check fails: revert with a typed error. No exceptions.
+```
+
+This is enforcement, not advice. A misbehaving agent cannot produce out-of-bounds state. A malicious update to StrategyConfig still cannot bypass the invariants hard-coded at the contract level.
+
+---
+
+## Hard-Coded Invariants
+
+These live in the contract code itself. Changing them requires a program upgrade signed by the Upgrade Authority (Team Multisig during bootstrap; separate from the config and pause authorities). Governance cannot alter them via `StrategyConfig` updates alone.
+
+<CardGroup cols={2}>
+  <Card title="Fund conservation" icon="scale-balanced">
+    `compress_liquidity` cannot debit pool vaults net negative. `grow_liquidity` can only add from Nexus. Rebalances are capital-preserving transformations by construction.
+  </Card>
+  <Card title="NAV floor" icon="shield-halved">
+    `adjust_capital` cannot reduce `total_invested_capital` below `MIN_CAPITAL_FLOOR` (1 USDC lamport). Prevents NAV = 0 with supply > 0, which would brick the vault.
+  </Card>
+  <Card title="Permanent tail immutability" icon="lock">
+    Bins in `[permanent_tail_floor_bin .. left_anchor_bin]` are never debited by any instruction. Attempting to shift or drain them reverts.
+  </Card>
+  <Card title="Mint-path fee exclusivity" icon="route">
+    Fee-skip on master-pool `swap` applies only when the instruction genuinely routes to `mint_rwt`. Bin-walk swaps always pay full fees; mint-routed swaps never pay DEX fees. No hybrid state is reachable.
+  </Card>
+  <Card title="Kill-switch reachability" icon="bolt">
+    Every mutating agent instruction reads `StrategyConfig.kill_switch_active` before executing. There is no bypass path — the check compiles into each instruction.
+  </Card>
+  <Card title="Proposal-sourced updates" icon="file-signature">
+    `update_strategy_config` validates its caller against a resolved futarchy proposal record. Direct multisig calls post-V2 revert with `UpdateMustOriginateFromProposal`.
+  </Card>
+  <Card title="Monotonic config versions" icon="arrow-up-right">
+    `config_version` increases strictly. No downgrade. Agents that read an older version via stale account data will revert on mismatch with the state account they mutate.
+  </Card>
+  <Card title="Timelock enforcement" icon="hourglass-half">
+    `apply_strategy_update` reverts if `now < pending_update_unlock_ts`. Nobody — not governance, not the team — can shorten the unlock window for an already-submitted update.
+  </Card>
+</CardGroup>
+
+---
+
+## The Kill Switch
+
+The kill switch is the protocol's emergency brake. Its semantics are intentionally asymmetric to favour safety over convenience.
+
+### Authority
+
+Three independent paths can activate the kill switch. Each has its own trust, speed, and cost profile — no single actor is load-bearing, and no single path can be disabled without also bypassing the other two.
+
+| Path | Who | Trigger cost | Latency |
+|---|---|---|---|
+| **Halt Bond** | Anyone holding ARL | Stake 1% of ARL circulating supply | Instant (same tx as stake) |
+| **Pause Authority** | Team Multisig | Multi-sig threshold reached | Instant, no bond |
+| **Governance** | Successful futarchy emergency-halt proposal | Proposal + TWAP resolution | ~72h proposal cycle, no bond |
+
+The three authorities are deliberately separate from each other and from the Config and Upgrade authorities. Compromise of one path does not compromise the others.
+
+<Note>
+  **Why three paths rather than one.** Halt Bond is the primary — permissionless, economically aligned, self-funding. Pause Authority is the fallback — unconditional speed in zero-day scenarios where even assembling 1% ARL takes too long. Governance activation is the democratic floor — major disagreements route to on-chain consensus without elite authority or capital requirements. Defeating all three at once requires compromising three independent signer sets plus the ability to prevent any ARL holder from staking — effectively compromising the chain itself.
+</Note>
+
+### Halt Bond — detailed design
+
+Instead of an elected guardian body, the protocol uses a pure **economic model**: anyone can trigger an emergency halt, but must stake real ARL value against the legitimacy of the halt call. Good calls earn a bounty; bad calls forfeit the entire stake to the Treasury.
+
+<CardGroup cols={2}>
+  <Card title="Bond — 1% of ARL circulating supply" icon="coins">
+    Computed at transaction time against on-chain `total_supply - protocol_held_balance`. Locked in a frozen `HaltBondEscrow` PDA for the full review window. Size is material enough to deter spurious halts but achievable for coordinated responses to real threats.
+  </Card>
+  <Card title="Instant on-chain effect" icon="bolt">
+    The `activate_kill_switch_with_bond` instruction performs the stake and the flag-flip atomically. Within one block: bond locked, `kill_switch_active = true`, all agent instructions reverting. No coordination window, no multi-sig waiting.
+  </Card>
+  <Card title="7-day review window" icon="hourglass-half">
+    Reviewer examines evidence and renders a verdict: **Justified** or **Not Justified**. Review verdict must be published on-chain with rationale. V1 reviewer: Team Multisig. V2 reviewer: futarchy proposal "Was halt X justified?".
+  </Card>
+  <Card title="Asymmetric outcomes" icon="arrows-split-up-and-left">
+    **Justified** → bond returned to caller + optional Treasury bounty sized to averted damage (governance-set ceiling 5%). **Not Justified** → entire bond forfeited to Areal Treasury. No partial verdicts; no negotiated returns.
+  </Card>
+</CardGroup>
+
+### Activation flow
+
+<Steps>
+  <Step title="Anomaly detected">
+    Any participant observes something wrong via on-chain monitors, community channels, bug-bounty reports, audit events, or their own analysis.
+  </Step>
+  <Step title="Bond staked, halt engaged">
+    Caller submits `activate_kill_switch_with_bond(rationale_uri)` transferring 1% of ARL circulating supply into the `HaltBondEscrow` PDA. Same tx sets `kill_switch_active = true`. All agent instructions across RWT Vault, Nexus, and Treasury begin reverting with `KillSwitchActive` on next call. User-level operations continue unaffected.
+  </Step>
+  <Step title="Review window (7 days)">
+    Caller publishes detailed rationale (on-chain memo field or off-chain with pinned hash). Reviewer examines evidence — Team Multisig during V1, futarchy during V2. Community may submit supplementary evidence to the on-chain record during this window.
+  </Step>
+  <Step title="Verdict rendered">
+    Within the 7-day window, reviewer publishes verdict on-chain: `HaltVerdictJustified` or `HaltVerdictNotJustified`. Event includes reasoning hash and applicable bounty (if justified). No appeal mechanism — verdict is binding.
+  </Step>
+  <Step title="Bond resolution">
+    **Justified** → `HaltBondEscrow` releases bond back to caller; `BountyDisbursement` event if bounty awarded. **Not Justified** → `HaltBondForfeit` transfers the full bond to Areal Treasury; caller added to `HaltCooldownRegistry` (30-day wallet cooldown).
+  </Step>
+  <Step title="Reactivation">
+    Deactivation of `kill_switch_active` follows the standard 7-day critical-tier timelock from the moment governance submits the reactivation proposal. This runs independently of the bond verdict — even a justified halt with full bounty still takes 7 days to unwind. Safety errs on caution.
+  </Step>
+</Steps>
+
+### Parameters
+
+| Parameter | Default | Governance-tunable? |
+|---|---|---|
+| Bond size | 1% of ARL circulating supply | Yes (critical tier) |
+| Review window | 7 days | Yes (critical tier) |
+| Bounty ceiling | 5% of averted damage | Yes (critical tier) |
+| Wallet cooldown after forfeit | 30 days | Yes (operational tier) |
+| Bond denomination | ARL | No — hard-coded invariant |
+| Verdict authority | Team Multisig (V1) / Futarchy (V2) | Structural — set by V2 deployment |
+
+### Why an economic bond beats an elected council
+
+A prior design considered a **community-elected Safety Council** (7 members, 4-of-7 supermajority). The bond model proved strictly simpler across every dimension that matters:
+
+| Concern | Elected Council | Halt Bond |
+|---|---|---|
+| Trigger authorization | 7 specific people | Anyone with 1% ARL |
+| Election overhead | Annual per seat, eligibility rules | None |
+| Personal disclosures | Required (diversity, affiliations) | Not needed |
+| Coordination required | 4 of 7 agree within 30 min | Solo stake, atomic |
+| Griefing resistance | Reputation stake only | 1% of ARL supply at risk |
+| Compensation model | Monthly stipend from Treasury | None — halter funds own stake |
+| Bad halt outcome | Reputation damage, future removal | Treasury gains 1% of supply |
+| Incentive alignment | Personal accountability | Direct economic skin in the game |
+| V1/V2 transition | Requires building election infrastructure | Works with Team Multisig as V1 reviewer immediately |
+| Self-funding | No — costs Treasury in stipends | **Yes** — bad actors fund Treasury |
+
+The bond model is consistent with the rest of Areal's economic-first design philosophy: replace social coordination with market mechanisms wherever possible. Just as futarchy replaces voting with prediction markets, Halt Bond replaces guardian election with collateralized conviction.
+
+### Why not pure "anyone can halt" without a bond
+
+A free permissionless halt creates a **griefing attack**: gas is trivial for an attacker, while the 7-day reactivation timelock imposes massive asymmetric cost on the protocol. The bond closes this asymmetry — the attacker now pays 1% of ARL supply per spurious halt attempt, and a verdict of unjustified sends that value to the Treasury it was meant to harm.
+
+### Pause Authority backstop
+
+The Pause Authority (Team Multisig) retains independent, no-bond instant-halt capability for scenarios where even the Halt Bond is too slow:
+
+- Zero-day contract exploits observed during active attack
+- External dependency failures (oracle failure, stablecoin issuer default) requiring immediate intervention
+- Coordinated multi-surface anomalies where seconds matter more than process
+
+The Pause Authority does **not** displace the Halt Bond — it supplements it. Governance retains authority to remove or replace the Pause Authority set. Any ARL holder is also expected to activate the Halt Bond independently if they observe something the Pause Authority has missed.
+
+### Compensation
+
+No stipends, no Council, no standing roles to fund. The only compensation flow is the **bounty for justified halts**:
+
+| Event | Source | Amount (governance-set) |
+|---|---|---|
+| Justified halt | Areal Treasury | Sized to averted damage, ceiling 5% |
+| Not-justified halt | (forfeiture to Treasury) | Bond value transferred from caller |
+| Pause Authority halt | n/a | Team Multisig acting in operational role |
+| Governance halt | n/a | No individual compensation |
+
+The mechanism is designed to be **self-funding**. Over a reasonable time horizon, forfeitures from bad-faith halts are expected to materially exceed bounty disbursements for good-faith halts — because false positives are far more common than confirmed exploits.
+
+### What the kill switch stops
+
+When `kill_switch_active = true`, every agent instruction reverts with `KillSwitchActive`:
+
+- `vault_swap` — no OT acquisitions
+- `grow_liquidity` / `compress_liquidity` — no rebalancing
+- `nexus_swap` / `nexus_add_liquidity` / `nexus_remove_liquidity` — no LP changes
+- `claim_yield` when called by Yield Harvester — suspended (users can still claim their own yield directly)
+
+### What remains operational
+
+- User-level reads (NAV queries, balance checks)
+- User-level swaps on DEX (trading never stops — liquidity is user capital, not protocol capital)
+- User `mint_rwt` and user `claim_lp_fees`
+- User yield claims (user's own merkle proofs)
+- Governance proposals (kill switch does not stop governance)
+- `remove_liquidity` for LP holders on StandardCurve pools (exit is always permitted)
+
+Halting agents does not lock users out of the protocol — it pauses *autonomous operations* while governance decides the next step.
+
+### Deactivation
+
+Turning the kill switch off is a **7-day timelocked critical-tier update**. Even if the activation was accidental, reactivation requires the full community exit window. Safety errs toward caution.
+
+<Note>
+  Practical consequence: if a kill switch is triggered in error at 10:00am, agents remain inactive until 10:00am one week later. The protocol degrades gracefully — users can still interact, yield still accrues at the OT level, but no autonomous optimization runs. This is the intended failure mode: operational slowness is acceptable, silent compromise is not.
+</Note>
+
+---
+
+## Circuit Breakers
+
+Beyond the kill switch, the Contract Layer enforces several **per-action circuit breakers** that trip automatically without requiring governance intervention.
+
+### Volume-based
+
+```rust
+// Checked on every vault_swap / nexus_swap / nexus_add_liquidity
+require!(
+    amount_in_usdc <= strategy.max_single_swap_volume_usdc,
+    CircuitBreaker::SingleTxCapExceeded
+);
+
+// Daily counter stored on StrategyConfig, reset at UTC midnight by anyone
+require!(
+    daily_volume_used + amount_in_usdc <= strategy.max_daily_swap_volume_usdc,
+    CircuitBreaker::DailyCapExceeded
+);
+```
+
+### Slippage-based
+
+```rust
+// Computed against oracle / TWAP reference price
+let slippage_bps = compute_slippage(expected_out, actual_out);
+require!(
+    slippage_bps <= strategy.max_slippage_bps,
+    CircuitBreaker::SlippageExceeded
+);
+```
+
+### Concentration-based
+
+```rust
+// Before accepting new OT position
+let projected_alloc = (current_ot_value + new_buy_value) / total_vault_value;
+require!(
+    projected_alloc <= strategy.max_alloc_per_ot_bps,
+    CircuitBreaker::ConcentrationExceeded
+);
+```
+
+### Reserve-based
+
+```rust
+// Before any operation that reduces USDC reserve
+let projected_reserve = (current_usdc - outflow) / total_vault_value;
+require!(
+    projected_reserve >= strategy.min_reserve_usdc_bps,
+    CircuitBreaker::ReserveFloorBreached
+);
+```
+
+### Cooldown-based
+
+```rust
+// Rebalancer — prevents thrashing
+require!(
+    now - pool.last_rebalance_ts >= strategy.rebalance_cooldown_secs,
+    CircuitBreaker::CooldownNotElapsed
+);
+```
+
+Each circuit breaker emits an event when tripped so operators and holders can see the failure reason without inspecting transaction logs.
+
+---
+
+## Formal Verification Goals
+
+Several invariants are targets for mechanical proof (via Coq, Isabelle, or Solana-specific verification tools as they mature):
+
+<CardGroup cols={2}>
+  <Card title="Fund conservation" icon="calculator">
+    **Claim:** For all reachable states and all sequences of `grow_liquidity` / `compress_liquidity` calls, `sum(pool.vault_a_balance + pool.vault_b_balance)` over all master pools is monotonic non-decreasing modulo user-initiated swaps and withdrawals.
+  </Card>
+  <Card title="Kill-switch safety" icon="bolt">
+    **Claim:** While `kill_switch_active == true`, no agent instruction executes to completion. Formally: every mutating agent instruction's invariant includes `!kill_switch_active`.
+  </Card>
+  <Card title="Timelock enforcement" icon="hourglass">
+    **Claim:** `apply_strategy_update` requires `now >= pending_update_unlock_ts`. No code path bypasses this check. Provable by symbolic execution over the instruction handler.
+  </Card>
+  <Card title="Config monotonicity" icon="arrow-up-right">
+    **Claim:** `config_version` is strictly increasing across any sequence of successful updates. No instruction decrements or equals-assigns the version.
+  </Card>
+  <Card title="Permanent tail invariance" icon="lock">
+    **Claim:** `BinArray[i].liquidity_b` for `i ∈ [permanent_tail_floor_bin, left_anchor_bin]` is never decremented across any reachable call sequence except explicit governance-mandated `retire_permanent_tail` instruction (which requires Upgrade Authority).
+  </Card>
+  <Card title="Agent authority isolation" icon="fingerprint">
+    **Claim:** No agent keypair can satisfy the signer check for any instruction outside its published surface. Formally: `signer_check(instruction, signer)` is injective on `(agent_role, instruction)` pairs.
+  </Card>
+</CardGroup>
+
+Verification work is gated behind toolchain maturity and audit budget. Until formal proofs exist, these are **design intents documented for future verification** — not guarantees.
+
+---
+
+## Incident Response Playbook
+
+### Detection
+
+Multiple independent channels surface anomalies:
+
+- **On-chain monitors** — indexers flag circuit breaker trips, unexpected value transfers, unusual agent action frequency
+- **Governance oversight** — ARL holders can submit `IncidentReport` proposals to flag observed problems
+- **Audit events** — every agent action is observable; statistical anomalies (e.g., slippage distribution shift) are mechanically detectable
+- **External bug bounty** — standing program for invariant-breaking disclosures
+
+### Triage (T + 0 to T + 30 minutes)
+
+<Steps>
+  <Step title="Classify severity">
+    - **Sev-1:** fund loss, live exploit, kill-switch bypass attempt → Pause Authority acts immediately
+    - **Sev-2:** circuit breaker trip pattern, agent misbehaviour within bounds → governance review
+    - **Sev-3:** UX issue, non-critical anomaly → normal proposal flow
+  </Step>
+  <Step title="Sev-1: Emergency halt">
+    Pause Authority (Team Multisig) signs `activate_kill_switch` transaction. All agents freeze within the next block. User operations continue.
+  </Step>
+  <Step title="Public disclosure">
+    Status page and social channels updated within 30 minutes of halt. Scope, observed impact, and next steps published.
+  </Step>
+  <Step title="Governance notification">
+    Governance proposal drafted for the response plan — could be rotation, parameter tightening, contract upgrade, or no-op while investigating.
+  </Step>
+</Steps>
+
+### Containment (T + 30 minutes to T + days)
+
+- Compromised keypair: rotate via governance proposal (24h operational timelock); rollback any recoverable state via compensating transactions
+- Exploited instruction: prepare program upgrade; deploy via Upgrade Authority
+- Bad config: submit counter-proposal with instant-tier activation for kill switch, critical-tier for config fix
+- External dependency issue (oracle, stablecoin issuer): halt agents, reroute to fallback, communicate
+
+### Post-mortem
+
+Every Sev-1 and Sev-2 incident produces a public post-mortem within 14 days:
+
+- Timeline with block references
+- Root cause analysis
+- Scope of impact (funds, users, duration)
+- Remediation applied
+- Invariants added or strengthened as a result
+- Whether a new hard-coded invariant is warranted for the next program upgrade
+
+Post-mortems are filed under `/changelog/` as `YYYY-MM-DD-incident-<short-name>.mdx`.
+
+### Compensation
+
+The protocol does not guarantee user compensation for losses arising from exploits. However, the Areal Treasury holds reserves expressly earmarked (via governance) for incident remediation. Governance may propose compensation for affected holders if the Treasury position and incident scope warrant it. This is a discretionary case-by-case decision, not an insurance promise.
+
+---
+
+## Defense in Depth — Summary
+
+Each vertical control class stops a different attack vector:
+
+| Control | Threat addressed | Layer |
+|---|---|---|
+| StrategyConfig bounds | Compromised agent, misaligned agent | Strategy |
+| Signer check per instruction | Stolen agent keypair calling wrong function | Contract |
+| Hard-coded invariants | Malicious governance proposal | Contract |
+| Timelock | Rushed / coerced governance | Contract |
+| Kill switch (instant on) | Active exploit, zero-day | Contract + Pause Authority |
+| Kill switch (7d deactivation) | Social-engineered "all clear" | Contract |
+| Circuit breakers | Runaway agent within bounds | Contract |
+| Audit events | Undetected anomaly | Observability |
+| Agent rotation | Keypair compromise | Strategy + Contract |
+| Pause Authority separation | Multisig compromise | Key management |
+| Upgrade Authority separation | Code vulnerability | Key management |
+| Formal verification | Logic bug | Proof layer |
+| Bug bounty | External discovery | Community |
+| Governance oversight | Systemic drift | Community + Strategy |
+
+No single control is load-bearing. Every critical invariant is enforced at least twice — typically by StrategyConfig check *and* hard-coded invariant *and* circuit breaker.
+
+---
+
+## What This Section Does Not Claim
+
+<CardGroup cols={2}>
+  <Card title="No zero-risk assertion" icon="ban">
+    Defense in depth reduces attack surface and blast radius. It does not eliminate smart-contract risk, oracle risk, or governance-capture risk. See [Risk Disclosure](/security/risk-disclosure).
+  </Card>
+  <Card title="No completed audit" icon="magnifying-glass">
+    Formal verification goals are aspirational. Current contracts have internal review; external audits are a prerequisite for mainnet agent deployment.
+  </Card>
+  <Card title="No compensation promise" icon="file-contract">
+    Treasury reserves may fund remediation at governance discretion. No automatic coverage, no insurance product, no user-facing guarantee.
+  </Card>
+  <Card title="No unbreakable system" icon="triangle-exclamation">
+    Any system involving humans, code, and economic incentives can fail. The design goal is to make failure modes *bounded, observable, and recoverable* — not to prevent failure entirely.
+  </Card>
+</CardGroup>
+
+---
+
+## Summary
+
+<CardGroup cols={3}>
+  <Card title="Three enforcement points" icon="shield-check" color="#a56eff">
+    Signer validation, StrategyConfig bounds, hard-coded invariants — every mutation checks all three
+  </Card>
+  <Card title="Instant-on kill switch" icon="bolt" color="#a56eff">
+    Zero-delay activation by Pause Authority or governance; 7-day timelock on deactivation
+  </Card>
+  <Card title="Circuit breakers" icon="gauge-high" color="#a56eff">
+    Per-tx, per-day, slippage, concentration, reserve, cooldown — automatic trips without governance
+  </Card>
+  <Card title="Formal verification goals" icon="calculator" color="#a56eff">
+    Fund conservation, kill-switch reachability, timelock enforcement, config monotonicity targeted for mechanical proof
+  </Card>
+  <Card title="Public incident response" icon="clipboard-list" color="#a56eff">
+    Severity classification, 30-minute disclosure target, 14-day post-mortem, invariant strengthening loop
+  </Card>
+  <Card title="Defense in depth" icon="layer-group" color="#a56eff">
+    Every critical property enforced by multiple independent mechanisms — no single load-bearing control
+  </Card>
+</CardGroup>

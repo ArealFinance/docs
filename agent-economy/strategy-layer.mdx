@@ -1,0 +1,354 @@
+---
+title: Strategy Layer
+description: Community-governed parameters that bind agent behaviour — StrategyConfig, timelock, and the futarchy proposal lifecycle
+---
+
+<Warning>
+  **Forward-looking roadmap.** This page describes the target design for community-driven strategy configuration under the Agent Economy model. Currently deployed contracts do not yet include `StrategyConfig` as specified here — see the [Overview](/agent-economy/overview) for V1/V2 transition detail.
+</Warning>
+
+## The Role of the Strategy Layer
+
+The Strategy Layer is the only place in the Agent Economy where **discretion** lives — and that discretion belongs to the community, not to any individual or team. It defines the bounds within which agents operate. Agents optimize *how* and *when*. Strategy defines *what* and *how much*.
+
+Every parameter that could introduce value judgement, risk, or asset-selection opinion is pushed up to this layer and governed by futarchy. The agent layer is deliberately starved of policy-level choices.
+
+---
+
+## StrategyConfig — On-Chain Configuration
+
+Each managed surface (RWT Vault, Liquidity Nexus, Areal Treasury) maintains its own `StrategyConfig` PDA. Agents read this config on every action and validate that the action stays within its bounds.
+
+### RWT Vault StrategyConfig — core parameters
+
+```rust
+pub struct RwtVaultStrategyConfig {
+    // — Asset universe —
+    pub allowed_ot_mints: Vec<Pubkey>,            // whitelist of OTs the vault may acquire
+    pub allowed_swap_venues: Vec<Pubkey>,         // DEX pool addresses agents may route through
+
+    // — Allocation bounds —
+    pub max_alloc_per_ot_bps: u16,                // single-OT concentration cap (e.g., 2500 = 25%)
+    pub max_total_ot_exposure_bps: u16,           // aggregate OT vs reserve (e.g., 8000 = 80%)
+    pub min_reserve_usdc_bps: u16,                // liquid USDC floor (e.g., 1000 = 10%)
+
+    // — Execution envelopes —
+    pub max_daily_swap_volume_usdc: u64,          // per-day circuit breaker (denominated in USDC)
+    pub max_single_swap_volume_usdc: u64,         // per-tx cap
+    pub max_slippage_bps: u16,                    // per-trade slippage tolerance
+
+    // — Rebalance triggers —
+    pub rebalance_deviation_bps: u16,             // minimum allocation drift before acting
+    pub rebalance_cooldown_secs: u32,             // minimum gap between consecutive rebalances
+
+    // — Yield distribution —
+    pub yield_split: YieldSplit {
+        book_value_bps: u16,                      // default 7000 → NAV growth
+        arl_treasury_bps: u16,                    // default 1500
+        nexus_bps: u16,                           // default 1500
+    },
+
+    // — Safety —
+    pub kill_switch_active: bool,                 // when true, all mutating agent actions revert
+    pub last_config_update_ts: i64,               // block time of most recent applied update
+    pub config_version: u64,                      // monotonic counter
+    pub timelock_tier: Tier,                      // Operational | Critical — determines next unlock time
+    pub pending_update_unlock_ts: Option<i64>,    // if set, agents see old config until this ts
+    pub bump: u8,
+}
+```
+
+### Nexus StrategyConfig
+
+```rust
+pub struct NexusStrategyConfig {
+    pub master_pool_funding_priority: Vec<Pubkey>,   // ordered list: which master pool fills first
+    pub max_active_zone_width: u16,                  // cap on ACTIVE_ZONE_WIDTH for grow_liquidity
+    pub min_nexus_usdc_reserve_bps: u16,             // never deploy below this floor
+    pub geometric_density_r_bps: u16,                // current r parameter (default 8500 = 0.85)
+    pub permanent_tail_refill_enabled: bool,         // whether governance allows topping up the tail
+    pub kill_switch_active: bool,
+    pub config_version: u64,
+    // ... same metadata fields as above
+}
+```
+
+### Treasury StrategyConfig
+
+```rust
+pub struct TreasuryStrategyConfig {
+    pub allowed_ot_holdings: Vec<Pubkey>,            // OTs the Treasury may accumulate independently of RWT Vault
+    pub max_treasury_ot_exposure_bps: u16,
+    pub runway_months_minimum: u8,                   // reserve USDC sufficient for N months of ops
+    pub allowed_third_party_venues: Vec<Pubkey>,
+    pub kill_switch_active: bool,
+    pub config_version: u64,
+    // ... same metadata fields as above
+}
+```
+
+<Info>
+  Every instruction callable by an agent reads the relevant `StrategyConfig` PDA and fails with a typed error (`StrategyConfigViolation`, `KillSwitchActive`, `TimelockNotElapsed`) if any bound is violated. This is not "the bot checks" — it is "the contract rejects". Agents cannot produce out-of-bounds state even if compromised.
+</Info>
+
+---
+
+## Two-Tier Timelock
+
+Not all parameter changes carry equal risk. Tightening slippage by 10 bps is routine. Adding a new OT to the whitelist is a capital-allocation decision with asymmetric downside. The timelock model reflects that:
+
+<CardGroup cols={2}>
+  <Card title="Operational tier — 24h timelock" icon="gauge-high">
+    Parameters whose change only affects execution behaviour within the already-approved universe. Updates apply 24 hours after the futarchy proposal resolves.
+
+    **Includes:**
+    - `max_slippage_bps`
+    - `rebalance_deviation_bps`
+    - `rebalance_cooldown_secs`
+    - `max_daily_swap_volume_usdc` / `max_single_swap_volume_usdc`
+    - `geometric_density_r_bps`
+    - `max_active_zone_width`
+  </Card>
+  <Card title="Critical tier — 7-day timelock" icon="shield-halved">
+    Parameters whose change expands the universe of permitted actions or reshapes economics. Updates apply 7 days after proposal resolution — time for holders to exit if they disagree.
+
+    **Includes:**
+    - `allowed_ot_mints` (any addition or removal)
+    - `allowed_swap_venues` / `allowed_third_party_venues`
+    - `max_alloc_per_ot_bps`
+    - `max_total_ot_exposure_bps`
+    - `min_reserve_usdc_bps` / `runway_months_minimum`
+    - `yield_split` (any redistribution)
+  </Card>
+</CardGroup>
+
+### Kill switch — instant on, slow off
+
+The `kill_switch_active` field is the only parameter with asymmetric timelock:
+
+<CardGroup cols={2}>
+  <Card title="Activation: instant" icon="bolt">
+    Three independent paths can set `kill_switch_active = true` with zero delay: (1) the **Halt Bond** — anyone stakes 1% of ARL supply as a bond against a halt, (2) the **Pause Authority** (Team Multisig) as operational backstop, or (3) a resolved futarchy emergency-halt proposal. Each path has its own trust and speed tradeoff.
+  </Card>
+  <Card title="Deactivation: 7-day timelock" icon="hourglass-half">
+    Re-enabling agent activity requires a full 7-day timelock even if the activation was triggered in error. Safety errs on the side of caution. Deactivation is a critical-tier governance action — no halter can unilaterally reverse their own halt.
+  </Card>
+</CardGroup>
+
+### Halt Bond — economic halt trigger
+
+Instead of electing a guardian body, the protocol uses a **skin-in-the-game model**. Anyone can trigger an emergency halt, but they must stake real economic value against the legitimacy of the halt call. Bad calls are expensive; good calls are rewarded.
+
+<CardGroup cols={2}>
+  <Card title="Bond size — 1% of ARL supply" icon="coins">
+    Staked in ARL tokens, computed against current circulating supply at the time of submission. High enough to deter spam (substantial capital at risk); low enough that determined holders or coordinating groups can assemble it when needed.
+  </Card>
+  <Card title="Instant halt on stake" icon="bolt">
+    The same transaction that locks the bond flips `kill_switch_active = true`. Protocol halts within one block. No coordination, no multisig, no elections — the economic commitment is all it takes.
+  </Card>
+  <Card title="Review — was the halt justified" icon="scale-balanced">
+    During a 7-day review window, the designated reviewer (V1: Team Multisig / V2: futarchy proposal) evaluates whether the halt was warranted. Evidence published on-chain; judgment is binding.
+  </Card>
+  <Card title="Asymmetric outcomes" icon="arrows-split-up-and-left">
+    **Justified** → bond returned to caller + optional bounty from Treasury scaled to averted damage. **Not justified** → bond forfeited entirely to Areal Treasury. No partial outcomes.
+  </Card>
+</CardGroup>
+
+#### Activation flow
+
+<Steps>
+  <Step title="Detection">
+    Any participant observes an anomaly via on-chain monitors, community reports, bug-bounty submissions, or audit events.
+  </Step>
+  <Step title="Stake the bond">
+    Caller submits `activate_kill_switch_with_bond` instruction, transferring **1% of ARL circulating supply** in ARL tokens into a frozen `HaltBondEscrow` PDA. Same transaction flips `kill_switch_active = true`.
+  </Step>
+  <Step title="Automatic halt">
+    All agent instructions across RWT Vault, Nexus, and Treasury revert with `KillSwitchActive` on next call. User-level operations remain unaffected.
+  </Step>
+  <Step title="Review window opens">
+    7 days. Caller publishes rationale (on-chain memo on stake tx). Reviewer (Team Multisig in V1, futarchy in V2) examines evidence and renders verdict.
+  </Step>
+  <Step title="Verdict: Justified">
+    Bond released back to caller. Optional bounty disbursed from Areal Treasury, sized proportional to averted damage (governance-set, proposed ceiling 5% of averted loss). Caller can propose reactivation through standard 7-day governance flow.
+  </Step>
+  <Step title="Verdict: Not justified">
+    Bond forfeited entirely to Areal Treasury. Caller is added to the per-wallet cooldown list (30 days before same wallet may stake another halt). Reactivation timelock proceeds.
+  </Step>
+</Steps>
+
+#### Parameters
+
+| Parameter | Value | Rationale |
+|---|---|---|
+| Bond size | 1% of ARL circulating supply (measured at tx time) | High friction for spurious halts; achievable for coordinated response to real threats |
+| Review window | 7 days | Matches kill-switch reactivation timelock symmetrically |
+| Bounty ceiling | 5% of averted damage (governance-set) | Meaningful reward without skew toward over-halting |
+| Cooldown after forfeit | 30 days per wallet | Prevents repeat-griefer from cycling stakes |
+| Stake denomination | ARL (not USDC) | Halter's interests aligned with protocol survival |
+
+#### Why an economic bond beats an elected council
+
+A prior design considered a **community-elected Safety Council** (7 members, 4-of-7 supermajority). The bond model is strictly simpler and economically cleaner:
+
+| Concern | Safety Council | Halt Bond |
+|---|---|---|
+| Who can trigger | 7 specific people | Anyone with 1% ARL |
+| Election overhead | Annual per seat | None |
+| Personal disclosures | Required | Not needed |
+| Compensation | Monthly stipend from Treasury | None; halter funded by own stake |
+| Bad halt outcome | Reputation damage, possible removal | Treasury gains 1% of supply |
+| Griefing resistance | Reputation stake | 1% of supply at risk |
+| Alignment with futarchy ethos | Personal accountability | Economic accountability |
+
+The bond model also **self-funds**: unjustified halts grow the Treasury rather than costing it stipends. If the mechanism is well-calibrated, bad actors underwrite protocol growth.
+
+#### Backup authorities
+
+Two parallel paths remain for scenarios where the Halt Bond is too slow or inappropriate:
+
+- **Pause Authority (Team Multisig)** — independent instant halt with no bond required, reserved for zero-day exploits observed during active attack where even assembling 1% ARL takes too long
+- **Governance emergency proposal** — halt via futarchy with no bond, but slower (requires proposal lifecycle to resolve)
+
+Three paths with different speed/cost tradeoffs. Any one can act; none can prevent the others.
+
+---
+
+## Futarchy Proposal Lifecycle
+
+```
+┌──────────────────┐
+│  1. Proposal     │  ARL holder submits StrategyUpdate proposal referencing
+│     submission   │  current StrategyConfig version and requested deltas
+└──────────────────┘
+         │
+         ▼
+┌──────────────────┐
+│  2. Conditional  │  Two markets open: pass-ARL and fail-ARL
+│     markets open │  Both receive equal bootstrap liquidity from Treasury
+└──────────────────┘
+         │
+         ▼
+┌──────────────────┐
+│  3. Trading      │  Participants trade on expected token value under each outcome
+│     period       │  Duration: 72 hours (operational) / 168 hours (critical)
+└──────────────────┘
+         │
+         ▼
+┌──────────────────┐
+│  4. TWAP         │  Time-weighted average prices compared at window close
+│     resolution   │  If pass-TWAP > fail-TWAP + epsilon: proposal passes
+└──────────────────┘
+         │
+         ▼
+┌──────────────────┐
+│  5. Timelock     │  Pending config written on-chain with unlock_ts
+│     window       │  Agents continue reading old config during window
+└──────────────────┘
+         │
+         ▼
+┌──────────────────┐
+│  6. Apply        │  At unlock_ts, anyone can permissionlessly call
+│     (permission- │  apply_strategy_update — new config becomes live
+│      less crank) │  config_version increments; events emitted
+└──────────────────┘
+```
+
+### Worked example — operational update
+
+**Proposal #83:** Tighten `max_slippage_bps` from 100 (1%) to 50 (0.5%) on RWT Vault.
+
+1. ARL holder submits with payload `{surface: RwtVault, param: max_slippage_bps, from: 100, to: 50}`
+2. Pass / fail markets open with 5k ARL bootstrap per side
+3. 72-hour trading window. Pass-TWAP settles at 1.084, fail-TWAP at 1.076 — pass wins
+4. Timelock 24h (operational tier)
+5. After 24h elapse, `apply_strategy_update` crank runs: config_version 18 → 19
+6. Next agent action reads config v19, enforces new 50 bps slippage
+
+### Worked example — critical update
+
+**Proposal #91:** Add new OT `PROJ2K3mint...` to `allowed_ot_mints` on RWT Vault.
+
+1. Submission includes full justification and expected allocation target
+2. Pass / fail markets open with 20k ARL bootstrap per side (larger for critical)
+3. 168-hour trading window. Resolves in favour of pass
+4. Timelock 7 days
+5. During the 7 days:
+   - `pending_update_unlock_ts` visible on-chain
+   - Holders who disagree have a full week to exit via DEX or via `mint_rwt` redemption path (if enabled)
+   - Agents do **not** read the pending update
+6. After 7 days, `apply_strategy_update` makes the whitelist change live
+
+---
+
+## Parameter Coverage Matrix
+
+| Parameter | Surface | Tier | Rationale |
+|---|---|---|---|
+| `allowed_ot_mints` | RWT Vault | **Critical (7d)** | Expands universe of permitted acquisitions |
+| `allowed_swap_venues` | RWT Vault, Nexus, Treasury | **Critical (7d)** | Exposes capital to new counterparty contracts |
+| `max_alloc_per_ot_bps` | RWT Vault | **Critical (7d)** | Concentration limits bound max single-asset loss |
+| `max_total_ot_exposure_bps` | RWT Vault | **Critical (7d)** | Reserve vs deployed capital ratio |
+| `min_reserve_usdc_bps` | RWT Vault | **Critical (7d)** | Liquidity floor |
+| `yield_split` | RWT Vault | **Critical (7d)** | Redistributes economic flows |
+| `max_daily_swap_volume_usdc` | RWT Vault, Nexus | Operational (24h) | Circuit breaker — tightening or loosening |
+| `max_single_swap_volume_usdc` | RWT Vault, Nexus | Operational (24h) | Per-tx cap |
+| `max_slippage_bps` | All | Operational (24h) | Execution-quality parameter |
+| `rebalance_deviation_bps` | Nexus | Operational (24h) | Trigger sensitivity |
+| `rebalance_cooldown_secs` | Nexus | Operational (24h) | Anti-thrash |
+| `geometric_density_r_bps` | Nexus | Operational (24h) | Density shape within existing range |
+| `kill_switch_active` (→ on) | All | **Instant** | Safety cannot wait |
+| `kill_switch_active` (→ off) | All | **Critical (7d)** | Reactivation is consequential |
+
+---
+
+## Why Not One Big Timelock
+
+A uniform long timelock (say, all changes take 7 days) feels safer but breaks operationally: if a slippage parameter is set too loose and agents are bleeding value to MEV, the protocol cannot respond for a week. A uniform short timelock (24h on everything) forfeits the exit-window property for critical changes.
+
+The tiered model preserves both:
+- Operational parameters adjust within a day — protocol stays nimble
+- Critical parameters give dissenting holders a full week to vote with their feet
+- Kill switch is always instant — safety is non-negotiable
+
+This is directly analogous to the **expedited vs normal amendment process** that well-designed DAO governance frameworks (Compound, MakerDAO, Uniswap) have converged on — classified by blast radius, not by uniform policy.
+
+---
+
+## What Cannot Be Changed By Governance
+
+Some invariants are **hard-coded** in the contract layer and cannot be altered even by successful futarchy proposals. Attempting to do so requires a program upgrade signed by the upgrade authority (Team Multisig during bootstrap) — a separate, slower path.
+
+Examples of hard invariants:
+- Fund conservation during `compress_liquidity` (total capital must not decrease)
+- Kill switch cannot be bypassed by any instruction
+- Mint-path fee skip applies only to genuine mint routes
+- Permanent tail bins are never debited
+- RWT NAV can never be reduced below `MIN_CAPITAL_FLOOR` (prevents NAV = 0)
+
+These live in the [Contract Layer](/agent-economy/safety-and-invariants) and represent the floor of holder protection that no governance outcome can erode.
+
+---
+
+## Summary
+
+<CardGroup cols={3}>
+  <Card title="Governance-bound agents" icon="scale-balanced" color="#a56eff">
+    Every agent reads StrategyConfig as hard constraints — cannot exceed bounds even under compromise
+  </Card>
+  <Card title="Two-tier timelock" icon="hourglass-half" color="#a56eff">
+    24h operational / 7d critical — balances nimbleness with holder exit optionality
+  </Card>
+  <Card title="Instant kill switch" icon="bolt" color="#a56eff">
+    Activation has zero delay. Deactivation is 7-day timelocked. Safety asymmetric by design.
+  </Card>
+  <Card title="Per-surface config" icon="layer-group" color="#a56eff">
+    RWT Vault, Nexus, and Treasury each have their own StrategyConfig — independent upgrade paths
+  </Card>
+  <Card title="Audit trail built-in" icon="file-lines" color="#a56eff">
+    Every parameter change carries proposal ID, TWAP evidence, config version, unlock timestamp
+  </Card>
+  <Card title="Hard-coded invariants" icon="lock" color="#a56eff">
+    Fund conservation, kill-switch reachability, and critical safety checks cannot be changed by governance
+  </Card>
+</CardGroup>

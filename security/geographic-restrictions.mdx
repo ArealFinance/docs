@@ -1,0 +1,175 @@
+---
+title: Geographic Restrictions
+description: Restricted jurisdictions, front-end enforcement, Terms of Service geographic covenant, and user compliance responsibility
+---
+
+<Warning>
+  This page describes **access restrictions applied to Areal-operated front-ends and services**. It does not override, substitute for, or interpret applicable law in any jurisdiction. Participants in any jurisdiction must independently determine the legality of their participation and comply with all applicable local laws. See [Disclaimer](/security/disclaimer) for the complete legal framing.
+</Warning>
+
+## Restricted Jurisdictions
+
+Areal-operated front-ends (including but not limited to **areal.finance** and any official mirror) deny access to users located in, citizens of, or residents of the following jurisdictions:
+
+<CardGroup cols={2}>
+  <Card title="Sanctioned jurisdictions" icon="ban" color="#e74c3c">
+    Jurisdictions subject to comprehensive sanctions programs administered by the U.S. Office of Foreign Assets Control (OFAC) or equivalent EU / UK / UN sanctions frameworks.
+
+    Currently includes: Cuba, Iran, North Korea, Syria, the Crimea, Donetsk, and Luhansk regions of Ukraine. Updates track published OFAC and equivalent lists.
+  </Card>
+  <Card title="United States of America" icon="ban" color="#e74c3c">
+    U.S. persons (as defined in Regulation S under the Securities Act of 1933) are restricted from the front-end pending final legal clarity on token classification in the United States.
+
+    This includes U.S. citizens, U.S. residents, U.S. passport holders, entities organized under U.S. law, and entities with a U.S. principal place of business.
+  </Card>
+  <Card title="High-risk additional list" icon="triangle-exclamation" color="#e67e22">
+    Other jurisdictions where applicable law makes participation materially uncertain or where Areal-operated services are not able to offer product. Maintained by governance and updated via proposal.
+
+    Current: Russia, Belarus, Myanmar, and jurisdictions subject to FATF enhanced-diligence classification.
+  </Card>
+  <Card title="Protocol level — unrestricted" icon="globe" color="#a56eff">
+    The underlying smart contracts on Solana mainnet are permissionless and cannot enforce geographic restrictions. Any user able to submit transactions to the network can interact with the contracts directly. Restrictions below apply only to Areal-operated front-ends and services.
+  </Card>
+</CardGroup>
+
+<Note>
+  **The smart contracts are not geofenceable.** Access restrictions are an **edge-layer** enforcement — applied at the front-end and off-chain-service boundary. Sophisticated users can transact directly with the on-chain protocol regardless. Such users bear full responsibility for determining whether their participation is lawful under their applicable law.
+</Note>
+
+---
+
+## How Front-End Enforcement Works
+
+### Access checks applied
+
+1. **IP geolocation.** Request origin is resolved via third-party geo-IP databases at the CDN and application edge. Requests originating from a restricted jurisdiction are denied access.
+2. **Terms of Service attestation.** At first visit and at material Terms-of-Service updates, users affirmatively attest that they are not located in, a citizen of, or a resident of a restricted jurisdiction.
+3. **OFAC screening for known addresses.** Wallet addresses that appear on OFAC's Specially Designated Nationals (SDN) and Blocked Persons List are denied access regardless of geolocation.
+4. **Persistent flag.** An address flagged via any of the above checks is retained in an off-chain registry and continues to be denied access in subsequent sessions.
+
+### What is NOT claimed
+
+- **Not VPN-proof.** Determined users can circumvent IP-based geofencing using VPN, proxy, or Tor. Areal does not attempt to defeat privacy tools — doing so is technically futile and erodes legitimate user privacy. Users who circumvent access restrictions bear the full legal consequence of doing so.
+- **Not proof of non-U.S. status.** Attestation shifts responsibility; it does not verify identity. A false attestation does not immunize the participant from regulatory consequences in their actual jurisdiction.
+- **Not exhaustive.** The restricted list is updated as regulatory developments require. Participants should check this page before each interaction if their jurisdiction is borderline.
+
+---
+
+## Terms of Service Geographic Covenant
+
+The Areal Terms of Service (effective upon first use of any Areal-operated front-end) contain the following covenant, reproduced here in summary form. Refer to the full Terms of Service for binding language.
+
+### Your representations
+
+By using an Areal-operated front-end, you represent and warrant that:
+
+<CardGroup cols={2}>
+  <Card title="Location" icon="location-dot">
+    You are not located in, a citizen of, or a resident of any Restricted Jurisdiction, and you are not accessing the service from a Restricted Jurisdiction.
+  </Card>
+  <Card title="Sanctions" icon="gavel">
+    You are not subject to sanctions administered by OFAC, the European Union, the United Kingdom, the United Nations, or any other applicable sanctions authority.
+  </Card>
+  <Card title="Legal capacity" icon="scale-balanced">
+    You have the legal capacity to enter into the Terms of Service in your jurisdiction of residence, and your participation does not violate any applicable law.
+  </Card>
+  <Card title="Continued compliance" icon="calendar-check">
+    You will update your representations if they cease to be accurate — for example, if you relocate to a Restricted Jurisdiction or become subject to sanctions.
+  </Card>
+</CardGroup>
+
+### Your acknowledgements
+
+<CardGroup cols={2}>
+  <Card title="Self-custody" icon="wallet">
+    Areal-operated services are non-custodial. You retain exclusive control over your wallet and are responsible for its security.
+  </Card>
+  <Card title="No advice" icon="info">
+    Nothing on the service constitutes investment, legal, tax, or other professional advice. All participation is at your own risk.
+  </Card>
+  <Card title="Tax responsibility" icon="file-invoice-dollar">
+    You are responsible for determining and paying any taxes, levies, or duties applicable to your participation in your jurisdiction.
+  </Card>
+  <Card title="No refund on reversal" icon="rotate-left">
+    If you access the service in violation of these terms, you remain responsible for any transactions executed. On-chain transactions are irreversible and Areal cannot recover them.
+  </Card>
+</CardGroup>
+
+---
+
+## Updates to the Restricted List
+
+The Restricted Jurisdictions list is maintained by governance and updated via proposal in the following circumstances:
+
+<Steps>
+  <Step title="Sanctions-driven updates">
+    When OFAC, EU, UK, or UN sanctions lists add or remove a jurisdiction, the Restricted List is updated within 48 hours of the publication of the sanctions change. This is an operational update and does not require a governance proposal — it reflects binding law.
+  </Step>
+  <Step title="Regulatory-clarity updates">
+    When a jurisdiction provides regulatory clarity that permits participation (e.g., a MiCA CASP authorization pathway in the EU, a no-action letter in a specific country), the Restricted List may be updated via governance proposal to reflect the new clarity.
+  </Step>
+  <Step title="Risk-driven updates">
+    When enforcement action, regulatory announcements, or legal advice materially raises the risk profile of a jurisdiction, governance may propose adding it to the Restricted List. These changes require the full critical-tier 7-day timelock to give current participants an exit window.
+  </Step>
+  <Step title="Public notification">
+    Every update to the Restricted List is published as a changelog entry tagged `Compliance` with effective date, reason, and affected jurisdictions.
+  </Step>
+</Steps>
+
+---
+
+## If You Are In a Restricted Jurisdiction
+
+If you are located in a Restricted Jurisdiction:
+
+- **Do not attempt to circumvent the access restrictions.** Use of VPN, proxy, or misrepresentation is a breach of the Terms of Service and may have additional legal consequences under your applicable law.
+- **Contact your local counsel.** If you believe participation is permissible under your local law despite the restriction, consult qualified legal counsel. The Areal front-end enforces our conservative posture; your jurisdiction's actual law may permit different activity directly with the smart contracts.
+- **Monitor the restriction status.** Jurisdictions are added and removed as law evolves. If your jurisdiction is added to the clarity list in the future, you will become eligible for front-end access.
+
+---
+
+## Record-keeping
+
+Areal retains records of:
+
+- IP geolocation decisions (aggregated, not per-user, unless flagged)
+- Wallet addresses flagged via OFAC screening
+- Terms of Service attestation events (timestamps and address hashes)
+- Restricted List version history
+
+These records are retained for the period required by applicable law or policy. They are not shared with third parties except as required by law or as necessary for fraud / compliance investigations.
+
+---
+
+## What This Is Not
+
+<CardGroup cols={2}>
+  <Card title="Not a KYC program" icon="ban">
+    Areal-operated services do not collect personal identity documents. Geofencing and attestation do not require or store KYC data. See [Legal Architecture](/security/legal-architecture) for the KYC/AML framework applied to RWA project operators and fiat on/off ramps.
+  </Card>
+  <Card title="Not a guarantee of lawfulness" icon="ban">
+    Access via an Areal-operated front-end does not imply that participation is lawful in your jurisdiction. You are responsible for determining that, consulting qualified counsel, and bearing the consequences of your own decision.
+  </Card>
+  <Card title="Not protocol-level restriction" icon="ban">
+    The underlying on-chain protocol is permissionless. Front-end restrictions apply only to services Areal operates. This page describes those restrictions; it does not modify the protocol itself.
+  </Card>
+  <Card title="Not retroactive" icon="ban">
+    Changes to the Restricted List apply prospectively. Existing on-chain positions and obligations are not affected by front-end restriction changes — though new front-end interactions will reflect the updated list.
+  </Card>
+</CardGroup>
+
+---
+
+## Related
+
+<CardGroup cols={3}>
+  <Card title="Disclaimer" icon="circle-exclamation" href="/security/disclaimer">
+    Complete legal disclaimer covering all Areal services
+  </Card>
+  <Card title="Legal Architecture" icon="scale-balanced" href="/security/legal-architecture">
+    Entity structure, Howey analysis, jurisdictional considerations
+  </Card>
+  <Card title="Risk Disclosure" icon="triangle-exclamation" href="/security/risk-disclosure">
+    Full risk factor analysis including regulatory risk
+  </Card>
+</CardGroup>

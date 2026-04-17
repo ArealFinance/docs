@@ -1,0 +1,230 @@
+---
+title: Decentralization Roadmap
+description: Measurable framework for progressive decentralization — dimensions, milestones, and quarterly public reporting commitment
+---
+
+<Warning>
+  This document describes a **progressive decentralization framework** and commits Areal to publicly-measurable milestones. It is not a legal opinion and does not guarantee any particular regulatory outcome in any jurisdiction. It is an honest, structured account of where the protocol is, where it is going, and how that transition will be made visible to participants and regulators alike.
+</Warning>
+
+## Why This Matters
+
+The regulatory treatment of a decentralized protocol depends materially on **how decentralized it actually is** — not on how it is described. Under the framework articulated by former SEC Director William Hinman in 2018 ("Hinman speech") and refined in subsequent guidance, a token that begins life as a security-like instrument can mature out of security classification as the network becomes sufficiently decentralized that the value no longer depends on the "efforts of others."
+
+Areal is designed to **start in a posture that acknowledges centralization by necessity** (team, multisig, bootstrap bots) and to **progress through measurable, public milestones** toward a state where no single party's efforts are load-bearing for value accrual.
+
+This page is the public commitment to that progression.
+
+---
+
+## The Five Dimensions
+
+Decentralization is not a single metric. Areal measures progress along five independent dimensions, each with published metrics and target thresholds.
+
+<CardGroup cols={2}>
+  <Card title="1. Governance" icon="scale-balanced">
+    What fraction of protocol decisions happen through futarchy conditional markets vs. Team Multisig execution.
+  </Card>
+  <Card title="2. Operations" icon="robot">
+    What fraction of agent actions are executed by autonomous agents reading `StrategyConfig` vs. team-operated bots with human discretion.
+  </Card>
+  <Card title="3. Token distribution" icon="coins">
+    Share of circulating ARL held by team, investors, insiders vs. community. Gini coefficient of top-N holders. Time-weighted voter participation.
+  </Card>
+  <Card title="4. Infrastructure" icon="server">
+    Diversity of RPC providers, frontend hosts, indexer operators, off-chain service providers. Censorship-resistance of the operational stack.
+  </Card>
+  <Card title="5. Development" icon="code-branch">
+    Distribution of commits, proposals, code reviews across independent contributors. Multi-entity contribution. Non-team development velocity.
+  </Card>
+</CardGroup>
+
+Each dimension is measured quarterly and published on-chain (metrics anchored in a dedicated `DecentralizationMetrics` account when deployed).
+
+---
+
+## Dimension 1 — Governance
+
+**Measured:** fraction of `update_strategy_config` calls (and equivalent parameter changes) that originate from a resolved futarchy proposal vs. direct Team Multisig execution.
+
+| Stage | Criterion | Target |
+|---|---|---|
+| **Launch (V1)** | Team Multisig is the executor; decisions are publicly disclosed with rationale before execution | 0% futarchy-sourced |
+| **Phase 2 start** | Futarchy V2 contract deployed; first operational-tier parameters routed through proposals | ≥ 20% futarchy-sourced |
+| **Phase 2 maturity** | All operational-tier parameters require resolved futarchy proposals | ≥ 70% futarchy-sourced |
+| **Sufficient decentralization target** | All non-emergency parameter changes route through futarchy; Team Multisig retains only Pause Authority | ≥ 95% futarchy-sourced |
+
+**Measurement window:** rolling 90-day count of parameter-changing instructions.
+
+**Public reporting:** quarterly on-chain attestation of the ratio.
+
+---
+
+## Dimension 2 — Operations
+
+**Measured:** fraction of agent actions (`grow_liquidity`, `compress_liquidity`, `vault_swap`, `nexus_swap`, etc.) signed by autonomous-agent keypairs vs. team-operated bot keypairs.
+
+| Stage | Criterion | Target |
+|---|---|---|
+| **Launch (V1)** | All actions signed by team-operated bot keypairs | 0% autonomous |
+| **First agent deployment** | At least one agent role replaced by autonomous agent (suggested first: Rebalancer) | ≥ 25% autonomous |
+| **Mid-transition** | Two of four agent roles autonomous | ≥ 50% autonomous |
+| **Sufficient decentralization target** | All four agent roles autonomous; team-operated bots retired | ≥ 95% autonomous |
+
+**Measurement window:** rolling 90-day count of agent-role instructions, weighted by capital impact.
+
+**Public reporting:** per-agent performance dashboard with slippage, yield capture, and incident metrics.
+
+---
+
+## Dimension 3 — Token Distribution
+
+**Measured:** three sub-metrics for ARL distribution.
+
+<CardGroup cols={2}>
+  <Card title="Team + insider share" icon="user-group">
+    Fraction of circulating ARL held by entities affiliated with the team, founding contributors, or known early investors (based on public disclosure).
+  </Card>
+  <Card title="Holder concentration" icon="chart-pie">
+    Gini coefficient of top-1000 ARL holder balances. Lower = flatter distribution.
+  </Card>
+  <Card title="Voter participation" icon="check-to-slot">
+    Unique voting addresses per proposal, weighted by ARL. Indicator of active governance participation.
+  </Card>
+  <Card title="Vesting progress" icon="calendar">
+    Fraction of allocated-but-locked ARL that has vested and entered circulation.
+  </Card>
+</CardGroup>
+
+| Stage | Team + insider share | Target Gini |
+|---|---|---|
+| **Launch (V1)** | Initial vesting posture — likely high team/insider concentration | Starting point, disclosed |
+| **Year 1** | Public market participation diluting insider share | Decreasing trend |
+| **Year 3** | Meaningful community holder base | Insider share < 40% |
+| **Sufficient decentralization target** | Community-dominant distribution | Insider share < 25%; Gini of top-1000 < 0.6 |
+
+**Measurement window:** monthly snapshot of on-chain balances.
+
+**Public reporting:** quarterly breakdown with addresses and affiliations (for known-identity holders).
+
+---
+
+## Dimension 4 — Infrastructure
+
+**Measured:** diversity of the operational stack outside the on-chain protocol.
+
+| Component | Current state (pre-launch) | Target |
+|---|---|---|
+| RPC providers | 1-2 team-selected | ≥ 5 independent, user-selectable |
+| Frontend hosts | 1 (areal.finance) | ≥ 3 independent mirrors with verifiable build reproducibility |
+| Indexer operators | 1 team-operated | ≥ 3 independent (e.g., Subsquid, team, community) |
+| Off-chain cranks | Permissionless but primarily team-run | ≥ 3 independent crank operators per function |
+| Merkle publisher (YD) | Single team keypair | ≥ 2 independent publishers with redundancy |
+
+**Why this matters:** a fully-decentralized on-chain protocol with a single-provider frontend is still censorship-vulnerable at the edge. Infrastructure diversity closes the edge.
+
+**Public reporting:** quarterly audit of operational stack providers with contact details and uptime stats.
+
+---
+
+## Dimension 5 — Development
+
+**Measured:** distribution of contribution work across independent parties.
+
+<CardGroup cols={2}>
+  <Card title="Commit distribution" icon="code-commit">
+    Fraction of commits by non-team contributors (measured by GitHub identity, cross-referenced with affiliated-entity disclosure).
+  </Card>
+  <Card title="Proposal origination" icon="file-pen">
+    Fraction of governance proposals (parameter changes, agent rotations, rule updates) submitted by non-team addresses.
+  </Card>
+  <Card title="Code review" icon="magnifying-glass-chart">
+    Fraction of merged PRs reviewed by at least one non-team reviewer.
+  </Card>
+  <Card title="Bug bounty participation" icon="bug">
+    Number of unique security researchers submitting reports, regardless of validity.
+  </Card>
+</CardGroup>
+
+| Stage | Commit distribution | Proposal origination |
+|---|---|---|
+| **Launch (V1)** | ~90% team | ~100% team |
+| **Year 1** | ≥ 20% non-team | ≥ 15% non-team |
+| **Year 3** | ≥ 40% non-team | ≥ 40% non-team |
+| **Sufficient decentralization target** | ≥ 60% non-team | ≥ 60% non-team |
+
+**Public reporting:** quarterly contributor distribution and proposal-origination metrics.
+
+---
+
+## Public Reporting Commitment
+
+Areal commits to publishing a **Decentralization Report** every calendar quarter, beginning with the first quarter following mainnet launch. Each report contains:
+
+<Steps>
+  <Step title="All five dimension metrics">
+    Current value, delta since prior quarter, on-chain verification method.
+  </Step>
+  <Step title="Authority changes">
+    Any modification to Team Multisig composition, Pause Authority, Upgrade Authority, or agent keypair assignments during the quarter.
+  </Step>
+  <Step title="Progress toward milestones">
+    Which thresholds (per the tables above) have been crossed; which remain pending; any revisions to the target thresholds (with rationale).
+  </Step>
+  <Step title="Regulatory interactions">
+    Any material engagement with regulators, sandboxes, or legal counsel that affects decentralization posture.
+  </Step>
+  <Step title="Open issues">
+    Known blockers, contested metric definitions, and areas where the community should weigh in.
+  </Step>
+</Steps>
+
+Reports are published as a changelog entry tagged `Compliance` and referenced from this page.
+
+---
+
+## What "Sufficient Decentralization" Means Here
+
+Areal does not claim that the Hinman framework, or any regulatory safe harbor, automatically applies upon crossing these thresholds. No party can unilaterally declare a token non-security — only applicable regulators and courts can.
+
+What Areal **does** commit to:
+
+<CardGroup cols={2}>
+  <Card title="Measurable progress, not claims" icon="ruler-combined">
+    Every dimension has public metrics with on-chain verifiability. Progress is demonstrable, not asserted.
+  </Card>
+  <Card title="Documented transition" icon="file-lines">
+    Quarterly reports create a public record of decentralization that regulators, legal counsel, and participants can reference.
+  </Card>
+  <Card title="Non-reversibility commitment" icon="arrow-up-right">
+    Once a threshold is crossed, moving backwards requires a critical-tier governance proposal with 7-day timelock — making recentralization visible and contestable.
+  </Card>
+  <Card title="Engagement over avoidance" icon="handshake">
+    Areal engages with regulators where engagement is productive (sandboxes, safe harbor programs, public comment processes) rather than treating decentralization as a shield against dialogue.
+  </Card>
+</CardGroup>
+
+---
+
+## What This Does Not Claim
+
+- **No jurisdictional outcome is guaranteed.** Token classification remains jurisdiction-specific and subject to regulatory action. This framework does not pre-empt any regulator's authority.
+- **No safe harbor is assumed.** Hinman's 2018 remarks were personal views, not binding SEC guidance. Similar frameworks in other jurisdictions are similarly non-binding.
+- **No automatic reclassification.** Even upon meeting all thresholds, tokens remain whatever they are under applicable law until explicitly ruled otherwise.
+- **No substitute for compliance.** Participants in restricted jurisdictions must still comply with local law regardless of protocol decentralization status — see [Geographic Restrictions](/security/geographic-restrictions).
+
+---
+
+## Related
+
+<CardGroup cols={3}>
+  <Card title="Legal Architecture" icon="scale-balanced" href="/security/legal-architecture">
+    Full Howey-test analysis, entity structure, jurisdictional considerations
+  </Card>
+  <Card title="Risk Disclosure" icon="triangle-exclamation" href="/security/risk-disclosure">
+    Comprehensive risk factors including regulatory risk
+  </Card>
+  <Card title="Roadmap (V1/V2)" icon="map" href="/areal/roadmap">
+    Protocol-level transition phases that drive the operational decentralization metrics
+  </Card>
+</CardGroup>
