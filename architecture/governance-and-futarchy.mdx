@@ -11,6 +11,10 @@ Instead of traditional DAO voting — where participants choose options based on
   Futarchy is an integral part of Areal's architecture. Every [DAO Ownership Company](/economics/ownership-tokens) uses futarchy as its primary decision-making mechanism — from revenue distribution to asset acquisition to treasury management.
 </Info>
 
+<Warning>
+  **V1 vs V2 — current state of governance.** The mechanics described below — conditional markets, TWAP finalization, and market-driven proposal resolution — describe the **target (V2) design**. The **currently deployed (V1) implementation** uses authority-based approval: proposals are created and approved by each DAO's designated authority (Team Multisig during bootstrap). The transition from V1 to market-driven futarchy is a planned upgrade and will itself be governed by the community. Until V2 ships, all references to "markets deciding" should be read as the model the protocol is building toward, not the live operational state.
+</Warning>
+
 ---
 
 ## The Core Idea
