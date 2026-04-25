@@ -324,10 +324,12 @@ On claim:
 
     **Merkle leaf format:** `sha256(claimant_pubkey_bytes || cumulative_amount_le_bytes)`
 
-    Where `cumulative_amount` = holder's proportional share of `total_funded`:
+    Where `cumulative_amount` is computed off-chain via **per-deposit snapshot aggregation** (see [Merkle Tree Construction](#merkle-tree-construction-off-chain)):
     ```
-    cumulative_amount = total_funded * holder_ot_balance / total_ot_supply
+    cumulative_amount[h] = Σ over deposits i:
+      deposit_amount_i × balance[h, snapshot_i] / total_eligible[snapshot_i]
     ```
+    Holders absent from snapshot_i contribute 0 for deposit_i. Invariant: `Σ cumulative_amount[h] == total_funded`.
 
     **Effect:** Increments `epoch`, stores new root. Emits `RootPublished`.
 
@@ -701,17 +703,51 @@ Per (distributor, claimant) tracking. Created on first claim via `init_if_needed
 
 ### Merkle Tree Construction (Off-chain)
 
-The merkle tree is built off-chain by the publish authority server every 10 minutes:
+The merkle tree is built off-chain by the publish authority server. The algorithm uses **per-deposit snapshots** to ensure fair yield distribution — each deposit is allocated only to holders who held OT at the time of that deposit. This prevents late buyers from capturing historical yield.
 
-1. Scan all token accounts for the OT mint (`getParsedProgramAccounts`). This includes regular wallets AND on-chain PDAs that hold OT: **RWT Vault PDA** (holds OT as portfolio backing), **DEX Pool PDAs** (pool vaults hold OT with pool PDA as authority), and **OtTreasury PDA** (may hold OT from governance).
-2. Filter: only holders with ≥ $100 total protocol holdings
-3. Calculate cumulative_amount per holder: `total_funded * holder_balance / total_eligible_supply`
-4. Non-eligible share → **ARL Treasury** wallet as leaf (protocol revenue — Areal Finance earns yield from holders below $100 threshold)
-5. Build tree: leaf = `sha256(address_bytes || cumulative_amount_le_bytes)`
-6. Publish root on-chain via `publish_root`
+<Warning>
+  **Do NOT use naive current-balance snapshot.** A formula like `cumulative_amount = total_funded * holder_balance / total_eligible_supply` rewards anyone holding OT at publish time with a share of ALL historical deposits, including deposits that arrived before they acquired OT. This creates a front-running vector around announced distributions.
+</Warning>
 
-**Recommended frequency:** Every 10 minutes. Cost: ~$2.60/month per OT project. Off-chain compute: ~300ms per OT (10K holders). Infrastructure: VPS ($10/month) + free RPC tier.
+#### Per-deposit snapshot algorithm
+
+**On each fund event** (emitted by `fund_distributor` or `convert_to_rwt`):
+
+1. Bot listens for `DistributorFunded` / `StreamConverted` events on-chain.
+2. At the slot of the fund event, bot snapshots all OT holder balances via `getProgramAccounts` (requires archival RPC — e.g. Helius/Triton — since free-tier public RPC does not retain old program accounts).
+3. Include in snapshot: regular wallets, **RWT Vault PDA** (holds OT as portfolio backing), **DEX Pool PDAs** (pool vaults hold OT with pool PDA as authority), **OtTreasury PDA** (may hold OT from governance).
+4. Filter per snapshot: only holders with ≥ $100 total protocol holdings **at that snapshot's slot**.
+5. Non-eligible share (<$100) for that snapshot is allocated to **ARL OtTreasury PDA** leaf — protocol revenue.
+6. Persist snapshot: `{distributor, deposit_epoch, slot, balances: {holder → balance}, total_eligible}`.
+
+**On each publish_root** (every 10 minutes):
+
+1. For each holder that appeared in any snapshot, compute:
+   ```
+   cumulative_amount[h] = Σ over deposits i: deposit_amount_i × balance[h, snapshot_i] / total_eligible[snapshot_i]
+   ```
+   Holders absent from snapshot_i contribute 0 for deposit_i.
+2. Verify invariant: `Σ cumulative_amount[h] == total_funded` (integer rounding remainder ≤ N_deposits → added to ARL OtTreasury leaf).
+3. Build merkle tree: leaf = `sha256(address_bytes || cumulative_amount_le_bytes)`, canonical ordering (lower hash first).
+4. Publish root on-chain via `publish_root` with `max_total_claim = total_funded`.
 
 <Note>
-  The contract only verifies proofs — it does not scan holders or compute weights. All tree construction is off-chain.
+  The on-chain invariant `max_total_claim == total_funded` and `total_claimed ≤ max_total_claim` holds regardless of how cumulative_amount is computed off-chain. The contract verifies only the proof, not how the cumulative was derived. Switching algorithms (e.g. naive → per-deposit → TWAB) is an off-chain concern — no contract redeploy needed.
+</Note>
+
+#### Publisher infrastructure
+
+- **Publisher key:** stored in HSM or managed KMS (AWS KMS / Google Cloud KMS / hardware wallet). Bot signs via KMS API; private key is never loaded to disk or memory. On-disk keypair files are **not acceptable** for mainnet.
+- **Archival RPC:** required to snapshot balances at historical slots. Cost: ~$50/month per OT project (Helius/Triton tier).
+- **Snapshot storage:** ~40 MB per snapshot × 12 deposits/year ≈ 500 MB/year per distributor. SQLite / RocksDB / JSONL acceptable.
+- **Independent verifiers** (strongly recommended): 2+ separate services (team-run and/or community-run) independently compute the root and post its hash to Discord/Telegram/on-chain log. Mismatch → alert → rotation of `publish_authority` via `update_publish_authority`.
+
+#### Operational parameters
+
+- **Publish frequency:** every 10 minutes. Cost: ~$2.60/month per OT project (mainnet tx fees).
+- **Compute:** 1M holders × N deposits per publish cycle. ~1 sec CPU for 1M × 12 deposits on commodity hardware.
+- **Scale:** linear in holders and deposits. Up to 100 deposits/year per distributor without redesign.
+
+<Note>
+  The contract only verifies proofs — it does not scan holders or compute weights. All tree construction and snapshot management happens off-chain.
 </Note>
