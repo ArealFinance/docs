@@ -382,6 +382,62 @@ On claim:
   </Accordion>
 </AccordionGroup>
 
+### Liquidity Routing (Layer 9)
+
+The Layer 9 RWT-into-Nexus path runs through a contract-owned LiquidityHolding PDA that stages RWT received from `claim_yield` (15% liquidity slice) before atomically draining it into the DEX `LiquidityNexus` ATA. Five ix in this surface — three are CPI targets / lifecycle helpers, two are the core flow.
+
+| Instruction | Caller | Purpose |
+|---|---|---|
+| `distribute_revenue` | OT contract (CPI) | Receives 70% USDC from OT into the Accumulator USDC ATA. (Existing — re-listed here for the Layer 9 picture.) |
+| `convert_to_rwt` | Crank (permissionless) | Swaps USDC → RWT through DEX up to NAV, mints remainder via RWT Engine, splits into reward vault + LiquidityHolding RWT ATA + ARL Treasury — see ix accordion above. |
+| `claim_yield` | RWT Engine (CPI) / Crank | RWT Engine vault PDA claims its share via the standard `claim` flow. The 15% liquidity slice lands in `liquidity_holding_rwt_ata`. |
+| `withdraw_liquidity_holding` | Authority (Team Multisig) | **Layer 9 atomic drain.** Transfers RWT from `liquidity_holding_rwt_ata` to the Nexus RWT ATA + CPIs into DEX `nexus_record_deposit` to update the principal floor, all in one TX. |
+| `claim_yd_for_treasury` | Crank (CPI from OT) | OT Treasury PDA claims its share of any distributor (cross-project yield); receives RWT directly into the OT Treasury RWT ATA. |
+
+<AccordionGroup>
+<Accordion title="withdraw_liquidity_holding">
+  Atomic drain from LiquidityHolding RWT ATA into the DEX Nexus RWT ATA, with principal-floor update via CPI to `native_dex::nexus_record_deposit`. Authority-gated.
+
+  | Parameter | Type | Description |
+  |---|---|---|
+  | `amount` | `u64` | RWT to drain (must be ≤ holding balance) |
+
+  **Caller:** Authority (Team Multisig)
+
+  **Accounts (9):**
+  - `authority` (signer) — must match `config.authority`
+  - `config` — D18 authority + pause gate
+  - `liquidity_holding` (mut) — increments `total_drained`
+  - `liquidity_holding_rwt_ata` (mut) — source ATA, owner = LiquidityHolding PDA
+  - `nexus_token_ata` (mut) — destination ATA on DEX side, owner = LiquidityNexus PDA
+  - `liquidity_nexus` (mut) — DEX Nexus PDA, principal floor updated via CPI
+  - `dex_program` — DEX program account, validated `executable()` (R-52)
+  - `token_program`
+  - `system_program`
+
+  **Validation:**
+  - `amount > 0`
+  - `amount ≤ liquidity_holding_rwt_ata.balance`
+  - `nexus_token_ata.mint == RWT_MINT` (R-51 pre-mainnet, defence-in-depth)
+  - `nexus_token_ata.owner == liquidity_nexus PDA`
+  - `dex_program.address() == NEXUS_HOSTING_PROGRAM_ID`
+
+  **Logic:**
+  1. SPL Transfer `amount` from `liquidity_holding_rwt_ata` → `nexus_token_ata` (LiquidityHolding PDA signs).
+  2. CPI to `native_dex::nexus_record_deposit(amount, token_kind=1 RWT)` (LiquidityHolding PDA signs).
+  3. Increment `liquidity_holding.total_drained` by `amount`.
+  4. Emit `LiquidityHoldingWithdrawn { amount, total_drained, timestamp }`.
+
+  <Note>
+    **Atomic guarantee.** Either both legs succeed (RWT moved AND principal floor updated) or both revert. This eliminates the Layer 8-era race where the principal floor could lag the RWT delivery by one TX.
+  </Note>
+
+  <Warning>
+    **Layer 10 gate (R20).** This ix uses `RWT_MINT` as a pinned constant. Until the production RWT_MINT pin migration lands (R20), `withdraw_liquidity_holding` is gated behind opt-in env (`YIELD_CLAIM_ENABLE_LH_DRAIN=true` + `SEND_TX=true`) and dry-runs with `decision = SEND (deferred)` instead of submitting.
+  </Warning>
+</Accordion>
+</AccordionGroup>
+
 ### Configuration & Authority
 
 <AccordionGroup>
@@ -533,6 +589,25 @@ Per (distributor, claimant) tracking. Created on first claim via `init_if_needed
 
 **PDA Seed:** `["claim_status", distributor, claimant]`
 
+### LiquidityHolding
+
+Layer 9 — singleton PDA that holds RWT routed for liquidity (Nexus) before it is drained into the DEX `LiquidityNexus` ATA. Receives RWT from `RWT::claim_yield` (15% liquidity slice), then `withdraw_liquidity_holding` atomically moves it into Nexus and updates the principal floor via CPI to DEX `nexus_record_deposit`.
+
+| Field | Type | Description |
+|---|---|---|
+| `authority` | `Pubkey` | Bot wallet authorised to trigger drains |
+| `total_received` | `u64` | Lifetime RWT received from `claim_yield` (running counter) |
+| `total_drained` | `u64` | Lifetime RWT drained into Nexus |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["liquidity_holding"]`
+
+**Owned ATA:** the LiquidityHolding PDA owns a single RWT ATA (`liquidity_holding_rwt_ata`) which is the per-epoch staging account.
+
+<Note>
+  This account exists to make the RWT-into-Nexus path **atomic** with principal-floor accounting. Without it, RWT had to first land in a regular crank wallet, then a separate TX called DEX `nexus_deposit`. With LiquidityHolding, the entire flow is a single ix (`withdraw_liquidity_holding`) that combines the SPL transfer leg + the principal-floor update via cross-program invocation.
+</Note>
+
 ## PDA Seeds
 
 | Account | Seeds | Description |
@@ -541,6 +616,7 @@ Per (distributor, claimant) tracking. Created on first claim via `init_if_needed
 | MerkleDistributor | `"merkle_dist"`, `ot_mint` | Per-OT perpetual distributor |
 | Accumulator | `"accumulator"`, `ot_mint` | Per-OT USDC receiver (contract-owned) |
 | ClaimStatus | `"claim_status"`, `distributor`, `claimant` | Per-holder claim tracking |
+| LiquidityHolding | `"liquidity_holding"` | Layer 9 singleton, RWT staging for Nexus drain |
 
 ## Constants
 
@@ -570,6 +646,7 @@ Per (distributor, claimant) tracking. Created on first claim via `init_if_needed
 | `AuthorityTransferProposed` | current_authority, pending_authority, timestamp | Transfer proposed |
 | `AuthorityTransferAccepted` | old_authority, new_authority, timestamp | Transfer accepted |
 | `DistributorClosed` | ot_mint, unclaimed_swept, timestamp | Distributor retired |
+| `LiquidityHoldingWithdrawn` | amount, total_drained, timestamp | Layer 9 — RWT drained from LiquidityHolding into DEX Nexus ATA via `withdraw_liquidity_holding` |
 
 ## Error Codes
 

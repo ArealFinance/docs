@@ -259,7 +259,7 @@ Result is in USDC lamports per RWT (6 decimals). Example: capital=$100, supply=1
     | `book_value_bps` | `u16` | NAV growth % |
     | `liquidity_bps` | `u16` | Nexus % |
     | `protocol_revenue_bps` | `u16` | ARL Treasury % |
-    | `liquidity_destination` | `Pubkey` | Crank RWT ATA (crank routes to Nexus via `nexus_deposit`) |
+    | `liquidity_destination` | `Pubkey` | LiquidityHolding PDA RWT ATA (YD program). Layer 9 atomic drain via `withdraw_liquidity_holding` |
     | `protocol_revenue_destination` | `Pubkey` | ARL Treasury RWT ATA |
 
     **Caller:** Authority (Team Multisig)
@@ -398,7 +398,7 @@ Two-step governance authority handoff. Same propose+accept pattern as OT contrac
     4. If claimed == 0, return (nothing to distribute)
     5. Calculate splits (in RWT tokens):
        - `book_value_share = claimed * book_value_bps / 10,000` (stays in vault)
-       - `liquidity_share = claimed * liquidity_bps / 10,000` (→ liquidity_dest, then routed to Nexus via `nexus_deposit`)
+       - `liquidity_share = claimed * liquidity_bps / 10,000` (→ liquidity_dest = YD `LiquidityHolding` PDA RWT ATA. Layer 9 atomic drain: `withdraw_liquidity_holding` → DEX `nexus_record_deposit`)
        - `protocol_revenue_share = claimed - book_value_share - liquidity_share` (→ ARL Treasury, calculated as **remainder** — not from `protocol_revenue_bps` — to prevent dust loss from integer division. The stored `protocol_revenue_bps` is used only for validation in `update_distribution_config` and for display.)
     6. Transfer `liquidity_share` RWT → liquidity_dest (vault PDA signs)
     7. Transfer `protocol_revenue_share` RWT → protocol_revenue_dest (vault PDA signs)
@@ -457,7 +457,7 @@ Main vault state. Is mint authority for RWT SPL Mint. Signs CPI swaps and YD cla
 | `manager` | `Pubkey` | Manager wallet (can execute vault_swap) |
 | `pause_authority` | `Pubkey` | Emergency pause signer (Team Multisig, immutable) |
 | `mint_paused` | `bool` | Minting paused flag |
-| `areal_fee_destination` | `Pubkey` | Where 0.5% mint fee goes (static, immutable) |
+| `areal_fee_destination` | `Pubkey` | Where 0.5% mint fee goes (static, immutable). **Dual-role alias:** `convert_to_rwt` callers see this same on-chain account under the name `dao_fee_account` — both names refer to the same Pubkey on `RwtVault`. The on-chain handler validates `dao_fee_account.address == vault.areal_fee_destination` (`mint_rwt.rs:65`). Surfaced as `getRwtDaoFeeAccount(vault)` in the dashboard reader for naming clarity. |
 | `bump` | `u8` | PDA bump seed |
 
 **PDA Seed:** `["rwt_vault"]`
@@ -475,7 +475,7 @@ Configures how claimed RWT yield is split.
 | `book_value_bps` | `u16` | % that stays in vault for NAV growth (default: 7,000 = 70%) |
 | `liquidity_bps` | `u16` | % sent to Liquidity Nexus (default: 1,500 = 15%) |
 | `protocol_revenue_bps` | `u16` | % sent to ARL Treasury (default: 1,500 = 15%) |
-| `liquidity_destination` | `Pubkey` | Crank RWT ATA (crank routes to Nexus via `nexus_deposit` for principal tracking) |
+| `liquidity_destination` | `Pubkey` | LiquidityHolding PDA RWT ATA (YD program). Layer 9 atomic drain via `withdraw_liquidity_holding` updates Nexus principal floor |
 | `protocol_revenue_destination` | `Pubkey` | ARL Treasury RWT ATA address |
 | `bump` | `u8` | PDA bump seed |
 
@@ -612,7 +612,7 @@ Configures how claimed RWT yield is split.
 | User USDC | Areal Fee (0.5%) | mint_rwt (dao_fee) | User |
 | Vault PDA | User RWT ATA | mint_rwt (mints RWT) | User |
 | YD Stream | Vault RWT Claim ATA | claim_yield (CPI claim) | Crank |
-| Vault RWT | Crank RWT ATA (15%) → Nexus via `nexus_deposit` | claim_yield + nexus_deposit | Crank |
+| Vault RWT | LiquidityHolding RWT ATA (15%) → Nexus via `withdraw_liquidity_holding` (atomic, single-TX) | claim_yield → withdraw_liquidity_holding | Crank → Authority |
 | Vault RWT | ARL Treasury ATA (15%) | claim_yield | Crank |
 | Vault any token | Vault any token | vault_swap (CPI DEX) | Manager |
 | Authority | Vault state | admin_mint_rwt, adjust_capital | Team Multisig |

@@ -287,6 +287,9 @@ Claims RWT yield from YD merkle streams on behalf of three types of on-chain PDA
 | `CLAIM_INTERVAL_SECS` | `1800` (30 min) | How often to attempt claims |
 | `PROOF_SOURCE` | — | Merkle Publisher's proof storage (DB or API) |
 | `OT_RWT_POOLS` | — | List of OT/RWT pool addresses to compound |
+| `SEND_TX` | `false` | Dry-run flag. `true` = live submit; `false` = compute + log decisions only. Flip when staging is verified. |
+| `YIELD_CLAIM_ENABLE_LH_DRAIN` | `false` | **Layer 9 opt-in.** Enable LiquidityHolding → Nexus drain via `withdraw_liquidity_holding`. Gated on R20 (RWT_MINT pin migration); default off. When opted in + `SEND_TX=true`, bot logs `decision = SEND (deferred)` and skips with `reason: 'deferred'` until R20 lands. |
+| `YIELD_CLAIM_ENABLE_NEXUS_DEPOSIT` | `false` | **Layer 9 opt-in.** Enable USDC `nexus_deposit` after distribute_revenue. Gated on nexus-manager builder publication; default off. Same dry-run pattern as LH-drain. |
 
 ### On-Chain Interaction
 
@@ -296,7 +299,8 @@ Claims RWT yield from YD merkle streams on behalf of three types of on-chain PDA
 | Claim for vault | `rwt_engine::claim_yield` | `crank` (signer, mut), `rwt_vault` (mut), `dist_config`, RWT ATAs, YD CPI accounts |
 | Compound for pool | `native_dex::compound_yield` | `crank` (signer, mut), `pool_state` (mut), `target_vault` (mut), YD CPI accounts |
 | Claim for treasury | `ownership_token::claim_yd_for_treasury` | `crank` (signer, mut), `ot_treasury`, `treasury_rwt_ata`, YD CPI accounts |
-| Route to Nexus | `native_dex::nexus_deposit` | `crank` (signer), `nexus` (mut), token accounts |
+| Drain to Nexus (Layer 9) | `yield_distribution::withdraw_liquidity_holding` | `authority` (signer), `liquidity_holding` (mut), holding RWT ATA, Nexus RWT ATA, `liquidity_nexus` (mut), `dex_program`, `token_program`, `system_program`. Single-TX atomic drain + principal-floor update via CPI to `nexus_record_deposit`. |
+| Route USDC to Nexus | `native_dex::nexus_deposit` | `crank` (signer), `nexus` (mut), token accounts. V1 USDC lane; future R-58 polish replaces with a holding PDA pattern. |
 
 ### Permissions
 
@@ -317,7 +321,9 @@ Manages the Liquidity Nexus PDA's positions in DEX pools. The Nexus holds protoc
 
 <Steps>
   <Step title="Deposit Capital">
-    After OT `distribute_revenue` sends 10% USDC to crank, or after RWT `claim_yield` sends 15% RWT to crank — crank calls `native_dex::nexus_deposit` to route tokens into Nexus with principal tracking. This is the only way capital enters Nexus.
+    Two lanes route capital into Nexus with principal tracking:
+    - **USDC lane.** OT `distribute_revenue` sends 10% USDC to a crank wallet. Crank calls `native_dex::nexus_deposit` (V1; future R-58 polish wires this through a holding PDA for parity with the RWT lane).
+    - **RWT lane (Layer 9).** RWT `claim_yield` sends the 15% liquidity slice into the YD `LiquidityHolding` PDA's RWT ATA. Authority then calls `yield_distribution::withdraw_liquidity_holding`, which atomically transfers RWT from LiquidityHolding into the Nexus RWT ATA AND CPIs into DEX `nexus_record_deposit` to update the principal floor — single TX.
   </Step>
   <Step title="Monitor Nexus Balance">
     Read Liquidity Nexus RWT and USDC balances. Check for undeployed capital.
@@ -364,6 +370,21 @@ Manages the Liquidity Nexus PDA's positions in DEX pools. The Nexus holds protoc
 <Warning>
   **Manager trust:** Nexus Manager has discretion over ~25% of protocol capital flow (10% OT revenue + 15% RWT yield). Monitor positions and P&L. In V2, this could become an AI agent with automated strategy.
 </Warning>
+
+### Layer 9 hardening (D22 + R29-R31)
+
+The Nexus Manager bot inherits all four `@areal/bots-shared` primitives shipped in Layer 9:
+
+- **Multi-RPC fallback (R29).** Reads / submits go through `MultiRpcClient.withFallback`; consensus reads (`consensusRead`) are required for security-critical state (Nexus principal floor, pool reserve depth before a swap).
+- **Single-instance enforcement (R30).** PID-file lock via `SingleInstanceLock` prevents two manager instances from racing on the same RPC + same managed-pool list.
+- **WS reconcile after disconnect (R31).** `reconcileEvents` walks program signatures since the last-seen slot on reconnect to backfill missed `NexusDeposited` / `NexusManagerUpdated` events.
+- **SOL pre-flight (R-60).** `assertCrankBalance` checked before the first submit each cycle; if the manager wallet is dry, the cycle returns `{ kind: 'skip', reason: 'low_sol' }` rather than failing inside `sendAndConfirmTransaction`.
+
+**Kill-switch authority (D22).** When the Nexus Manager is suspected compromised, Authority (Team Multisig) calls `update_nexus_manager(new_manager: [0u8; 32])`. The handler accepts the all-zero pubkey as a valid value, but the four nexus-manager-only ix (`nexus_swap`, `nexus_add_liquidity`, `nexus_remove_liquidity`) all check `signer != [0u8; 32]` and revert with `NexusManagerDisabled`. Nexus operations stay paused until Authority calls `update_nexus_manager` again with a real pubkey.
+
+**Decision engine.** `bots/nexus-manager/src/decision-engine.ts` ranks managed pools by drift from a target distribution (default: equal weight across `NEXUS_MANAGED_POOLS`) and emits one of three decision kinds per cycle: `swap`, `add_liquidity`, `remove_liquidity`, or `skip` with a structured reason. Decision logs are append-only JSONL on disk (`bots/nexus-manager/data/decisions-*.log`) and reflect the resolver's view at evaluation time.
+
+**SEND_TX flag.** The bot defaults to `SEND_TX=false` (dry-run mode) — decisions are computed and logged but no TX is submitted. Operators flip `SEND_TX=true` in the `.env` for the production deployment. The dry-run mode is the canonical staging-test before live submit.
 
 ---
 
@@ -412,7 +433,7 @@ All six bots run on a single VPS with shared configuration:
 | Revenue Crank | Shared crank wallet | Permissionless (no registration) |
 | Convert & Fund | Shared crank wallet | Permissionless (no registration) |
 | Yield Claim | Shared crank wallet | Permissionless (no registration) |
-| Nexus Manager | Dedicated keypair | `dex_config.nexus_manager` |
+| Nexus Manager | Dedicated keypair | `LiquidityNexus.manager` (Layer 9 — relocated from `dex_config.nexus_manager`) |
 
 Three permissionless bots can share one wallet. Three privileged bots need dedicated keypairs.
 
@@ -466,7 +487,7 @@ Instead of purely interval-based polling, bots can subscribe to Solana events fo
 2. Bootstrap: `initialize_*` all contracts, set authority, register wallets
 3. Register bot wallets on-chain:
    - `update_dex_config(rebalancer: rebalancer_pubkey)` — Pool Rebalancer
-   - `update_dex_config(nexus_manager: manager_pubkey)` — Nexus Manager
+   - `initialize_nexus(manager: manager_pubkey)` — first-time Nexus singleton setup; subsequent rotation via `update_nexus_manager(new_manager)` (Layer 9; manager now lives in `LiquidityNexus.manager`)
    - Publish authority set at `initialize_config` — Merkle Publisher
 4. Fund bot wallets with ~0.1 SOL each
 5. Start all services, verify logs

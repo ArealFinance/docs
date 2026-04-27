@@ -741,6 +741,10 @@ Purpose-built AMM for trading OT and RWT tokens. Two pool types: constant-produc
 
 Areal Finance LP management. Nexus PDA owns LP positions and token accounts. Manager bot executes operations; funds are protected by the program (manager cannot extract tokens directly). LP fee rewards accumulate in the pool fee vault and are claimed to Areal Treasury via `nexus_claim_rewards`.
 
+<Warning>
+  **Direct SPL Transfer policy.** Tokens sent into a Nexus ATA via a raw SPL Transfer (i.e., not through `nexus_deposit` or `nexus_record_deposit`) WILL increase the on-chain Nexus token balance but will **NOT** advance `total_deposited_*` — they are intentionally non-tracked. Such balances are still spendable by the manager via `nexus_swap` / `nexus_add_liquidity`, but `nexus_withdraw_profits` only releases the delta above the tracked principal floor, so untracked deposits effectively lift the withdrawable profit. Do not rely on this for accounting; always route via `nexus_deposit` or via `withdraw_liquidity_holding` (RWT lane).
+</Warning>
+
 <AccordionGroup>
   <Accordion title="initialize_nexus">
     Create Liquidity Nexus PDA and set initial manager. One Nexus per DEX deployment (singleton).
@@ -788,10 +792,42 @@ Areal Finance LP management. Nexus PDA owns LP positions and token accounts. Man
     **Logic:**
     1. Transfer `amount` from depositor → nexus ATA
     2. Transfer `amount` from `depositor_token_account` to `nexus_token_account`
+    3. CPI to YD `nexus_record_deposit` (when called from `withdraw_liquidity_holding`) updates `total_deposited_*` principal floor
     4. Emit `NexusDeposited`
 
     <Note>
-      OT `distribute_revenue` sends 10% USDC to an intermediate wallet (crank). The crank then calls `nexus_deposit` to route into Nexus. Same for RWT from `claim_yield` — crank receives 15% RWT, then calls `nexus_deposit`.
+      **RWT side (Layer 9).** RWT enters Nexus atomically via YD `withdraw_liquidity_holding`: the YD program transfers RWT from the LiquidityHolding PDA's RWT ATA to the Nexus RWT ATA and CPIs into DEX `nexus_record_deposit` to update the principal floor — all in a single TX. No intermediate crank wallet holds RWT.
+
+      **USDC side.** OT `distribute_revenue` still sends 10% USDC to an intermediate crank wallet which then calls `nexus_deposit` directly. A future polish step (R-58 / Layer 10) wires this through a holding PDA for parity with the RWT side.
+    </Note>
+  </Accordion>
+
+  <Accordion title="nexus_record_deposit">
+    Permissionless internal CPI target invoked by YD `withdraw_liquidity_holding` to update the Nexus principal-floor (`total_deposited_rwt` / `total_deposited_usdc`) atomically with the SPL transfer leg. Pure state update — no token movement in this ix.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount` | `u64` | Amount that was just transferred into Nexus by the calling program |
+    | `token_kind` | `u8` | `0` = USDC, `1` = RWT |
+
+    **Caller:** YD program (CPI signer = LiquidityHolding PDA), or any signer for testing
+
+    **Accounts:**
+    - `liquidity_holding` (signer) — YD-owned PDA proves the deposit was atomic with the SPL transfer
+    - `liquidity_nexus` (mut) — increments `total_deposited_{usdc,rwt}` by `amount`
+
+    **Validation:**
+    - `liquidity_nexus.is_active == true`
+    - `token_kind in {0, 1}` — only USDC + RWT principal lanes
+    - Caller is a signing PDA (CPI from YD) — see `cpi.rs` invariant
+
+    **Logic:**
+    1. Validate active + token_kind.
+    2. Add `amount` to `total_deposited_usdc` or `total_deposited_rwt` (saturating).
+    3. Emit `NexusDeposited` with `via_record = true` flag.
+
+    <Note>
+      Why two ix? `nexus_deposit` is for SPL Transfer + state update from a regular signer. `nexus_record_deposit` is the state-only update path used when the calling program (YD) has already moved the tokens via its own CPI and just needs the principal floor refreshed. Splitting avoids re-locking the SPL transfer signer authority across program boundaries.
     </Note>
   </Accordion>
 
@@ -904,6 +940,41 @@ Areal Finance LP management. Nexus PDA owns LP positions and token accounts. Man
     - `token_program`
 
     **Effect:** Pool PDA signs vault→nexus transfers. Emits `LiquidityRemoved`.
+  </Accordion>
+
+  <Accordion title="nexus_withdraw_profits">
+    Withdraw realised profit (delta above the tracked principal floor) from a Nexus token ATA to a recipient ATA. Authority-gated. Reverts if `amount > current_balance - total_deposited_{token_kind}`.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount` | `u64` | Profit amount to withdraw |
+    | `token_kind` | `u8` | `0` = USDC, `1` = RWT |
+
+    **Caller:** Authority (Team Multisig)
+
+    **Accounts:**
+    - `authority` (signer) — must match `dex_config.authority`
+    - `dex_config`
+    - `liquidity_nexus` (mut)
+    - `nexus_token_account` (mut) — Nexus ATA on the requested side
+    - `recipient_token_account` (mut) — Areal Treasury ATA (USDC or RWT)
+    - `mint`
+    - `token_program`
+
+    **Validation:**
+    - `amount > 0`
+    - `nexus.is_active == true`
+    - `token_kind in {0, 1}`
+    - **Principal-lock invariant:** `amount ≤ nexus_token_account.balance - total_deposited_{usdc,rwt}` (saturating; reverts on violation with `InsufficientNexusProfit`)
+
+    **Logic:**
+    1. Validate principal-lock.
+    2. Nexus PDA signs SPL Transfer of `amount` to recipient ATA.
+    3. Emit `NexusProfitsWithdrawn { token_mint, amount, remaining_profit, treasury_destination }`.
+
+    <Note>
+      The principal floor is intentionally one-way (write-only via `nexus_deposit` / `nexus_record_deposit`). To **return** capital from Nexus to a holding PDA or Treasury, profits must be withdrawn separately and principal must remain on-chain — there is no `nexus_withdraw_principal` ix in V1.
+    </Note>
   </Accordion>
 
   <Accordion title="update_nexus_manager">
@@ -1081,7 +1152,8 @@ One per token pair. Stores reserves, shares, fees.
 | `is_active` | `bool` | Pool active flag (pauseable by Team Multisig) |
 | `total_fees_accumulated` | `u64` | Lifetime total fees (LP + protocol) |
 | `fee_vault` | `Pubkey` | RWT token account for LP fee collection (authority = pool PDA) |
-| `cumulative_fees_per_share` | `u128` | Running sum of `fee_lp * PRECISION / total_lp_shares` — used for O(1) per-holder fee accounting |
+| `cumulative_fees_per_share_a` | `u128` | Q64.64 running sum on token-A side: `cumulative_fees_per_share_a += (fee_lp_a << 64) / total_lp_shares` per swap |
+| `cumulative_fees_per_share_b` | `u128` | Q64.64 running sum on token-B side: `cumulative_fees_per_share_b += (fee_lp_b << 64) / total_lp_shares` per swap |
 | `bin_step_bps` | `u16` | Log bin step (0 for StandardCurve; typically 10 = 0.1% for MonotonicLadder) |
 | `active_bin_id` | `i32` | Current active bin (MonotonicLadder only) |
 | `left_anchor_bin` | `i32` | Top of permanent tail (MonotonicLadder only, immutable) |
@@ -1116,11 +1188,17 @@ Per (pool, provider) LP tracking. Created on first add via `init_if_needed`.
 | `owner` | `Pubkey` | LP provider wallet |
 | `shares` | `u128` | LP shares held |
 | `fees_claimed` | `u128` | Cumulative LP fees claimed (prevents double-claiming) |
-| `fee_debt` | `u128` | Fee snapshot at time of deposit — excludes pre-deposit fees from claim |
+| `fee_debt` | `u128` | Legacy fee snapshot for the pre-D28 single-side accumulator (compat field) |
+| `fee_debt_a` | `u128` | Layer 9 D28 — Q64.64 snapshot of `PoolState.cumulative_fees_per_share_a` taken at position open / last claim. Pending token-A fee = `(cumulative_fees_per_share_a - fee_debt_a) × shares >> 64` |
+| `fee_debt_b` | `u128` | Layer 9 D28 — Q64.64 snapshot of `PoolState.cumulative_fees_per_share_b`. Pending token-B fee = `(cumulative_fees_per_share_b - fee_debt_b) × shares >> 64` |
 | `last_update_ts` | `i64` | Last interaction timestamp |
 | `bump` | `u8` | PDA bump seed |
 
 **PDA Seed:** `["lp", pool_state, provider]`
+
+<Note>
+  **D28 LP-fee accumulator (Layer 9).** LP fees are tracked per-side via Q64.64 fixed-point accumulators on `PoolState`. Each LP position snapshots the accumulator value (`fee_debt_{a,b}`) at deposit / claim time. Pending fees are computed lazily as `(global_accumulator - position_snapshot) × shares >> 64`, allowing O(1) per-holder accounting without iterating over LP holders. The Nexus PDA is a regular LP holder under this scheme — its fees flow to Areal Treasury via `nexus_claim_rewards`.
+</Note>
 
 ### BinArray
 
@@ -1328,7 +1406,7 @@ Areal Finance LP management PDA. Singleton — one per DEX. Owns token ATAs and 
 | Pool vaults | LP tokens A+B | remove_liquidity | LP provider |
 | YD reward vault | Pool reserves (RWT) | compound_yield (CPI to YD) | Crank |
 | OT Revenue (10% USDC) | Crank USDC ATA → Nexus USDC ATA | OT `distribute_revenue` → `nexus_deposit` (two-step: crank receives, then deposits) | Crank |
-| RWT Engine yield (15% RWT) | Crank RWT ATA → Nexus RWT ATA | RWT `claim_yield` → `nexus_deposit` (two-step: crank receives, then deposits) | Crank |
+| RWT Engine yield (15% RWT) | LiquidityHolding RWT ATA → Nexus RWT ATA | YD `withdraw_liquidity_holding` (single-TX atomic drain + `nexus_record_deposit` CPI) | Crank |
 | Nexus LP fee rewards (RWT) | Areal Treasury RWT ATA | `nexus_claim_rewards` | Authority |
 | Nexus tokens | Pool vaults | nexus_add_liquidity | Nexus manager |
 | Pool vaults | Nexus tokens | nexus_remove_liquidity | Nexus manager |

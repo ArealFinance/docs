@@ -1,0 +1,144 @@
+---
+title: Liquidity Nexus
+description: Layer 9 — protocol-owned liquidity subsystem with atomic principal-floor accounting
+---
+
+## What is the Liquidity Nexus
+
+The **Liquidity Nexus** is a singleton PDA inside the Native DEX program that holds protocol-owned liquidity and deploys it across DEX pools. Capital enters from two upstream programs (10% USDC from `ownership_token::distribute_revenue` + 15% RWT from `rwt_engine::claim_yield`), is deployed by a manager bot into LP positions, and earns swap-fee rewards that flow to Areal Treasury via Authority-gated withdrawals.
+
+<Info>
+  Layer 9 is the protocol-owned-liquidity layer. It introduces the LiquidityNexus PDA + 9 new DEX instructions + 1 new YD instruction (`withdraw_liquidity_holding`) + a dedicated nexus-manager bot. Principal is one-way — once deposited, it can only be returned to the protocol via realised LP profit.
+</Info>
+
+---
+
+## Subsystem at a glance
+
+```
+┌─────────────────────────────────┐         ┌───────────────────────────┐
+│  Ownership Token                 │         │  RWT Engine               │
+│  distribute_revenue              │         │  claim_yield              │
+│    └─ 10% USDC ──────────┐       │         │    └─ 15% RWT ────────┐  │
+└──────────────────────────┼───────┘         └───────────────────────┼──┘
+                            │                                         │
+                            ▼                                         ▼
+                ┌──────────────────────┐         ┌────────────────────────┐
+                │  crank wallet (V1)    │         │  YD LiquidityHolding   │
+                │   USDC ATA            │         │   PDA + RWT ATA        │
+                └──────┬───────────────┘         └──────────┬─────────────┘
+                       │                                     │
+                       │ nexus_deposit                       │ withdraw_liquidity_holding
+                       │ (1-TX state + transfer)              │ (1-TX atomic drain
+                       │                                     │  + nexus_record_deposit CPI)
+                       ▼                                     ▼
+                ┌─────────────────────────────────────────────────────┐
+                │             LiquidityNexus PDA (DEX)                 │
+                │  manager + total_deposited_usdc + total_deposited_rwt│
+                │  + USDC ATA + RWT ATA + LpPositions[]                │
+                └────────────────┬────────────────────────────────────┘
+                                 │
+                                 │ (Manager-only)
+                                 │   nexus_swap
+                                 │   nexus_add_liquidity
+                                 │   nexus_remove_liquidity
+                                 │
+                                 ▼
+                ┌────────────────────────────────────────┐
+                │  DEX Pools (LpPosition where           │
+                │  owner == liquidity_nexus PDA)         │
+                └────────────────────────────────────────┘
+
+(Authority-only)
+   nexus_claim_rewards          → Areal Treasury RWT ATA (LP fee distribution)
+   nexus_withdraw_profits       → Areal Treasury (USDC or RWT, profit only)
+   update_nexus_manager         → rotates manager (kill-switch via [0u8; 32])
+```
+
+---
+
+## Three trust tiers
+
+| Tier | Wallet | Can do | Cannot do |
+|---|---|---|---|
+| **Authority** (Team Multisig) | `dex_config.authority` | Initialize Nexus, rotate manager, claim LP rewards to Treasury, withdraw realised profit | Touch principal (one-way write-only) |
+| **Manager** (bot keypair stored in `LiquidityNexus.manager`) | `LiquidityNexus.manager` | Swap / add LP / remove LP using Nexus capital | Transfer tokens out of Nexus ATAs directly, change config, withdraw profit |
+| **Permissionless** | any signer | Trigger `nexus_deposit` (V1 USDC lane), `withdraw_liquidity_holding` (Authority in current build, future polish promotes to permissionless), `nexus_record_deposit` (CPI from YD only) | Anything that touches LP positions or Nexus ATAs as source |
+
+Manager kill-switch: Authority calls `update_nexus_manager(new_manager: [0u8; 32])`. Manager-only ix check `signer != [0u8; 32]` and revert with `NexusManagerDisabled`. Operations stay paused until Authority sets a real pubkey.
+
+---
+
+## Principal-lock invariant
+
+The core safety property of the Nexus subsystem:
+
+> For each token side `t ∈ {USDC, RWT}`, at all times: `nexus_token_ata.balance(t) ≥ liquidity_nexus.total_deposited_t`.
+
+`total_deposited_*` is **monotonically increasing** — the only writers are `nexus_deposit` and `nexus_record_deposit` (CPI from YD `withdraw_liquidity_holding`). There is no `nexus_withdraw_principal` ix. The only path tokens leave the Nexus ATAs is:
+
+1. **`nexus_swap` / `nexus_add_liquidity`** — internal to DEX, tokens move into pool reserves but stay tracked under the Nexus PDA's `LpPosition`.
+2. **`nexus_remove_liquidity`** — tokens come back into Nexus ATAs.
+3. **`nexus_withdraw_profits`** — Authority-only, validates `amount ≤ ata_balance - total_deposited_t`. Reverts on violation.
+
+This is intentionally one-way: capital cannot accidentally leak back to the originating crank wallet, and any future "rebase" mechanic (R-38, Layer 10+) must be a separate ix with explicit Authority signature.
+
+---
+
+## Two deposit lanes
+
+The two upstream programs route into Nexus via different patterns. Both update `total_deposited_*` atomically with the SPL transfer; the difference is the staging account.
+
+| Lane | Source | Staging | Drain ix | Atomicity |
+|---|---|---|---|---|
+| **USDC (V1)** | OT `distribute_revenue` 10% slice | crank wallet USDC ATA | `native_dex::nexus_deposit` | 1 TX — SPL transfer + principal-floor update |
+| **RWT (Layer 9)** | RWT `claim_yield` 15% slice | YD `LiquidityHolding` PDA RWT ATA | `yield_distribution::withdraw_liquidity_holding` | 1 TX — SPL transfer + CPI to `nexus_record_deposit` |
+
+The RWT lane was hardened in Layer 9 to remove the Layer 8-era race where the principal floor could lag the RWT delivery by one TX. A future polish step (R-58 / Layer 10) wires the USDC lane through a holding PDA for parity.
+
+<Warning>
+  **Direct SPL Transfer policy.** Tokens sent into a Nexus ATA via raw SPL Transfer (i.e., not through `nexus_deposit` or `nexus_record_deposit`) WILL increase the on-chain Nexus token balance but will **NOT** advance `total_deposited_*` — they are intentionally non-tracked. The principal-lock invariant still holds (untracked deposits effectively raise the withdrawable profit ceiling), but accounting is inaccurate. Always route capital through the documented lanes.
+</Warning>
+
+---
+
+## 9 DEX instructions
+
+Layer 9 introduces 9 new instructions in the `native-dex` program, plus reuses a few existing helpers.
+
+| # | Instruction | Caller | Purpose |
+|---|---|---|---|
+| 1 | `initialize_nexus(manager)` | Authority | One-shot creation of the Nexus singleton |
+| 2 | `update_nexus_manager(new_manager)` | Authority | Rotate manager / kill-switch via `[0u8; 32]` |
+| 3 | `nexus_deposit(amount)` | Permissionless | V1 USDC lane — SPL transfer + principal-floor update |
+| 4 | `nexus_record_deposit(amount, token_kind)` | YD program (CPI) | RWT lane principal-floor update; SPL transfer happens upstream in `withdraw_liquidity_holding` |
+| 5 | `nexus_swap(amount_in, min_amount_out, a_to_b)` | Manager | Manager-controlled swap on a DEX pool |
+| 6 | `nexus_add_liquidity(amount_a, amount_b, min_shares)` | Manager | Deploy capital into a DEX pool |
+| 7 | `nexus_remove_liquidity(shares_to_burn)` | Manager | Pull capital back into Nexus ATAs |
+| 8 | `nexus_claim_rewards(pool)` | Authority | Claim Nexus's LP-fee share to Areal Treasury RWT ATA |
+| 9 | `nexus_withdraw_profits(amount, token_kind)` | Authority | Withdraw realised profit (delta above principal) to Treasury |
+
+Plus one new YD instruction:
+
+| # | Instruction | Caller | Purpose |
+|---|---|---|---|
+| YD-1 | `withdraw_liquidity_holding(amount)` | Authority | Atomic drain LiquidityHolding RWT ATA → Nexus RWT ATA + CPI to `nexus_record_deposit` |
+
+See [Native DEX contract reference](/contracts/native-dex#liquidity-nexus) and [Yield Distribution contract reference](/contracts/yield-distribution#liquidity-routing-layer-9) for ix-level account tables, validation rules, and emitted events.
+
+---
+
+## Off-chain operator surface
+
+A dedicated **nexus-manager** bot owns the manager keypair and runs a 5-min decision loop. See [Off-Chain Services](/bots/off-chain-services#nexus-manager) for the loop architecture, decision engine, and Layer 9 hardening (D22 kill-switch, R29-R31 multi-RPC + single-instance + reconcile, R-60 SOL pre-flight). The bot defaults to dry-run mode (`SEND_TX=false`) for staging-test before live submit.
+
+The yield-claim crank gains two opt-in env flags in Layer 9 — `YIELD_CLAIM_ENABLE_LH_DRAIN` and `YIELD_CLAIM_ENABLE_NEXUS_DEPOSIT` — that gate the LH-drain and USDC `nexus_deposit` flows respectively. Both default to `false` and gate further on `SEND_TX=true`. The LH-drain path additionally gates on the Layer 10 RWT_MINT pin migration; until that lands, the bot logs `decision = SEND (deferred)` instead of submitting.
+
+---
+
+## What is not in Layer 9
+
+- **`nexus_withdraw_principal`** — never. Principal is one-way by design. Future "rebase" requires a separate Authority-only ix with explicit semantics (R-38 reservation, Layer 10+).
+- **Master-pool guard `MasterPoolUserLpDisabled`** — Layer 10 (per SD-8). Master pools (RWT/USDC, RWT/USDY) accept Nexus LP only; user-side `add_liquidity` is gated.
+- **`grow_liquidity` / `compress_liquidity`** for Monotonic Ladder pools — Layer 10 (per SD-6). Layer 9 ships StandardCurve LP only.
+- **Permissionless `nexus_deposit_rwt`** — Layer 10+. Today the RWT lane is Authority-gated via `withdraw_liquidity_holding`. Future polish opens it to permissionless callers.
