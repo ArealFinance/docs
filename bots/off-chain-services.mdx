@@ -503,3 +503,30 @@ Instead of purely interval-based polling, bots can subscribe to Solana events fo
 | Convert & Fund | None | Permissionless. Converts to preset vault. |
 | Yield Claim | None | Permissionless. Claims to preset destinations. |
 | Nexus Manager | Medium | Can make bad trades with Nexus funds. Cannot extract. Replace wallet. |
+
+---
+
+## Bootstrap orchestration (Layer 10)
+
+The 6 bots are launched as **Phase 8** of the [Layer 10 Bootstrap](/architecture/layer10-bootstrap) ceremony. The orchestration is a single-command `scripts/deploy.sh` invocation that wraps the 8-phase deployment flow; bot startup is the last phase, after the program deploys, the contract initialisations, and the authority transfers have all completed.
+
+### Startup ordering
+
+`scripts/lib/start-bots.ts` spawns the bots in a defined dependency order:
+
+1. **Pool-rebalancer + merkle-publisher first.** The publisher must be up before any consumer of merkle proofs.
+2. **Block on first published root.** The orchestrator polls the on-chain `MerkleDistributor` PDA (offset 104, the `merkle_root: [u8; 32]` field) and waits for it to transition from all-zero to non-zero. This is the authoritative signal that the publisher has produced its first root. The poll cadence defaults to 5 s and the wait is bounded by `firstRootTimeoutMs` (default 10 minutes); on timeout `start-bots.ts` exits non-zero and Phase 8 fails.
+3. **Then revenue-crank, convert-and-fund-crank, yield-claim-crank, and nexus-manager.** Yield-claim-crank in particular only spawns after the first-root block clears — without a published root its first cycle would log a missing-proof error and waste a sleep cycle.
+
+### Single-instance enforcement
+
+Every bot acquires a `proper-lockfile` flock at startup before opening any RPC connection. A second instance of the same bot on the same VPS exits immediately with a structured error rather than racing on the same on-chain state. This is the same single-instance primitive the Layer 9 nexus-manager uses (R30); in Layer 10 it is universal across all 6 bots.
+
+### Liveness probes
+
+Layer 10 has **no HTTP `/health` endpoint** on any bot. The dedicated `/health` surface and uniform JSON heartbeat shape are tracked as R-74 and deferred to Layer 11+ polish. Phase 8 readiness is gated by two cheaper signals:
+
+1. **On-chain liveness probe** — for the merkle-publisher specifically, the orchestrator reads the `MerkleDistributor.merkle_root` field directly via `getAccountInfo` and treats the zero → non-zero transition as the authoritative liveness signal. This is independent of any in-process state on the bot.
+2. **Per-process aliveness check** — after a heartbeat dwell (`HEARTBEAT_DWELL_MS`, default 30 s) each spawned child PID is re-checked with `isProcessAlive`. A bot that exited during dwell (env validation throw, missing dependency, RPC handshake failure, etc.) surfaces as a Phase 8 FATAL with the bot name + PID + log file path.
+
+Phase 8 is reported complete when the on-chain root probe succeeds for the publisher and every spawned child is still alive after the dwell.

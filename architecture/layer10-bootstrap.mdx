@@ -1,0 +1,118 @@
+---
+title: Layer 10 Bootstrap
+description: Layer 10 — devnet dress rehearsal of the mainnet bootstrap ceremony, with 8 phases, 6 named E2E scenarios, and a deployer-zero-authority closure proof
+---
+
+## What Layer 10 is
+
+**Layer 10** is the final dress rehearsal for the mainnet bootstrap ceremony, executed end-to-end on a fresh `solana-test-validator`. It exercises everything a mainnet operator will run on launch day: the 5 program deployments, the singleton initialisations, the ARL OT lifecycle, the DEX pool seeding, the Liquidity Nexus init, the bot-wallet registration, the authority-transfer chain, and the bot-fleet startup — in a single `scripts/deploy.sh` invocation.
+
+There is **no new contract code** in Layer 10 except the R20 mint-pin migration (replacing dev-placeholder mint bytes in `yield-distribution::constants` with the real RWT and USDC mint pubkeys). Everything else is orchestration, scenarios, dashboard surfaces, and verification scripts.
+
+The acceptance proof is two-sided: the **positive** check confirms every contract's `update_authority` ends up at the expected target (Multisig or Futarchy); the **negative** check confirms the deployer keypair holds zero remaining authority on any of the 5 contracts. Both are read directly from on-chain account fields — not inferred from source code or transaction logs.
+
+<Info>
+  Layer 10 is the bootstrap layer. It introduces no new instructions; it composes the 5 contracts and 6 bots that previous layers shipped into a single reproducible ceremony. The acceptance gate is a fresh-validator run of `scripts/verify-fresh-deploy.sh` that exits zero across all 8 phases, all 6 scenarios, and the cross-contract security audit.
+</Info>
+
+---
+
+## 8-Phase Bootstrap
+
+`scripts/deploy.sh` is the single-command orchestrator. It wraps the existing `e2e-bootstrap.sh` (Phases 1-6) and adds Phase 7 (authority chain) plus Phase 8 (bot fleet startup) on top.
+
+| # | Phase | What happens |
+|---|---|---|
+| 1 | **Deploy programs** | Build and deploy the 5 BPF programs (`ownership-token`, `futarchy`, `rwt-engine`, `native-dex`, `yield-distribution`) with their vanity program IDs. `verify-program-ids.sh` cross-references the deployed IDs against the canonical source-of-truth list. |
+| 2 | **R20 mint-pin migration** | Replace the dev-placeholder bytes for `RWT_MINT_PIN` and `USDC_MINT_PIN` in `yield-distribution::constants` with the real deployed RWT mint pubkey and the canonical USDC mint pubkey. Rebuild without `--features dev-placeholder-mints`; the compile-time tripwire verifies the placeholder pattern is gone. |
+| 3 | **ARL OT bootstrap** | Create the ARL mint, call `initialize_ot`, call `initialize_futarchy(arl_ot_mint)`, create the YD distributor, call `batch_update_destinations` with the 70/20/10 split, and `mint_ot` the initial ARL supply. Initial mint MUST run before Phase 7 — once OT governance is claimed by Futarchy, only proposals can mint. |
+| 4 | **DEX pools** | Create two pools (per SD-5 / SD-6 path-B): the **master RWT/USDC concentrated pool** with `bin_step = 10` (0.1%) seeded via 70-bin uniform first-add over the active range, and the **ARL_OT/RWT StandardCurve OT-pair pool**. |
+| 5 | **Nexus init** | Call `initialize_nexus(manager)` with the dedicated nexus-manager keypair (not the deployer). Create the Nexus USDC and RWT ATAs. Verify the LiquidityNexus PDA principal-floor fields (`total_deposited_usdc`, `total_deposited_rwt`) are initialised to zero. |
+| 6 | **Bot wallet provisioning** | Generate or load the 6 bot keypairs (pool-rebalancer, merkle-publisher, revenue-crank, convert-and-fund-crank, yield-claim-crank, nexus-manager); fund each with ~0.1 SOL; register the privileged ones on-chain via `update_dex_config(rebalancer)`, `update_publish_authority`, and `update_vault_manager`. |
+| 7 | **Authority transfers** | Five flows. **OT → Futarchy** is atomic (single TX bundles `propose_authority_transfer` and `claim_ot_governance`). **Futarchy → Multisig** and the three singleton transfers (**RWT → Multisig**, **DEX → Multisig**, **YD → Multisig**) each run as 2-TX flows (propose by current authority, accept by new authority). On devnet the "Multisig" is a deployer-as-surrogate keypair (see Devnet vs Mainnet below). |
+| 8 | **Bot fleet startup** | `scripts/lib/start-bots.ts` spawns the 6 bots in dependency order: pool-rebalancer + merkle-publisher first, then a block on the publisher transitioning the on-chain `MerkleDistributor.merkle_root` field (offset 104) from zero to non-zero, then revenue-crank + convert-and-fund-crank + yield-claim-crank + nexus-manager. Each bot uses `proper-lockfile` to enforce single-instance; readiness is gated by the on-chain root probe plus a per-process aliveness check after a heartbeat dwell. There is no HTTP `/health` endpoint (R-74, deferred to Layer 11+). |
+
+---
+
+## 6 named E2E scenarios
+
+After Phase 8, the master orchestrator runs six scenarios in sequence. Each lives in its own `bots/.e2e/layer-10-scenario-N-<name>.test.ts` file so it can be re-run in isolation.
+
+| # | Scenario | What it covers |
+|---|---|---|
+| 1 | **Happy Path** (~9 steps) | `mint_rwt` + `admin_mint_rwt` + revenue-distribute → convert-to-RWT → publish-root → claim. Asserts the 70 / 15 / 15 yield split, the 0.25% Areal protocol-fee ceiling, and the NAV math. Re-enables LH-drain end-to-end (auto-closes the Layer 9 R-61 carry-over once R20 has landed). |
+| 2 | **Governance** | Futarchy proposal lifecycle: `MintOt`, `SpendTreasury`, and `UpdateDestinations` proposal types, each driven through propose → approve → execute → on-chain state-delta assertion. Plus a cancel test and a deployer-rejected test. |
+| 3 | **DEX Standard** | StandardCurve full lifecycle on the ARL_OT/RWT pool: create_pool, add_liquidity, swap both directions, single-sided zap, remove_liquidity, plus the OT-pair extra fee path verification (treasury receives the 0.5% OT-treasury share in RWT). |
+| 4 | **Concentrated** | RWT/USDC concentrated pool with the 70-bin uniform first-add seed: bin walk via swap, `shift_liquidity` pyramid 2:1, and the conservation invariant `Σ bins == vault_a` (modulo rounding). |
+| 5 | **Nexus 14-step** | Full Layer 9 nexus flow: `nexus_deposit` (USDC and RWT lanes) → `nexus_swap` → `nexus_add_liquidity` → `nexus_remove_liquidity` → `nexus_withdraw_profits`, plus the negative test that an Authority withdraw exceeding `ata_balance − total_deposited_t` is rejected by the principal-floor invariant. |
+| 6 | **Emergency / Authority** (10 sub-steps) | `pause_mint`/unpause, `pause_pool`/unpause, `update_publish_authority` rotation, `update_nexus_manager` kill-switch via `[0u8; 32]`, YD `update_config(is_active=false)`, RWT `adjust_capital` writedown (asserts NAV decrease), RWT `update_distribution_config`, YD `close_distributor` (sweep + deactivate), DEX authority rotation, and the **deployer-zero-authority closing assertion** — the dual-proof negative half of R-G. |
+
+The Master E2E runner (`bots/.e2e/layer-10-master-e2e.test.ts`) imports each scenario and executes them in order, surfacing per-scenario pass/fail in JSON consumed by the dashboard E2E runner.
+
+---
+
+## Authority chain (deployer-zero-authority closure)
+
+Post-Phase-7, the on-chain authority topology is:
+
+- **Ownership Token** — `ot_governance.authority` = Futarchy config PDA
+- **Futarchy** — `futarchy_config.authority` = Multisig
+- **RWT Engine** — `rwt_vault.authority` = Multisig
+- **Native DEX** — `dex_config.authority` = Multisig
+- **Yield Distribution** — `dist_config.authority` = Multisig
+
+The deployer keypair holds **zero remaining authority** on any of the 5 contracts. This is verified two ways:
+
+1. **Positive proof** (`assertAuthorityChainComplete`, run inline at the end of Phase 7): each contract's authority field is read directly via `getAccountInfo`, deserialised, and compared against the expected target pubkey (Multisig or Futarchy PDA).
+2. **Negative proof** (`assertDeployerHasNoAuthority`, run as the closing step of Scenario 6): the same fields are re-read with **independently-derived offsets**, and asserted to be different from `deployer.publicKey`.
+
+The dual-proof shape protects against the R-G failure mode where a single consumer with a wrong offset would silently mis-read every contract. Any divergence between the positive and negative consumers surfaces immediately as a verdict mismatch.
+
+`scripts/verify-deployment.sh check 3` re-runs the same negative-proof assertion as a standalone audit step, so a post-deploy operator can re-verify the deployer-zero-authority property at any time without re-running the full bootstrap.
+
+---
+
+## Devnet vs Mainnet differences
+
+Layer 10 is a devnet dress rehearsal. The architectural code path is identical to mainnet; four operational substitutions distinguish the two environments.
+
+| Aspect | Layer 10 (devnet) | Mainnet |
+|---|---|---|
+| **Multisig** | Deployer keypair acts as a single-key Multisig surrogate. The on-chain `propose_authority_transfer` / `accept_authority_transfer` instructions are unchanged — they only check that the signer matches the pending authority field. | Real **Squads 2-of-3** vault. The propose-and-accept flow becomes a Squads transaction with 2 approver signatures. |
+| **Bot key custody** | On-disk JSON keypair files under `bots/<bot>/data/`. Acceptable for fresh-validator testing; never for production. | **HSM- or cloud-KMS-backed** signing for the Merkle Publisher and Nexus Manager (and ideally all privileged bots). Private key never loaded to disk or memory. |
+| **Token mints** | Pre-R20: dev-placeholder bytes pinned by `--features dev-placeholder-mints`. Post-R20 (during Phase 2): real deployed RWT mint + canonical devnet USDC mint. | Frozen production RWT mint + canonical mainnet USDC mint. The `dev-placeholder-mints` feature is never enabled on mainnet builds; the compile-time tripwire blocks the build if placeholder bytes survive. |
+| **Bot wallet funding** | Localnet airdrop or local SOL transfer. ~0.1 SOL each is plenty. | Treasury-funded pre-launch; SOL pre-flight (`assertCrankBalance`) blocks bot cycles when funds run low. |
+
+---
+
+## Reproducibility
+
+Layer 10 acceptance is gated on a single command exiting zero:
+
+```bash
+bash scripts/verify-fresh-deploy.sh
+```
+
+The script:
+
+1. Stops any running `solana-test-validator`.
+2. `rm -rf test-ledger/` (clean state — no incremental recovery).
+3. Restarts the test-validator fresh.
+4. Runs `scripts/deploy.sh` end-to-end (Phases 1-8).
+5. Runs `bots/.e2e/layer-10-master-e2e.test.ts` (all 6 scenarios in sequence).
+6. Runs `scripts/verify-deployment.sh` (cross-contract security audit checklist — program IDs, authority chain, immutable fields, hardcoded mints, no committed secrets).
+7. Exits 0 only if every step exited 0.
+
+The acceptance trace is the script's stdout plus the audit JSON output (`data/layer-10-audit-<utc>.json`). A `--keep-ledger` flag short-circuits steps 1-3 for development; acceptance always runs from step 1.
+
+---
+
+## Cross-references
+
+- [Liquidity Nexus (Layer 9)](/architecture/layer9-liquidity-nexus) — the principal-locked subsystem that Layer 10 Phase 5 initialises and Scenario 5 exercises end-to-end.
+- [Ownership Token](/contracts/ownership-token) — Phase 3 lifecycle and the `propose_authority_transfer` / `claim_ot_governance` atomic claim used in Phase 7.
+- [Futarchy](/contracts/futarchy) — proposal types exercised by Scenario 2 and the OT governance claim path in Phase 7.
+- [RWT Engine](/contracts/rwt-engine) — `mint_rwt`, `admin_mint_rwt`, `claim_yield`, and the `adjust_capital` writedown step used in Scenarios 1 and 6.
+- [Native DEX](/contracts/native-dex) — concentrated-pool seeding (Phase 4), Nexus instructions (Scenario 5), and the OT-pair fee path (Scenario 3).
+- [Yield Distribution](/contracts/yield-distribution) — the R20 mint-pin migration target (Phase 2), `convert_to_rwt` and `withdraw_liquidity_holding` (Scenarios 1 and 5), and `close_distributor` (Scenario 6).
+- [Off-Chain Services](/bots/off-chain-services) — the 6-bot fleet started in Phase 8 and the bootstrap-orchestration ordering rules.

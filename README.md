@@ -20,6 +20,17 @@ docs/
   docs.json           # Mintlify navigation config
 ```
 
+## Architecture Pages
+
+| Page | Description |
+|------|-------------|
+| [Overview](architecture/overview.mdx) | Three pillars of Areal — governance, liquidity, yield |
+| [Governance & Futarchy](architecture/governance-and-futarchy.mdx) | Market-driven governance for RWA projects |
+| [Liquidity & Native DEX](architecture/liquidity-and-native-dex.mdx) | Specialized AMM for yield-bearing tokens |
+| [Liquidity Nexus (Layer 9)](architecture/layer9-liquidity-nexus.mdx) | Protocol-owned liquidity with atomic principal-floor accounting |
+| [Layer 10 Bootstrap](architecture/layer10-bootstrap.mdx) | 8-phase devnet dress rehearsal of the mainnet bootstrap |
+| [Yield & Reward Distribution](architecture/yield-and-reward-distribution.mdx) | Merkle-based per-second yield accrual |
+
 ## Smart Contracts
 
 | Contract | Description |

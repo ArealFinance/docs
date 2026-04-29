@@ -828,3 +828,7 @@ The merkle tree is built off-chain by the publish authority server. The algorith
 <Note>
   The contract only verifies proofs — it does not scan holders or compute weights. All tree construction and snapshot management happens off-chain.
 </Note>
+
+### See also
+
+[Layer 10 Bootstrap](/architecture/layer10-bootstrap) covers the cross-contract authority chain (YD-to-Multisig propose-and-accept in Phase 7), the Phase 2 R20 mint-pin migration (replacing `RWT_MINT_PIN` and `USDC_MINT_PIN` placeholder bytes with real pubkeys), and the end-to-end E2E scenarios — including `convert_to_rwt` and `withdraw_liquidity_holding` exercised by the Happy Path and Nexus scenarios, plus `close_distributor` exercised by the Emergency scenario.

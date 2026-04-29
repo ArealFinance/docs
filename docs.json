@@ -67,6 +67,7 @@
                   "architecture/governance-and-futarchy",
                   "architecture/liquidity-and-native-dex",
                   "architecture/layer9-liquidity-nexus",
+                  "architecture/layer10-bootstrap",
                   "architecture/yield-and-reward-distribution"
                 ]
               },

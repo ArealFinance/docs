@@ -1410,3 +1410,7 @@ Areal Finance LP management PDA. Singleton — one per DEX. Owns token ATAs and 
 | Nexus LP fee rewards (RWT) | Areal Treasury RWT ATA | `nexus_claim_rewards` | Authority |
 | Nexus tokens | Pool vaults | nexus_add_liquidity | Nexus manager |
 | Pool vaults | Nexus tokens | nexus_remove_liquidity | Nexus manager |
+
+### See also
+
+[Layer 10 Bootstrap](/architecture/layer10-bootstrap) covers the cross-contract authority chain (DEX-to-Multisig propose-and-accept in Phase 7), the Phase 4 pool seeding (master RWT/USDC concentrated pool with 70-bin uniform first-add + ARL_OT/RWT StandardCurve OT-pair pool, per SD-5 / SD-6 path-B), and the end-to-end Scenarios 3, 4, and 5 (StandardCurve lifecycle + concentrated bin walk + Nexus 14-step).

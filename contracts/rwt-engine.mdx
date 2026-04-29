@@ -616,3 +616,7 @@ Configures how claimed RWT yield is split.
 | Vault RWT | ARL Treasury ATA (15%) | claim_yield | Crank |
 | Vault any token | Vault any token | vault_swap (CPI DEX) | Manager |
 | Authority | Vault state | admin_mint_rwt, adjust_capital | Team Multisig |
+
+### See also
+
+[Layer 10 Bootstrap](/architecture/layer10-bootstrap) covers the cross-contract authority chain (RWT-to-Multisig propose-and-accept in Phase 7) and the end-to-end E2E scenarios — including the Happy Path (`mint_rwt` + `admin_mint_rwt` + `claim_yield` 70/15/15 split) and the Emergency scenario's `adjust_capital` writedown with NAV-decrease assertion.

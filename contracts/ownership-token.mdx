@@ -629,3 +629,7 @@ For a new OT project, the deployer must:
 | Treasury | Any destination | spend_treasury | Governance |
 | OtConfig (mint authority) | Any recipient | mint_ot | Governance |
 | YD reward vault | Treasury RWT ATA | claim_yd_for_treasury (CPI to YD) | Crank |
+
+### See also
+
+[Layer 10 Bootstrap](/architecture/layer10-bootstrap) covers the cross-contract authority chain (`propose_authority_transfer` + `claim_ot_governance` atomic OT-to-Futarchy claim in Phase 7) and the end-to-end E2E scenarios that exercise revenue distribution, treasury yield claims, and destination updates against the live contract.

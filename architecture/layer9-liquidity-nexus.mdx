@@ -11,6 +11,10 @@ The **Liquidity Nexus** is a singleton PDA inside the Native DEX program that ho
   Layer 9 is the protocol-owned-liquidity layer. It introduces the LiquidityNexus PDA + 9 new DEX instructions + 1 new YD instruction (`withdraw_liquidity_holding`) + a dedicated nexus-manager bot. Principal is one-way — once deposited, it can only be returned to the protocol via realised LP profit.
 </Info>
 
+<Note>
+  For the post-Layer-9 bootstrap and cross-contract acceptance ceremony — including the 8-phase deployment, the 6 named E2E scenarios, and the deployer-zero-authority closure proof — see [Layer 10 Bootstrap](/architecture/layer10-bootstrap).
+</Note>
+
 ---
 
 ## Subsystem at a glance

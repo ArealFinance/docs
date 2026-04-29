@@ -497,3 +497,7 @@ These protocol operations are managed by team wallets directly, NOT through Futa
 | — | OT mint → recipient | execute_proposal (MintOt CPI) | Anyone (permissionless) |
 | OT Treasury | destination | execute_proposal (SpendTreasury CPI) | Anyone (permissionless) |
 | — | OT RevenueConfig | execute_proposal (UpdateDestinations CPI) | Anyone (permissionless) |
+
+### See also
+
+[Layer 10 Bootstrap](/architecture/layer10-bootstrap) covers the cross-contract authority chain — including the OT-to-Futarchy atomic claim and the Futarchy-to-Multisig hand-off — plus the Scenario 2 E2E that drives all three proposal types (`MintOt`, `SpendTreasury`, `UpdateDestinations`) through propose, approve, and execute.
