@@ -20,6 +20,15 @@ All notable changes to the Areal Finance protocol are documented here. Filter by
 <div className="changelog-entry">
   <div className="changelog-date">May 1, 2026</div>
 
+  ### [Yield Distribution — LiquidityHolding PDA and Atomic Drain](/changelog/2026-05-01-yd-liquidity-holding) <a href="/changelog/features" className="changelog-tag-link"><span className="changelog-tag changelog-tag-feature">Feature</span></a>
+
+  Documents the `LiquidityHolding` singleton PDA (state, seed, owned RWT ATA) and the `withdraw_liquidity_holding` instruction — Authority-gated atomic drain that bundles the SPL transfer with a CPI to `native_dex::nexus_record_deposit` in a single transaction, eliminating any window between RWT delivery and the Nexus principal-floor update. New `LiquidityHoldingWithdrawn` event.
+
+</div>
+
+<div className="changelog-entry">
+  <div className="changelog-date">May 1, 2026</div>
+
   ### [RWT Engine — LiquidityHolding Routing for the 15% Yield Slice](/changelog/2026-05-01-rwt-engine-liquidity-holding) <a href="/changelog/updates" className="changelog-tag-link"><span className="changelog-tag changelog-tag-update">Update</span></a>
 
   `claim_yield` routes the 15% liquidity slice into the `LiquidityHolding` PDA RWT ATA in Yield Distribution; the slice reaches the Liquidity Nexus through a single-TX atomic drain (`withdraw_liquidity_holding`) that updates the Nexus principal floor in the same instruction. Documents the `RwtVault.areal_fee_destination` dual-role alias under the account name `dao_fee_account` in `mint_rwt`. The 70 / 15 / 15 economic split is unchanged.

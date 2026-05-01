@@ -1,0 +1,68 @@
+---
+title: "Yield Distribution — PDA LiquidityHolding и атомарный drain"
+description: "Документирован новый singleton-PDA LiquidityHolding в Yield Distribution как стейджинговый аккаунт для RWT-канала в Liquidity Nexus, плюс новая инструкция withdraw_liquidity_holding, объединяющая SPL transfer и CPI обновление principal floor в одной транзакции."
+hidePagination: true
+---
+
+<div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "1.5rem" }}>
+  <span className="changelog-tag changelog-tag-feature">Feature</span>
+  <span className="changelog-date">1 мая 2026</span>
+</div>
+
+## Обзор
+
+Страница [контракта Yield Distribution](/ru/contracts/yield-distribution) обновлена и формально документирует singleton-PDA **`LiquidityHolding`** и новую инструкцию **`withdraw_liquidity_holding`**. Вместе они реализуют стейджинговый аккаунт для RWT-канала, питающего [Liquidity Nexus](/ru/architecture/liquidity-nexus).
+
+Эта запись следует за двумя связанными changelog-записями того же дня:
+
+- Архитектурная страница, вводящая Nexus как подсистему и ссылающаяся на `LiquidityHolding` PDA на архитектурном уровне — см. [Liquidity Nexus — Выделенная архитектурная страница](/ru/changelog/2026-05-01-liquidity-nexus).
+- Обновление RWT Engine, маршрутизирующее 15% долю ликвидности через эту PDA в `claim_yield` — см. [RWT Engine — Маршрутизация 15% доходности через LiquidityHolding](/ru/changelog/2026-05-01-rwt-engine-liquidity-holding).
+
+## Что изменилось на странице
+
+### Новая секция `### Маршрутизация ликвидности`
+
+Вставлена между секциями Distribution и Конфигурация и полномочия. Объясняет роль PDA `LiquidityHolding` в RWT-канале, перечисляет окружающий cross-program flow (инструкции в OT, RWT Engine и YD, участвующие в канале) и содержит полный референс инструкции `withdraw_liquidity_holding`.
+
+### Accordion инструкции `withdraw_liquidity_holding`
+
+Полный Accordion с параметрами, аккаунтами, валидацией, логикой и гарантией атомарности. Ключевые свойства:
+
+- **Authority-gated** — signer должен совпадать с `config.authority` (Team Multisig)
+- **Валидация** включает `nexus_token_ata.mint == RWT_MINT` (defence-in-depth) и проверку, что адрес `dex_program` совпадает с `DEX_PROGRAM_ID`
+- **Атомарно** — SPL transfer и CPI на `native_dex::nexus_record_deposit` выполняются в одной инструкции; либо обе ноги преуспели, либо обе откатились
+- Эмитирует `LiquidityHoldingWithdrawn { amount, total_drained, timestamp }`
+
+### Новая секция состояния `### LiquidityHolding`
+
+Документирует поля singleton-PDA (`total_received`, `total_drained`, `bump`), seed `["liquidity_holding"]` и факт, что PDA владеет одним RWT ATA (`liquidity_holding_rwt_ata`) — per-epoch стейджинговый аккаунт.
+
+### Таблицы PDA Seeds, Events и Сводка потоков токенов
+
+- Таблица PDA Seeds: новая строка для `LiquidityHolding`
+- Таблица Events: новая строка для `LiquidityHoldingWithdrawn`
+- Сводка потоков токенов: новая строка `RWT ATA LiquidityHolding → RWT ATA Nexus через withdraw_liquidity_holding (Authority)`
+
+### Cross-link «См. также»
+
+Ссылается на [архитектурную страницу Liquidity Nexus](/ru/architecture/liquidity-nexus) и [контракт RWT Engine](/ru/contracts/rwt-engine).
+
+## Почему это важно
+
+Атомарный drain заменяет то, что иначе было бы двухшаговым flow: RWT попадает в промежуточный ATA, затем отдельный вызов `native_dex::nexus_deposit` перемещает его в Nexus. Двухшаговый flow имеет окно между транзакциями, в котором on-chain баланс Nexus и principal floor `total_deposited_rwt` могут расходиться. Новая PDA + ix схлопывают два шага в одну транзакцию, устраняя это окно для RWT-канала.
+
+Инвариант principal-lock `nexus_balance(t) ≥ total_deposited(t)` поэтому держится с single-TX атомарностью на RWT-стороне. См. [Liquidity Nexus — Инвариант principal-lock](/ru/architecture/liquidity-nexus#инвариант-principal-lock) для полной формулировки свойства безопасности.
+
+## Миграция
+
+Это синхронизация документации, а не миграция стейта на живом деплое. Реализации, ориентирующиеся на спеку, должны:
+
+1. Трактовать destination 15% доли RWT в `claim_yield` как RWT ATA, принадлежащий PDA `LiquidityHolding`, а не как ATA кошелька.
+2. Запускать канал депозита одним Authority-signed вызовом `withdraw_liquidity_holding`, а не отдельным `nexus_deposit` после `claim_yield`.
+3. Индексировать события `LiquidityHoldingWithdrawn` для трекинга lifetime дренированных RWT.
+
+## Связанные документы
+
+- [Контракт Yield Distribution](/ru/contracts/yield-distribution) — страница, обновлённая этой записью
+- [Liquidity Nexus](/ru/architecture/liquidity-nexus) — обзор подсистемы
+- [Контракт RWT Engine](/ru/contracts/rwt-engine) — `claim_yield` и дележ 70 / 15 / 15, питающий эту PDA

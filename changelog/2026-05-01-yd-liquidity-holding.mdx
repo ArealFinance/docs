@@ -1,0 +1,68 @@
+---
+title: "Yield Distribution — LiquidityHolding PDA and Atomic Drain"
+description: "New LiquidityHolding singleton PDA documented in Yield Distribution as the staging account for the RWT lane into the Liquidity Nexus, plus the new withdraw_liquidity_holding instruction that bundles the SPL transfer with a CPI principal-floor update in a single transaction."
+hidePagination: true
+---
+
+<div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "1.5rem" }}>
+  <span className="changelog-tag changelog-tag-feature">Feature</span>
+  <span className="changelog-date">May 1, 2026</span>
+</div>
+
+## Overview
+
+The [Yield Distribution contract page](/contracts/yield-distribution) is updated to formally document the **`LiquidityHolding`** singleton PDA and the new **`withdraw_liquidity_holding`** instruction. Together they implement the staging account for the RWT lane that feeds the [Liquidity Nexus](/architecture/liquidity-nexus).
+
+This entry follows two related changelog entries on the same day:
+
+- The architecture page that introduces the Nexus as a subsystem and references the `LiquidityHolding` PDA at the architectural level — see [Liquidity Nexus — Dedicated Architecture Page](/changelog/2026-05-01-liquidity-nexus).
+- The RWT Engine update that routes the 15% liquidity slice through this PDA via `claim_yield` — see [RWT Engine — LiquidityHolding Routing for the 15% Yield Slice](/changelog/2026-05-01-rwt-engine-liquidity-holding).
+
+## What changed on the page
+
+### New `### Liquidity Routing` section
+
+Inserted between the Distribution and Configuration & Authority sections. Explains the role of the `LiquidityHolding` PDA in the RWT lane, lists the surrounding cross-program flow (instructions in OT, RWT Engine, and YD that participate in the lane), and contains the full instruction reference for `withdraw_liquidity_holding`.
+
+### `withdraw_liquidity_holding` instruction Accordion
+
+Full Accordion with parameters, accounts, validation, logic, and atomicity guarantee. Key properties:
+
+- **Authority-gated** — signer must match `config.authority` (Team Multisig)
+- **Validation checks** include `nexus_token_ata.mint == RWT_MINT` (defence-in-depth) and that the `dex_program` account address matches `DEX_PROGRAM_ID`
+- **Atomic** — SPL transfer and CPI to `native_dex::nexus_record_deposit` execute in the same instruction; either both legs succeed or both revert
+- Emits `LiquidityHoldingWithdrawn { amount, total_drained, timestamp }`
+
+### New `### LiquidityHolding` state section
+
+Documents the singleton PDA's fields (`total_received`, `total_drained`, `bump`), seed `["liquidity_holding"]`, and the fact that the PDA owns a single RWT ATA (`liquidity_holding_rwt_ata`) which is the per-epoch staging account.
+
+### PDA Seeds, Events, and Token Flow Summary tables
+
+- PDA Seeds table: new row for `LiquidityHolding`
+- Events table: new row for `LiquidityHoldingWithdrawn`
+- Token Flow Summary: new row `LiquidityHolding RWT ATA → Nexus RWT ATA via withdraw_liquidity_holding (Authority)`
+
+### Cross-link "See also"
+
+Links to the [Liquidity Nexus architecture page](/architecture/liquidity-nexus) and the [RWT Engine contract](/contracts/rwt-engine).
+
+## Why this matters
+
+The atomic-drain ix replaces what would otherwise be a two-step flow: RWT lands in some intermediate ATA, then a separate `native_dex::nexus_deposit` call moves it into the Nexus. The two-step flow has a window between the transactions in which the on-chain Nexus token balance and the principal floor `total_deposited_rwt` can disagree. The new PDA + ix collapse the two steps into one transaction, eliminating that window for the RWT lane.
+
+The principal-lock invariant `nexus_balance(t) ≥ total_deposited(t)` therefore holds with single-TX atomicity on the RWT side. See [Liquidity Nexus — Principal-lock invariant](/architecture/liquidity-nexus#principal-lock-invariant) for the full safety property.
+
+## Migration
+
+This is a documentation alignment, not a state migration on a live deployment. Implementations consuming the spec should:
+
+1. Treat the destination of the 15% RWT slice in `claim_yield` as the `LiquidityHolding` PDA's owned RWT ATA, not a wallet ATA.
+2. Drive the deposit lane with a single Authority-signed `withdraw_liquidity_holding` call, not with a separate `nexus_deposit` after `claim_yield`.
+3. Index `LiquidityHoldingWithdrawn` events to track lifetime drained RWT.
+
+## Related documents
+
+- [Yield Distribution contract](/contracts/yield-distribution) — the page updated by this entry
+- [Liquidity Nexus](/architecture/liquidity-nexus) — subsystem-level overview
+- [RWT Engine contract](/contracts/rwt-engine) — `claim_yield` 70 / 15 / 15 split that funds this PDA

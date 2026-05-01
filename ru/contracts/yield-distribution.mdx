@@ -380,6 +380,61 @@ On claim:
   </Accordion>
 </AccordionGroup>
 
+### Маршрутизация ликвидности
+
+15% доля RWT, формируемая `rwt_engine::claim_yield`, стейджится в принадлежащей контракту PDA `LiquidityHolding`, прежде чем атомарно дренироваться в токен-аккаунт DEX `LiquidityNexus`. Yield Distribution предоставляет одну новую инструкцию для этого потока.
+
+| Инструкция | Вызывающий | Назначение |
+|---|---|---|
+| `withdraw_liquidity_holding` | Authority (Team Multisig) | Атомарный drain — переводит RWT из RWT ATA `LiquidityHolding` в RWT ATA Nexus с CPI на `native_dex::nexus_record_deposit`, обновляющим principal floor Nexus в той же инструкции |
+
+Окружающий поток (инструкции живут в других контрактах, перечислены для контекста):
+
+- `ownership_token::distribute_revenue` — отправляет USDC выручки OT в per-OT Accumulator YD
+- `yield_distribution::convert_to_rwt` — конвертирует USDC из Accumulator в RWT, депонирует RWT в reward vault, обновляет состояние вестинга (документировано в секции Funding выше)
+- `rwt_engine::claim_yield` — RWT Engine клеймит свою долю через стандартный flow YD `claim`; 15% доля ликвидности приземляется в RWT ATA `LiquidityHolding` (см. [контракт RWT Engine](/ru/contracts/rwt-engine))
+- `ownership_token::claim_yd_for_treasury` — PDA OT Treasury клеймит свою долю любого distributor (cross-project yield)
+
+<AccordionGroup>
+  <Accordion title="withdraw_liquidity_holding">
+    Атомарный drain из RWT ATA `LiquidityHolding` в RWT ATA Nexus DEX, с обновлением principal floor через CPI на `native_dex::nexus_record_deposit`. Authority-gated.
+
+    | Параметр | Тип | Описание |
+    |---|---|---|
+    | `amount` | `u64` | RWT для drain (должен быть ≤ баланса holding) |
+
+    **Вызывающий:** Authority (Team Multisig)
+
+    **Аккаунты:**
+    - `authority` (signer) — должен совпадать с `config.authority`
+    - `config` — гейт authority и паузы
+    - `liquidity_holding` (mut) — инкрементирует `total_drained`
+    - `liquidity_holding_rwt_ata` (mut) — source ATA, владелец = PDA `LiquidityHolding`
+    - `nexus_token_ata` (mut) — destination ATA, владелец = PDA `LiquidityNexus` на стороне DEX
+    - `liquidity_nexus` (mut) — PDA Nexus DEX, principal floor обновляется через CPI
+    - `dex_program` — аккаунт программы DEX, валидируется `executable()`
+    - `token_program`
+    - `system_program`
+
+    **Валидация:**
+    - `amount > 0`
+    - `amount ≤ liquidity_holding_rwt_ata.balance`
+    - `nexus_token_ata.mint == RWT_MINT` (defence-in-depth)
+    - `nexus_token_ata.owner == liquidity_nexus` PDA
+    - `dex_program.address() == DEX_PROGRAM_ID`
+
+    **Логика:**
+    1. SPL Transfer `amount` из `liquidity_holding_rwt_ata` → `nexus_token_ata` (PDA `LiquidityHolding` подписывает).
+    2. CPI на `native_dex::nexus_record_deposit(amount, token_kind=RWT)` (PDA `LiquidityHolding` подписывает).
+    3. Инкремент `liquidity_holding.total_drained` на `amount`.
+    4. Эмитирование `LiquidityHoldingWithdrawn { amount, total_drained, timestamp }`.
+
+    <Note>
+      **Гарантия атомарности.** Либо обе ноги преуспели (RWT-перевод И обновление principal floor), либо обе откатились. Нет промежуточного состояния, в котором on-chain баланс Nexus и `total_deposited_rwt` могли бы расходиться на этом канале.
+    </Note>
+  </Accordion>
+</AccordionGroup>
+
 ### Конфигурация и полномочия
 
 <AccordionGroup>
@@ -531,6 +586,24 @@ On claim:
 
 **PDA Seed:** `["claim_status", distributor, claimant]`
 
+### LiquidityHolding
+
+Singleton-PDA, стейджит RWT, полученный от 15% доли ликвидности из `rwt_engine::claim_yield`, перед тем как он будет атомарно дренирован в DEX `LiquidityNexus`. PDA владеет одним RWT ATA (`liquidity_holding_rwt_ata`), который и есть стейджинговый аккаунт; инструкция drain переводит RWT в Nexus и обновляет principal floor Nexus через CPI в одной транзакции.
+
+| Поле | Тип | Описание |
+|---|---|---|
+| `total_received` | `u64` | Lifetime RWT, полученные от `claim_yield` (running counter) |
+| `total_drained` | `u64` | Lifetime RWT, дренированные в Nexus |
+| `bump` | `u8` | Bump-сид PDA |
+
+**PDA Seed:** `["liquidity_holding"]`
+
+**Owned ATA:** PDA `LiquidityHolding` владеет одним RWT ATA (`liquidity_holding_rwt_ata`) — per-epoch стейджинговый аккаунт.
+
+<Note>
+  Этот аккаунт существует, чтобы сделать путь RWT → Nexus **атомарным** относительно учёта principal floor. Без него RWT сначала пришлось бы попадать в ATA обычного кошелька, а отдельная транзакция вызывала бы DEX `nexus_deposit`. С `LiquidityHolding` весь поток — это одна инструкция (`withdraw_liquidity_holding`), объединяющая SPL-трансфер и обновление principal floor через CPI.
+</Note>
+
 ## PDA Seeds
 
 | Account | Seeds | Description |
@@ -539,6 +612,7 @@ On claim:
 | MerkleDistributor | `"merkle_dist"`, `ot_mint` | Перманентный дистрибьютор для каждого OT |
 | Accumulator | `"accumulator"`, `ot_mint` | Приёмник USDC для каждого OT (принадлежит контракту) |
 | ClaimStatus | `"claim_status"`, `distributor`, `claimant` | Трекинг клеймов для каждого держателя |
+| LiquidityHolding | `"liquidity_holding"` | Singleton — стейджинг RWT для drain в Nexus |
 
 ## Константы
 
@@ -568,6 +642,7 @@ On claim:
 | `AuthorityTransferProposed` | current_authority, pending_authority, timestamp | Передача предложена |
 | `AuthorityTransferAccepted` | old_authority, new_authority, timestamp | Передача принята |
 | `DistributorClosed` | ot_mint, unclaimed_swept, timestamp | Дистрибьютор закрыт |
+| `LiquidityHoldingWithdrawn` | amount, total_drained, timestamp | RWT дренирован из `LiquidityHolding` в RWT ATA Nexus DEX через `withdraw_liquidity_holding` |
 
 ## Коды ошибок
 
@@ -698,6 +773,7 @@ On claim:
 | Reward vault | RWT Vault ATA | claim (через CPI RWT Engine) | Крэнк |
 | Reward vault | ARL OtTreasury RWT ATA | claim (через OT `claim_yd_for_treasury` на инстансе ARL) | Крэнк |
 | Reward vault | Назначение (при закрытии) | close_distributor | Authority |
+| RWT ATA LiquidityHolding | RWT ATA Nexus | withdraw_liquidity_holding (атомарно: SPL transfer + CPI обновление floor) | Authority |
 
 ### Построение дерева Меркла (офф-чейн)
 
@@ -715,3 +791,8 @@ On claim:
 <Note>
   Контракт только верифицирует доказательства — он не сканирует держателей и не вычисляет веса. Всё построение дерева происходит офф-чейн.
 </Note>
+
+### См. также
+
+- [Liquidity Nexus](/ru/architecture/liquidity-nexus) — обзор подсистемы LP протокола и инвариант principal-lock
+- [Контракт RWT Engine](/ru/contracts/rwt-engine) — `claim_yield` и дележ 70 / 15 / 15; 15% доля ликвидности попадает в RWT ATA `LiquidityHolding`, определённой здесь

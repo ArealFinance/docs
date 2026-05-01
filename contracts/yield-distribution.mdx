@@ -380,6 +380,61 @@ On claim:
   </Accordion>
 </AccordionGroup>
 
+### Liquidity Routing
+
+The 15% RWT liquidity slice produced by `rwt_engine::claim_yield` is staged in a contract-owned `LiquidityHolding` PDA before being atomically drained into the DEX `LiquidityNexus` token account. Yield Distribution exposes one new instruction for this flow.
+
+| Instruction | Caller | Purpose |
+|---|---|---|
+| `withdraw_liquidity_holding` | Authority (Team Multisig) | Atomic drain — moves RWT from `LiquidityHolding` RWT ATA into the Nexus RWT ATA, with a CPI to `native_dex::nexus_record_deposit` that updates the Nexus principal floor in the same instruction |
+
+Surrounding flow (instructions live in other contracts, included for reference):
+
+- `ownership_token::distribute_revenue` — sends OT-revenue USDC into the YD per-OT Accumulator
+- `yield_distribution::convert_to_rwt` — converts Accumulator USDC into RWT, deposits RWT into the reward vault, updates vesting state (documented in the Funding section above)
+- `rwt_engine::claim_yield` — RWT Engine claims its share via the standard YD `claim` flow; the 15% liquidity slice lands in the `LiquidityHolding` RWT ATA (see [RWT Engine contract](/contracts/rwt-engine))
+- `ownership_token::claim_yd_for_treasury` — OT Treasury PDA claims its share of any distributor (cross-project yield)
+
+<AccordionGroup>
+  <Accordion title="withdraw_liquidity_holding">
+    Atomic drain from `LiquidityHolding` RWT ATA into the DEX Nexus RWT ATA, with principal-floor update via CPI to `native_dex::nexus_record_deposit`. Authority-gated.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount` | `u64` | RWT to drain (must be ≤ holding balance) |
+
+    **Caller:** Authority (Team Multisig)
+
+    **Accounts:**
+    - `authority` (signer) — must match `config.authority`
+    - `config` — authority and pause gate
+    - `liquidity_holding` (mut) — increments `total_drained`
+    - `liquidity_holding_rwt_ata` (mut) — source ATA, owner = `LiquidityHolding` PDA
+    - `nexus_token_ata` (mut) — destination ATA, owner = `LiquidityNexus` PDA on the DEX side
+    - `liquidity_nexus` (mut) — DEX Nexus PDA, principal floor updated via CPI
+    - `dex_program` — DEX program account, validated `executable()`
+    - `token_program`
+    - `system_program`
+
+    **Validation:**
+    - `amount > 0`
+    - `amount ≤ liquidity_holding_rwt_ata.balance`
+    - `nexus_token_ata.mint == RWT_MINT` (defence-in-depth)
+    - `nexus_token_ata.owner == liquidity_nexus` PDA
+    - `dex_program.address() == DEX_PROGRAM_ID`
+
+    **Logic:**
+    1. SPL Transfer `amount` from `liquidity_holding_rwt_ata` → `nexus_token_ata` (`LiquidityHolding` PDA signs).
+    2. CPI to `native_dex::nexus_record_deposit(amount, token_kind=RWT)` (`LiquidityHolding` PDA signs).
+    3. Increment `liquidity_holding.total_drained` by `amount`.
+    4. Emit `LiquidityHoldingWithdrawn { amount, total_drained, timestamp }`.
+
+    <Note>
+      **Atomic guarantee.** Either both legs succeed (RWT transfer AND principal-floor update) or both revert. There is no intermediate state in which the on-chain Nexus balance and `total_deposited_rwt` disagree on this lane.
+    </Note>
+  </Accordion>
+</AccordionGroup>
+
 ### Configuration & Authority
 
 <AccordionGroup>
@@ -531,6 +586,24 @@ Per (distributor, claimant) tracking. Created on first claim via `init_if_needed
 
 **PDA Seed:** `["claim_status", distributor, claimant]`
 
+### LiquidityHolding
+
+Singleton PDA that stages RWT received from the 15% liquidity slice of `rwt_engine::claim_yield` before it is atomically drained into the DEX `LiquidityNexus`. The PDA owns a single RWT ATA (`liquidity_holding_rwt_ata`) which is the staging account; the drain ix transfers RWT to the Nexus and updates the Nexus principal floor via CPI in the same transaction.
+
+| Field | Type | Description |
+|---|---|---|
+| `total_received` | `u64` | Lifetime RWT received from `claim_yield` (running counter) |
+| `total_drained` | `u64` | Lifetime RWT drained into the Nexus |
+| `bump` | `u8` | PDA bump seed |
+
+**PDA Seed:** `["liquidity_holding"]`
+
+**Owned ATA:** the `LiquidityHolding` PDA owns a single RWT ATA (`liquidity_holding_rwt_ata`) which is the per-epoch staging account.
+
+<Note>
+  This account exists to make the RWT-into-Nexus path **atomic** with principal-floor accounting. Without it, RWT would have to first land in a regular wallet's ATA, then a separate transaction would call DEX `nexus_deposit`. With `LiquidityHolding`, the entire flow is a single instruction (`withdraw_liquidity_holding`) that bundles the SPL transfer with the principal-floor update via CPI.
+</Note>
+
 ## PDA Seeds
 
 | Account | Seeds | Description |
@@ -539,6 +612,7 @@ Per (distributor, claimant) tracking. Created on first claim via `init_if_needed
 | MerkleDistributor | `"merkle_dist"`, `ot_mint` | Per-OT perpetual distributor |
 | Accumulator | `"accumulator"`, `ot_mint` | Per-OT USDC receiver (contract-owned) |
 | ClaimStatus | `"claim_status"`, `distributor`, `claimant` | Per-holder claim tracking |
+| LiquidityHolding | `"liquidity_holding"` | Singleton — RWT staging for the Nexus drain |
 
 ## Constants
 
@@ -568,6 +642,7 @@ Per (distributor, claimant) tracking. Created on first claim via `init_if_needed
 | `AuthorityTransferProposed` | current_authority, pending_authority, timestamp | Transfer proposed |
 | `AuthorityTransferAccepted` | old_authority, new_authority, timestamp | Transfer accepted |
 | `DistributorClosed` | ot_mint, unclaimed_swept, timestamp | Distributor retired |
+| `LiquidityHoldingWithdrawn` | amount, total_drained, timestamp | RWT drained from `LiquidityHolding` into the DEX Nexus RWT ATA via `withdraw_liquidity_holding` |
 
 ## Error Codes
 
@@ -698,6 +773,7 @@ Per (distributor, claimant) tracking. Created on first claim via `init_if_needed
 | Reward vault | RWT Vault ATA | claim (via RWT Engine CPI) | Crank |
 | Reward vault | ARL OtTreasury RWT ATA | claim (via OT `claim_yd_for_treasury` on ARL instance) | Crank |
 | Reward vault | Destination (on close) | close_distributor | Authority |
+| LiquidityHolding RWT ATA | Nexus RWT ATA | withdraw_liquidity_holding (atomic: SPL transfer + CPI floor update) | Authority |
 
 ### Merkle Tree Construction (Off-chain)
 
@@ -715,3 +791,8 @@ The merkle tree is built off-chain by the publish authority server every 10 minu
 <Note>
   The contract only verifies proofs — it does not scan holders or compute weights. All tree construction is off-chain.
 </Note>
+
+### See also
+
+- [Liquidity Nexus](/architecture/liquidity-nexus) — subsystem-level overview of the protocol-owned LP and its principal-lock invariant
+- [RWT Engine contract](/contracts/rwt-engine) — `claim_yield` 70 / 15 / 15 split; the 15% liquidity slice lands in the `LiquidityHolding` RWT ATA defined here

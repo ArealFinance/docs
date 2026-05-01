@@ -20,6 +20,15 @@ hidePagination: true
 <div className="changelog-entry">
   <div className="changelog-date">1 мая 2026</div>
 
+  ### [Yield Distribution — PDA LiquidityHolding и атомарный drain](/ru/changelog/2026-05-01-yd-liquidity-holding) <a href="/ru/changelog/features" className="changelog-tag-link"><span className="changelog-tag changelog-tag-feature">Feature</span></a>
+
+  Документирована singleton-PDA `LiquidityHolding` (состояние, seed, владеемый RWT ATA) и инструкция `withdraw_liquidity_holding` — Authority-gated атомарный drain, объединяющий SPL transfer и CPI на `native_dex::nexus_record_deposit` в одной транзакции, устраняя окно между доставкой RWT и обновлением principal floor Nexus. Новое событие `LiquidityHoldingWithdrawn`.
+
+</div>
+
+<div className="changelog-entry">
+  <div className="changelog-date">1 мая 2026</div>
+
   ### [RWT Engine — Маршрутизация 15% доходности через LiquidityHolding](/ru/changelog/2026-05-01-rwt-engine-liquidity-holding) <a href="/ru/changelog/updates" className="changelog-tag-link"><span className="changelog-tag changelog-tag-update">Update</span></a>
 
   `claim_yield` маршрутизирует 15% долю ликвидности в RWT ATA PDA `LiquidityHolding` в Yield Distribution; доля достигает Liquidity Nexus через атомарный drain в одну TX (`withdraw_liquidity_holding`), который обновляет principal floor Nexus в той же инструкции. Документирован dual-role alias `RwtVault.areal_fee_destination` под именем аккаунта `dao_fee_account` в `mint_rwt`. Экономический дележ 70 / 15 / 15 не изменился.
