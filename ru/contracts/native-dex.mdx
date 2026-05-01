@@ -741,6 +741,10 @@ description: "Разрешённый AMM со StandardCurve-пулами и од
 
 Управление LP Areal Finance. PDA Nexus владеет LP-позициями и токен-аккаунтами. Бот-менеджер выполняет операции; средства защищены программой (менеджер не может извлечь токены напрямую). Вознаграждения LP-комиссий накапливаются в fee vault пула и выводятся в Areal Treasury через `nexus_claim_rewards`.
 
+<Warning>
+  **Политика прямого SPL Transfer.** Токены, отправленные в токен-аккаунт Nexus через прямой SPL Transfer (т.е. в обход `nexus_deposit` или `nexus_record_deposit`), **увеличат** on-chain баланс Nexus, но **НЕ продвинут** `total_deposited_*` — они намеренно нетрекаемые. Такие балансы всё равно тратятся менеджером через `nexus_swap` / `nexus_add_liquidity`, но `nexus_withdraw_profits` высвобождает только разрыв над треком principal floor, поэтому нетрекаемые депозиты эффективно поднимают потолок выводимой прибыли. Не полагайтесь на это для учёта; всегда маршрутизируйте капитал через `nexus_deposit` (USDC-канал) или `withdraw_liquidity_holding` в Yield Distribution (RWT-канал).
+</Warning>
+
 <AccordionGroup>
   <Accordion title="initialize_nexus">
     Создание PDA Liquidity Nexus и установка начального менеджера. Один Nexus на развёртывание DEX (синглтон).
@@ -791,7 +795,38 @@ description: "Разрешённый AMM со StandardCurve-пулами и од
     4. Эмитирует `NexusDeposited`
 
     <Note>
-      OT `distribute_revenue` отправляет 10% USDC на промежуточный кошелёк (crank). Затем crank вызывает `nexus_deposit` для направления в Nexus. То же для RWT из `claim_yield` — crank получает 15% RWT, затем вызывает `nexus_deposit`.
+      **USDC-канал.** OT `distribute_revenue` отправляет 10% USDC на промежуточный crank-кошелёк, который затем вызывает `nexus_deposit` напрямую. В будущей итерации USDC-сторона может стейджиться через holding-PDA для паритета с RWT-стороной.
+
+      **RWT-канал.** RWT попадает в Nexus атомарно через `yield_distribution::withdraw_liquidity_holding`: программа YD переводит RWT из RWT ATA PDA `LiquidityHolding` в RWT ATA Nexus и делает CPI на `nexus_record_deposit` для обновления principal floor — всё в одной транзакции. На RWT-стороне нет промежуточного crank-кошелька.
+    </Note>
+  </Accordion>
+
+  <Accordion title="nexus_record_deposit">
+    Обновление principal floor только в state. Вызывается исключительно как CPI-цель из upstream-программы (сейчас `yield_distribution::withdraw_liquidity_holding`), которая уже переместила токены в токен-аккаунт Nexus в той же транзакции. SPL-трансфера в этой инструкции нет — только bookkeeping-нога.
+
+    | Параметр | Тип | Описание |
+    |---|---|---|
+    | `amount` | `u64` | Сумма, только что переведённая в Nexus вызывающей программой в той же TX |
+    | `token_kind` | `u8` | `0` = USDC, `1` = RWT |
+
+    **Вызывающий:** PDA, принадлежащая upstream-программе (сейчас `LiquidityHolding` из Yield Distribution), через CPI
+
+    **Аккаунты:**
+    - `liquidity_holding` (signer) — PDA вызывающего; подпись подтверждает, что bookkeeping-нога атомарна с SPL-трансфером, который вызывающий только что выполнил
+    - `liquidity_nexus` (mut) — инкрементирует `total_deposited_usdc` или `total_deposited_rwt` на `amount`
+
+    **Валидация:**
+    - `liquidity_nexus.is_active == true`
+    - `token_kind ∈ {0, 1}` — только каналы principal'а USDC и RWT
+    - Вызывающий — это program-owned signing PDA; прямые подписанты отвергаются
+
+    **Логика:**
+    1. Валидация active + `token_kind`.
+    2. Прибавление `amount` к `total_deposited_usdc` или `total_deposited_rwt` (saturating).
+    3. Эмитирование `NexusDeposited` с флагом `via_record = true`.
+
+    <Note>
+      Зачем две инструкции? `nexus_deposit` — для SPL-трансфера + обновления state от обычного подписанта (USDC-канал). `nexus_record_deposit` — путь только для state, используемый, когда вызывающая программа уже переместила токены через свой CPI и хочет лишь обновить principal floor (RWT-канал). Разделение позволяет избежать повторного блока signer authority SPL-трансфера через границы программ.
     </Note>
   </Accordion>
 
@@ -904,6 +939,41 @@ description: "Разрешённый AMM со StandardCurve-пулами и од
     - `token_program`
 
     **Эффект:** PDA пула подписывает переводы vault→nexus. Эмитирует `LiquidityRemoved`.
+  </Accordion>
+
+  <Accordion title="nexus_withdraw_profits">
+    Вывод реализованной прибыли (разрыв над треком principal floor) из токен-ATA Nexus в ATA-получателя. Authority-gated. Падает, если `amount > nexus_balance(t) − total_deposited(t)`.
+
+    | Параметр | Тип | Описание |
+    |---|---|---|
+    | `amount` | `u64` | Сумма прибыли для вывода |
+    | `token_kind` | `u8` | `0` = USDC, `1` = RWT |
+
+    **Вызывающий:** Authority (Team Multisig)
+
+    **Аккаунты:**
+    - `authority` (signer) — должен совпадать с `dex_config.authority`
+    - `dex_config`
+    - `liquidity_nexus` (mut)
+    - `nexus_token_account` (mut) — ATA Nexus на запрошенной стороне
+    - `recipient_token_account` (mut) — ATA Areal Treasury (USDC или RWT)
+    - `mint`
+    - `token_program`
+
+    **Валидация:**
+    - `amount > 0`
+    - `liquidity_nexus.is_active == true`
+    - `token_kind ∈ {0, 1}`
+    - **Инвариант principal-lock:** `amount ≤ nexus_token_account.balance − total_deposited_{usdc,rwt}` (saturating; падение с `InsufficientNexusProfit` при нарушении)
+
+    **Логика:**
+    1. Валидация principal-lock.
+    2. PDA Nexus подписывает SPL Transfer `amount` в `recipient_token_account`.
+    3. Эмитирование `NexusProfitsWithdrawn { token_mint, amount, remaining_profit, treasury_destination }`.
+
+    <Note>
+      Principal floor намеренно односторонний (write-only через `nexus_deposit` / `nexus_record_deposit`). Чтобы **вернуть** капитал из Nexus в holding-PDA или Treasury, прибыль должна быть выведена отдельно, а принципал — оставаться on-chain; инструкции `nexus_withdraw_principal` не существует.
+    </Note>
   </Accordion>
 
   <Accordion title="update_nexus_manager">
@@ -1328,7 +1398,14 @@ PDA управления LP Areal Finance. Синглтон — один на DE
 | Хранилища пула | LP-токены A+B | remove_liquidity | LP-провайдер |
 | YD reward vault | Резервы пула (RWT) | compound_yield (CPI к YD) | Crank |
 | Доход OT (10% USDC) | USDC ATA crank → USDC ATA Nexus | OT `distribute_revenue` → `nexus_deposit` (два шага: crank получает, затем вносит) | Crank |
-| Доход RWT Engine (15% RWT) | RWT ATA crank → RWT ATA Nexus | RWT `claim_yield` → `nexus_deposit` (два шага: crank получает, затем вносит) | Crank |
+| Доход RWT Engine (15% RWT) | RWT ATA LiquidityHolding → RWT ATA Nexus | YD `withdraw_liquidity_holding` (атомарный drain в одну TX + CPI `nexus_record_deposit`) | Authority |
 | LP-вознаграждения Nexus (RWT) | RWT ATA Areal Treasury | `nexus_claim_rewards` | Authority |
 | Токены Nexus | Хранилища пула | nexus_add_liquidity | Менеджер Nexus |
 | Хранилища пула | Токены Nexus | nexus_remove_liquidity | Менеджер Nexus |
+| Токен Nexus (USDC или RWT) | ATA Areal Treasury | nexus_withdraw_profits (только разрыв над principal floor) | Authority |
+
+### См. также
+
+- [Liquidity Nexus](/ru/architecture/liquidity-nexus) — обзор подсистемы, инвариант principal-lock, три уровня доверия и два канала депозита, питающих Nexus
+- [Контракт Yield Distribution](/ru/contracts/yield-distribution) — PDA `LiquidityHolding` и `withdraw_liquidity_holding` (атомарный drain RWT-канала с CPI на `nexus_record_deposit`)
+- [Контракт RWT Engine](/ru/contracts/rwt-engine) — `claim_yield` и дележ 70 / 15 / 15, формирующий 15% долю RWT, маршрутизируемую через RWT-канал

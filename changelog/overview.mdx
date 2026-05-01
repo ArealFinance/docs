@@ -20,6 +20,15 @@ All notable changes to the Areal Finance protocol are documented here. Filter by
 <div className="changelog-entry">
   <div className="changelog-date">May 1, 2026</div>
 
+  ### [Native DEX — Nexus Surface (Direct SPL Transfer Policy, Record Deposit, Withdraw Profits)](/changelog/2026-05-01-native-dex-nexus-surface) <a href="/changelog/features" className="changelog-tag-link"><span className="changelog-tag changelog-tag-feature">Feature</span></a>
+
+  Native DEX page now documents the Direct SPL Transfer policy (untracked deposits raise withdrawable-profit ceiling but never violate the principal floor), the `nexus_record_deposit` state-only CPI target invoked by the YD atomic drain, and the Authority-gated `nexus_withdraw_profits` that releases only the delta above `total_deposited`. Splits the `nexus_deposit` Note across the USDC and RWT lanes and updates the Token Flow Summary accordingly.
+
+</div>
+
+<div className="changelog-entry">
+  <div className="changelog-date">May 1, 2026</div>
+
   ### [Yield Distribution — Per-Deposit Snapshot Algorithm for Merkle Root](/changelog/2026-05-01-yd-per-deposit-snapshot) <a href="/changelog/updates" className="changelog-tag-link"><span className="changelog-tag changelog-tag-update">Update</span></a> <a href="/changelog/security" className="changelog-tag-link"><span className="changelog-tag changelog-tag-security">Security</span></a>
 
   Off-chain merkle-root publisher now uses **per-deposit snapshot aggregation** to compute `cumulative_amount` per holder. Each deposit is allocated only to holders captured in the snapshot taken at that deposit's slot, eliminating the front-running vector around announced distributions that the naive current-balance formula introduced. Adds Publisher Infrastructure (KMS / HSM key custody, archival RPC, independent verifiers) and Operational Parameters subsections. The on-chain contract surface is unchanged.

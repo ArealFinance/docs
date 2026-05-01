@@ -741,6 +741,10 @@ Purpose-built AMM for trading OT and RWT tokens. Two pool types: constant-produc
 
 Areal Finance LP management. Nexus PDA owns LP positions and token accounts. Manager bot executes operations; funds are protected by the program (manager cannot extract tokens directly). LP fee rewards accumulate in the pool fee vault and are claimed to Areal Treasury via `nexus_claim_rewards`.
 
+<Warning>
+  **Direct SPL Transfer policy.** Tokens sent into a Nexus token account via a raw SPL Transfer (i.e., bypassing `nexus_deposit` or `nexus_record_deposit`) **WILL** increase the on-chain Nexus token balance but **will NOT** advance `total_deposited_*` — they are intentionally non-tracked. Such balances are still spendable by the manager via `nexus_swap` / `nexus_add_liquidity`, but `nexus_withdraw_profits` releases only the delta above the tracked principal floor, so untracked deposits effectively raise the withdrawable-profit ceiling. Do not rely on this for accounting; always route capital via `nexus_deposit` (USDC lane) or `withdraw_liquidity_holding` in Yield Distribution (RWT lane).
+</Warning>
+
 <AccordionGroup>
   <Accordion title="initialize_nexus">
     Create Liquidity Nexus PDA and set initial manager. One Nexus per DEX deployment (singleton).
@@ -791,7 +795,38 @@ Areal Finance LP management. Nexus PDA owns LP positions and token accounts. Man
     4. Emit `NexusDeposited`
 
     <Note>
-      OT `distribute_revenue` sends 10% USDC to an intermediate wallet (crank). The crank then calls `nexus_deposit` to route into Nexus. Same for RWT from `claim_yield` — crank receives 15% RWT, then calls `nexus_deposit`.
+      **USDC lane.** OT `distribute_revenue` sends 10% USDC to an intermediate crank wallet, which then calls `nexus_deposit` directly. A future iteration may stage the USDC side through a holding PDA for parity with the RWT side.
+
+      **RWT lane.** RWT enters the Nexus atomically via `yield_distribution::withdraw_liquidity_holding`: the YD program transfers RWT from the `LiquidityHolding` PDA's RWT ATA into the Nexus RWT ATA and CPIs into `nexus_record_deposit` to update the principal floor — all in a single transaction. There is no intermediate crank wallet on the RWT side.
+    </Note>
+  </Accordion>
+
+  <Accordion title="nexus_record_deposit">
+    State-only principal-floor update. Invoked exclusively as a CPI target by an upstream program (currently `yield_distribution::withdraw_liquidity_holding`) that has already moved tokens into a Nexus token account in the same transaction. No SPL transfer happens in this instruction — only the bookkeeping leg.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount` | `u64` | Amount that was just transferred into the Nexus by the calling program in the same TX |
+    | `token_kind` | `u8` | `0` = USDC, `1` = RWT |
+
+    **Caller:** an upstream program-owned PDA (currently `LiquidityHolding` from Yield Distribution), via CPI
+
+    **Accounts:**
+    - `liquidity_holding` (signer) — caller PDA; the signature proves the bookkeeping leg is atomic with the SPL transfer the caller just performed
+    - `liquidity_nexus` (mut) — increments `total_deposited_usdc` or `total_deposited_rwt` by `amount`
+
+    **Validation:**
+    - `liquidity_nexus.is_active == true`
+    - `token_kind ∈ {0, 1}` — only the USDC and RWT principal lanes
+    - Caller is a program-owned signing PDA — direct signers are rejected
+
+    **Logic:**
+    1. Validate active + `token_kind`.
+    2. Add `amount` to `total_deposited_usdc` or `total_deposited_rwt` (saturating).
+    3. Emit `NexusDeposited` with the `via_record = true` flag.
+
+    <Note>
+      Why two instructions? `nexus_deposit` is for SPL transfer + state update from a regular signer (USDC lane). `nexus_record_deposit` is the state-only path used when the calling program has already moved the tokens via its own CPI and just needs the principal floor refreshed (RWT lane). Splitting avoids re-locking SPL transfer signer authority across program boundaries.
     </Note>
   </Accordion>
 
@@ -904,6 +939,41 @@ Areal Finance LP management. Nexus PDA owns LP positions and token accounts. Man
     - `token_program`
 
     **Effect:** Pool PDA signs vault→nexus transfers. Emits `LiquidityRemoved`.
+  </Accordion>
+
+  <Accordion title="nexus_withdraw_profits">
+    Withdraw realised profit (the delta above the tracked principal floor) from a Nexus token ATA into a recipient ATA. Authority-gated. Reverts if `amount > nexus_balance(t) − total_deposited(t)`.
+
+    | Parameter | Type | Description |
+    |---|---|---|
+    | `amount` | `u64` | Profit amount to withdraw |
+    | `token_kind` | `u8` | `0` = USDC, `1` = RWT |
+
+    **Caller:** Authority (Team Multisig)
+
+    **Accounts:**
+    - `authority` (signer) — must match `dex_config.authority`
+    - `dex_config`
+    - `liquidity_nexus` (mut)
+    - `nexus_token_account` (mut) — Nexus ATA on the requested side
+    - `recipient_token_account` (mut) — Areal Treasury ATA (USDC or RWT)
+    - `mint`
+    - `token_program`
+
+    **Validation:**
+    - `amount > 0`
+    - `liquidity_nexus.is_active == true`
+    - `token_kind ∈ {0, 1}`
+    - **Principal-lock invariant:** `amount ≤ nexus_token_account.balance − total_deposited_{usdc,rwt}` (saturating; reverts on violation with `InsufficientNexusProfit`)
+
+    **Logic:**
+    1. Validate principal-lock.
+    2. Nexus PDA signs SPL Transfer of `amount` to `recipient_token_account`.
+    3. Emit `NexusProfitsWithdrawn { token_mint, amount, remaining_profit, treasury_destination }`.
+
+    <Note>
+      The principal floor is intentionally one-way (write-only via `nexus_deposit` / `nexus_record_deposit`). To **return** capital from the Nexus to a holding PDA or the Treasury, profit must be withdrawn separately, and principal must remain on-chain — there is no `nexus_withdraw_principal` instruction.
+    </Note>
   </Accordion>
 
   <Accordion title="update_nexus_manager">
@@ -1328,7 +1398,14 @@ Areal Finance LP management PDA. Singleton — one per DEX. Owns token ATAs and 
 | Pool vaults | LP tokens A+B | remove_liquidity | LP provider |
 | YD reward vault | Pool reserves (RWT) | compound_yield (CPI to YD) | Crank |
 | OT Revenue (10% USDC) | Crank USDC ATA → Nexus USDC ATA | OT `distribute_revenue` → `nexus_deposit` (two-step: crank receives, then deposits) | Crank |
-| RWT Engine yield (15% RWT) | Crank RWT ATA → Nexus RWT ATA | RWT `claim_yield` → `nexus_deposit` (two-step: crank receives, then deposits) | Crank |
+| RWT Engine yield (15% RWT) | LiquidityHolding RWT ATA → Nexus RWT ATA | YD `withdraw_liquidity_holding` (single-TX atomic drain + `nexus_record_deposit` CPI) | Authority |
 | Nexus LP fee rewards (RWT) | Areal Treasury RWT ATA | `nexus_claim_rewards` | Authority |
 | Nexus tokens | Pool vaults | nexus_add_liquidity | Nexus manager |
 | Pool vaults | Nexus tokens | nexus_remove_liquidity | Nexus manager |
+| Nexus token (USDC or RWT) | Areal Treasury ATA | nexus_withdraw_profits (delta above principal floor only) | Authority |
+
+### See also
+
+- [Liquidity Nexus](/architecture/liquidity-nexus) — subsystem-level overview, principal-lock invariant, three trust tiers, and the two deposit lanes that feed the Nexus
+- [Yield Distribution contract](/contracts/yield-distribution) — `LiquidityHolding` PDA and `withdraw_liquidity_holding` (the RWT-lane atomic drain that CPIs into `nexus_record_deposit`)
+- [RWT Engine contract](/contracts/rwt-engine) — `claim_yield` 70 / 15 / 15 split that produces the 15% RWT slice routed through the RWT lane

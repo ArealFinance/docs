@@ -20,6 +20,15 @@ hidePagination: true
 <div className="changelog-entry">
   <div className="changelog-date">1 мая 2026</div>
 
+  ### [Native DEX — Поверхность Nexus (политика прямого SPL Transfer, record deposit, withdraw profits)](/ru/changelog/2026-05-01-native-dex-nexus-surface) <a href="/ru/changelog/features" className="changelog-tag-link"><span className="changelog-tag changelog-tag-feature">Feature</span></a>
+
+  Страница Native DEX теперь документирует политику прямого SPL Transfer (нетрекаемые депозиты поднимают потолок выводимой прибыли, но никогда не нарушают principal floor), CPI-цель `nexus_record_deposit` (только обновление state, вызываемая YD-drain'ом) и Authority-gated `nexus_withdraw_profits`, высвобождающий только разрыв над `total_deposited`. Note `nexus_deposit` разделена по USDC- и RWT-каналам, обновлена сводка потоков токенов.
+
+</div>
+
+<div className="changelog-entry">
+  <div className="changelog-date">1 мая 2026</div>
+
   ### [Yield Distribution — Per-deposit snapshot для merkle-корня](/ru/changelog/2026-05-01-yd-per-deposit-snapshot) <a href="/ru/changelog/updates" className="changelog-tag-link"><span className="changelog-tag changelog-tag-update">Update</span></a> <a href="/ru/changelog/security" className="changelog-tag-link"><span className="changelog-tag changelog-tag-security">Security</span></a>
 
   Офф-чейн publisher merkle-корня теперь использует **per-deposit snapshot aggregation** для расчёта `cumulative_amount` на держателя. Каждый депозит распределяется только между держателями, зафиксированными в snapshot на слоте этого депозита, устраняя front-running вектор на анонсированных распределениях, который создавала наивная формула текущего баланса. Добавлены подсекции «Инфраструктура publisher» (KMS / HSM кастоди ключа, архивный RPC, независимые верификаторы) и «Операционные параметры». Он-чейн поверхность контракта не изменилась.

@@ -1,0 +1,68 @@
+---
+title: "Native DEX — Поверхность Nexus (политика прямого SPL Transfer, record deposit, withdraw profits)"
+description: "Страница Native DEX документирует поверхность principal-lock у Nexus: политику прямого SPL Transfer, новую state-only CPI-цель nexus_record_deposit, используемую YD-drain'ом, и Authority-gated инструкцию nexus_withdraw_profits, высвобождающую только разрыв над principal floor."
+hidePagination: true
+---
+
+<div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "1.5rem" }}>
+  <span className="changelog-tag changelog-tag-feature">Feature</span>
+  <span className="changelog-date">1 мая 2026</span>
+</div>
+
+## Обзор
+
+Страница [контракта Native DEX](/ru/contracts/native-dex) обновлена и теперь документирует остальную часть поверхности инструкций Liquidity Nexus, которая ранее была неявной. Три добавления формализуют: как капитал попадает в Nexus (`nexus_record_deposit`), как прибыль покидает Nexus (`nexus_withdraw_profits`), и как учитываются нерасшифрованные переводы (политика прямого SPL Transfer).
+
+Эта запись закрывает контрактное покрытие поверхности Nexus, начатое архитектурной страницей и обновлениями RWT Engine / Yield Distribution ранее сегодня.
+
+## Что изменилось на странице
+
+### Политика прямого SPL Transfer (Warning)
+
+Page-level `<Warning>` сразу после заголовка `### Liquidity Nexus`. Указывает, что токены, отправленные в токен-аккаунт Nexus через прямой SPL Transfer (в обход документированных каналов депозита), **увеличат on-chain баланс, но НЕ продвинут `total_deposited_*`**. Инвариант principal-lock всё ещё держится — нетрекаемые депозиты эффективно поднимают потолок выводимой прибыли — но principal floor будет занижен. Рекомендация: всегда маршрутизировать через `nexus_deposit` (USDC-канал) или `withdraw_liquidity_holding` в Yield Distribution (RWT-канал).
+
+### Переписана Note для `nexus_deposit`
+
+Note инструкции переписана и разделена по двум каналам депозита:
+
+- **USDC-канал** — OT `distribute_revenue` отправляет 10% USDC на промежуточный crank-кошелёк, который напрямую вызывает `nexus_deposit`. В будущей итерации USDC-сторона может стейджиться через holding-PDA для паритета с RWT-стороной.
+- **RWT-канал** — RWT попадает в Nexus атомарно через `yield_distribution::withdraw_liquidity_holding`. Программа YD переводит RWT из RWT ATA PDA `LiquidityHolding` в RWT ATA Nexus и делает CPI на `nexus_record_deposit` для обновления principal floor — всё в одной транзакции. На RWT-стороне нет промежуточного crank-кошелька.
+
+### Новый Accordion инструкции `nexus_record_deposit`
+
+Чисто state-only обновление principal floor. Вызывается исключительно как CPI-цель из upstream-программы (сейчас `LiquidityHolding` из Yield Distribution), которая уже переместила токены в токен-аккаунт Nexus в той же транзакции. SPL-трансфера в этой инструкции нет — только bookkeeping-нога. Валидация требует, чтобы вызывающий был program-owned signing PDA; прямые подписанты отвергаются. Разделение `nexus_deposit` (SPL-трансфер + state) и `nexus_record_deposit` (только state) позволяет избежать повторного блока signer authority SPL-трансфера через границы программ.
+
+### Новый Accordion инструкции `nexus_withdraw_profits`
+
+Authority-gated вывод прибыли. Высвобождает до `nexus_balance(t) − total_deposited(t)` на запрошенной стороне; падает при переполнении с `InsufficientNexusProfit`. Оседает в ATA Areal Treasury. Эмитирует `NexusProfitsWithdrawn { token_mint, amount, remaining_profit, treasury_destination }`. Principal floor намеренно односторонний; инструкции `nexus_withdraw_principal` не существует.
+
+### Сводка потоков токенов
+
+- Строка 15% RWT обновлена и отражает новый поток: источник = `RWT ATA LiquidityHolding`, механизм = `YD withdraw_liquidity_holding (атомарный drain в одну TX + CPI nexus_record_deposit)`, триггер = Authority.
+- Добавлена новая строка для пути прибыли: `Токен Nexus (USDC или RWT) → ATA Areal Treasury через nexus_withdraw_profits` (Authority).
+
+### Cross-link «См. также»
+
+Ссылается на [архитектурную страницу Liquidity Nexus](/ru/architecture/liquidity-nexus), [контракт Yield Distribution](/ru/contracts/yield-distribution) и [контракт RWT Engine](/ru/contracts/rwt-engine).
+
+## Почему это важно
+
+Вместе с архитектурной страницей и обновлениями YD / RWT Engine эта запись закрывает end-to-end спецификацию инварианта principal-lock. On-chain читатель может проверить, опираясь только на контрактные спеки:
+
+1. Что единственные writer'ы `total_deposited_*` — это `nexus_deposit` и `nexus_record_deposit`, оба монотонно аддитивны.
+2. Что `nexus_withdraw_profits` — единственная инструкция, выводящая токены из аккаунтов Nexus на внешнее назначение, и что она явно проверяет `amount ≤ nexus_balance − total_deposited`.
+3. Что нетрекаемые прямые переводы поднимают потолок выводимой прибыли, но не могут нарушить principal floor.
+
+## Миграция
+
+Это синхронизация документации, а не миграция стейта. Реализации должны:
+
+1. Трактовать `nexus_deposit` и `nexus_record_deposit` как единственных легитимных writer'ов principal floor; никогда не инкрементировать `total_deposited_*` из другой инструкции.
+2. Подключать `nexus_record_deposit` исключительно как CPI-цель — прямые внешние вызовы отвергаются.
+3. Использовать `nexus_withdraw_profits` для всего вывода прибыли и LP-наград; отдельного пути withdraw principal не существует.
+
+## Связанные документы
+
+- [Контракт Native DEX](/ru/contracts/native-dex) — страница, обновлённая этой записью
+- [Liquidity Nexus](/ru/architecture/liquidity-nexus) — обзор подсистемы
+- [Контракт Yield Distribution](/ru/contracts/yield-distribution) — caller `nexus_record_deposit` через `withdraw_liquidity_holding`

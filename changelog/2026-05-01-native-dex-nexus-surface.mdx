@@ -1,0 +1,68 @@
+---
+title: "Native DEX — Nexus Surface (Direct SPL Transfer Policy, Record Deposit, Withdraw Profits)"
+description: "Native DEX page documents the Nexus principal-lock surface: Direct SPL Transfer policy, the new state-only nexus_record_deposit CPI target used by the YD atomic drain, and the Authority-gated nexus_withdraw_profits instruction that releases only the delta above the principal floor."
+hidePagination: true
+---
+
+<div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "1.5rem" }}>
+  <span className="changelog-tag changelog-tag-feature">Feature</span>
+  <span className="changelog-date">May 1, 2026</span>
+</div>
+
+## Overview
+
+The [Native DEX contract page](/contracts/native-dex) is updated with the rest of the Liquidity Nexus instruction surface that was previously implicit. Three additions formalise how capital enters the Nexus (`nexus_record_deposit`), how profit leaves it (`nexus_withdraw_profits`), and how non-routed transfers are accounted for (the Direct SPL Transfer policy).
+
+This entry completes the contract-level coverage of the Nexus surface that was kicked off by the architecture page and the RWT Engine / Yield Distribution updates earlier today.
+
+## What changed on the page
+
+### Direct SPL Transfer policy (Warning)
+
+A page-level `<Warning>` immediately after the `### Liquidity Nexus` heading. Spells out that tokens sent into a Nexus token account via raw SPL Transfer (bypassing the documented deposit lanes) **will increase the on-chain balance but will NOT advance `total_deposited_*`**. The principal-lock invariant still holds — untracked deposits effectively raise the withdrawable-profit ceiling — but the principal floor will under-report. Policy guidance: always route via `nexus_deposit` (USDC lane) or `withdraw_liquidity_holding` in Yield Distribution (RWT lane).
+
+### `nexus_deposit` Note rewrite
+
+The instruction's Note is rewritten to split the two deposit lanes:
+
+- **USDC lane** — OT `distribute_revenue` sends 10% USDC to an intermediate crank wallet, which calls `nexus_deposit` directly. A future iteration may stage USDC through a holding PDA for parity with the RWT side.
+- **RWT lane** — RWT enters the Nexus atomically via `yield_distribution::withdraw_liquidity_holding`. The YD program transfers RWT from the `LiquidityHolding` PDA's RWT ATA into the Nexus RWT ATA and CPIs into `nexus_record_deposit` to update the principal floor — all in a single transaction. There is no intermediate crank wallet on the RWT side.
+
+### `nexus_record_deposit` instruction Accordion (new)
+
+Pure state-only principal-floor update. Invoked exclusively as a CPI target by an upstream program-owned PDA (currently `LiquidityHolding` from Yield Distribution) that has already moved tokens into a Nexus token account in the same transaction. No SPL transfer happens in this instruction — only the bookkeeping leg. Validation requires that the caller is a program-owned signing PDA; direct signers are rejected. Splitting `nexus_deposit` (SPL transfer + state) and `nexus_record_deposit` (state-only) avoids re-locking SPL transfer signer authority across program boundaries.
+
+### `nexus_withdraw_profits` instruction Accordion (new)
+
+Authority-gated profit withdrawal. Releases up to `nexus_balance(t) − total_deposited(t)` for the requested side; reverts on overflow with `InsufficientNexusProfit`. Settles into the Areal Treasury ATA. Emits `NexusProfitsWithdrawn { token_mint, amount, remaining_profit, treasury_destination }`. The principal floor is intentionally one-way; a `nexus_withdraw_principal` instruction does not exist.
+
+### Token Flow Summary
+
+- The 15% RWT row is updated to reflect the new flow: source = `LiquidityHolding RWT ATA`, mechanism = `YD withdraw_liquidity_holding (single-TX atomic drain + nexus_record_deposit CPI)`, trigger = Authority.
+- A new row is added for the profit path: `Nexus token (USDC or RWT) → Areal Treasury ATA via nexus_withdraw_profits` (Authority).
+
+### "See also" cross-link
+
+Links to the [Liquidity Nexus architecture page](/architecture/liquidity-nexus), the [Yield Distribution contract](/contracts/yield-distribution), and the [RWT Engine contract](/contracts/rwt-engine).
+
+## Why this matters
+
+Together with the architecture page and the YD / RWT Engine updates, this entry closes the end-to-end specification of the principal-lock invariant. The on-chain reader can verify, from the contract specs alone:
+
+1. That the only writers of `total_deposited_*` are `nexus_deposit` and `nexus_record_deposit` — both monotonically additive.
+2. That `nexus_withdraw_profits` is the only instruction that moves tokens out of Nexus accounts to an external destination, and that it explicitly checks `amount ≤ nexus_balance − total_deposited`.
+3. That untracked direct-transfer flows raise the withdrawable-profit ceiling but cannot violate the principal floor.
+
+## Migration
+
+This is a documentation alignment, not a state migration. Implementations should:
+
+1. Treat `nexus_deposit` and `nexus_record_deposit` as the only legitimate principal-floor writers; never bump `total_deposited_*` from any other instruction.
+2. Wire `nexus_record_deposit` exclusively as a CPI target — direct external invocations are rejected.
+3. Use `nexus_withdraw_profits` for all profit and LP-fee-related extraction; no separate principal-withdrawal path exists.
+
+## Related documents
+
+- [Native DEX contract](/contracts/native-dex) — the page updated by this entry
+- [Liquidity Nexus](/architecture/liquidity-nexus) — subsystem-level overview
+- [Yield Distribution contract](/contracts/yield-distribution) — caller of `nexus_record_deposit` via `withdraw_liquidity_holding`
