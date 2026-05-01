@@ -1,0 +1,66 @@
+---
+title: "Yield Distribution — Per-deposit snapshot для merkle-корня"
+description: "publish_root и офф-чейн секция Построение дерева Меркла теперь описывают per-deposit snapshot aggregation, которую publisher использует для расчёта cumulative_amount на держателя. Наивный snapshot текущего баланса задокументирован как front-running вектор и явно запрещён."
+hidePagination: true
+---
+
+<div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "1.5rem" }}>
+  <span className="changelog-tag changelog-tag-update">Update</span>
+  <span className="changelog-date">1 мая 2026</span>
+</div>
+
+## Обзор
+
+Страница [контракта Yield Distribution](/ru/contracts/yield-distribution) обновлена и формально специфицирует алгоритм **per-deposit snapshot**, который офф-чейн publisher использует для расчёта `cumulative_amount` на держателя перед вызовом `publish_root`. Алгоритм распределяет каждое он-чейн fund-событие только между держателями, которые держали OT на слоте этого события, а не присваивает всю историческую доходность тем, кто держит OT в момент публикации.
+
+Он-чейн поверхность контракта **не изменилась** — `publish_root` и верификатор merkle-доказательств принимают любое дерево, которое publisher собрал. Эта запись заменяет офф-чейн алгоритм, уязвимый к front-running на анонсированных распределениях, на алгоритм, fair-by-construction.
+
+## Что изменилось на странице
+
+### Accordion инструкции `publish_root`
+
+Блок под "Формат листа Меркла" заменяет старую пропорциональную формулу на per-deposit snapshot выражение:
+
+```
+cumulative_amount[h] = Σ по депозитам i:
+  deposit_amount_i × balance[h, snapshot_i] / total_eligible[snapshot_i]
+```
+
+Держатели, отсутствующие в `snapshot_i`, дают 0 за `deposit_i`. Инвариант: `Σ cumulative_amount[h] == total_funded`.
+
+Cross-link указывает читателю на новую секцию Построение дерева Меркла для полного алгоритма.
+
+### Секция `### Построение дерева Меркла (офф-чейн)` — полная переработка
+
+Секция переписана от начала до конца:
+
+- **Warning** — явно указывает на наивный snapshot текущего баланса как на front-running вектор и запрещает его.
+- **Алгоритм per-deposit snapshot** — разделён на «На каждое fund-событие» (снятие snapshot: архивный RPC `getProgramAccounts`, минимальный порог $100 на snapshot, выделение в ARL OtTreasury доли ниже порога, персистентность snapshot) и «На каждый `publish_root`» (cumulative-агрегация + проверка инварианта + сборка дерева + публикация).
+- **Note** — уточняет, что он-чейн инварианты (`max_total_claim == total_funded`, `total_claimed ≤ max_total_claim`) держатся независимо от того, как выводится `cumulative_amount`, потому что контракт верифицирует только доказательство. Миграция алгоритма (naive → per-deposit → TWAB) — это офф-чейн вопрос; редеплой контракта не нужен.
+- **Инфраструктура publisher** — требование KMS / HSM для кастоди ключа (файлы keypair на диске недопустимы для mainnet), требование архивного RPC-тарифа, размер snapshot storage, рекомендация запускать независимые верификаторы, кросс-чекающие опубликованный корень.
+- **Операционные параметры** — частота публикации, стоимость TX в mainnet, масштабирование compute, потолок масштабирования.
+
+## Почему это важно
+
+При наивном snapshot текущего баланса любой, кто покупает OT незадолго до публикации, получает долю **всех исторических fund-событий**, в которых не участвовал. Это делает анонсированные распределения тривиально front-runnable.
+
+Per-deposit snapshots устраняют это: каждый депозит распределяется пропорционально только между держателями, зафиксированными в snapshot на слоте этого депозита. Для позднего покупателя первая доля начинается со следующего fund-события после покупки OT.
+
+Trade-off — операционный: publisher'у нужен архивный RPC-тариф для чтения исторических балансов и per-snapshot хранилище балансов держателей. Оба пункта документированы в подсекции «Инфраструктура publisher».
+
+## Миграция
+
+Это синхронизация документации, а не миграция стейта. Реализации publish authority должны:
+
+1. Подписаться на события `DistributorFunded` и `StreamConverted`.
+2. Снимать snapshot балансов держателей OT на слоте каждого fund-события через архивный `getProgramAccounts` (бесплатный RPC-тариф не работает — нужно историческое состояние program accounts).
+3. Хранить snapshot, индексированные по `{distributor, deposit_epoch, slot}`.
+4. На каждый `publish_root` агрегировать cumulative-значения по всем известным snapshot, проверять `Σ == total_funded` и публиковать.
+5. Распределять остаток округления и долю ниже $100 в лист **ARL OtTreasury PDA**.
+6. Перенести ключ publisher в managed KMS или HSM до mainnet — файлы keypair на диске недопустимы.
+
+## Связанные документы
+
+- [Контракт Yield Distribution](/ru/contracts/yield-distribution) — страница, обновлённая этой записью
+- [Off-Chain сервисы](/ru/bots/off-chain-services) — операционные детали publisher-бота
+- [Ownership Tokens](/ru/economics/ownership-tokens) — экономическое обоснование порога $100 по холдингам протокола

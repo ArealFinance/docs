@@ -1,0 +1,66 @@
+---
+title: "Yield Distribution — Per-Deposit Snapshot Algorithm for Merkle Root"
+description: "publish_root and the off-chain Merkle Tree Construction section now describe the per-deposit snapshot aggregation that the publisher uses to compute cumulative_amount per holder. The naive current-balance snapshot is documented as a front-running vector and explicitly disallowed."
+hidePagination: true
+---
+
+<div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "1.5rem" }}>
+  <span className="changelog-tag changelog-tag-update">Update</span>
+  <span className="changelog-date">May 1, 2026</span>
+</div>
+
+## Overview
+
+The [Yield Distribution contract page](/contracts/yield-distribution) is updated to formally specify the **per-deposit snapshot** algorithm that the off-chain publisher uses to compute `cumulative_amount` per holder before invoking `publish_root`. The algorithm allocates each on-chain fund event only to holders who held OT at that fund event's slot, instead of awarding all historical yield to whoever holds OT at publish time.
+
+The on-chain contract surface is **unchanged** — `publish_root` and the merkle proof verifier accept any tree the publisher produces. This entry replaces an off-chain algorithm that was vulnerable to front-running on announced distributions with one that is fair-by-construction.
+
+## What changed on the page
+
+### `publish_root` instruction Accordion
+
+The block under "Merkle leaf format" replaces the old proportional formula with the per-deposit snapshot expression:
+
+```
+cumulative_amount[h] = Σ over deposits i:
+  deposit_amount_i × balance[h, snapshot_i] / total_eligible[snapshot_i]
+```
+
+Holders absent from `snapshot_i` contribute 0 for `deposit_i`. Invariant: `Σ cumulative_amount[h] == total_funded`.
+
+A cross-link points readers to the new Merkle Tree Construction section for the full algorithm.
+
+### `### Merkle Tree Construction (Off-chain)` section — full rewrite
+
+The section is rewritten end-to-end:
+
+- **Warning** — explicitly calls out the naive current-balance snapshot as a front-running vector and disallows it.
+- **Per-deposit snapshot algorithm** — split into "On each fund event" (snapshot capture: archival-RPC `getProgramAccounts`, $100 minimum threshold per snapshot, ARL OtTreasury allocation for sub-threshold share, snapshot persistence) and "On each `publish_root`" (cumulative aggregation + invariant check + tree build + publish).
+- **Note** — clarifies that the on-chain invariants (`max_total_claim == total_funded`, `total_claimed ≤ max_total_claim`) hold regardless of how `cumulative_amount` is derived, because the contract verifies only the proof. Algorithm migration (naive → per-deposit → TWAB) is therefore an off-chain concern; no contract redeploy is needed.
+- **Publisher infrastructure** — KMS / HSM key custody requirement (on-disk keypairs not acceptable for mainnet), archival-RPC tier requirement, snapshot storage sizing, and the recommendation to run independent verifiers that cross-check the published root.
+- **Operational parameters** — publish frequency, mainnet TX cost, compute scaling, and scale ceiling.
+
+## Why this matters
+
+Under a naive current-balance snapshot, anyone who buys OT shortly before a publish would receive a share of **all historical fund events** they did not participate in. That makes announced distributions trivially front-runnable.
+
+Per-deposit snapshots eliminate this: each deposit is allocated proportionally only to holders captured in the snapshot taken at that deposit's slot. A late buyer's first deposit-share starts from the next fund event after they acquired OT.
+
+The tradeoff is operational: the publisher needs an archival RPC tier to read historical balances, and per-snapshot storage of holder balances. Both are documented in the Publisher infrastructure subsection.
+
+## Migration
+
+This is a documentation alignment, not a state migration. Implementations of the publish authority should:
+
+1. Subscribe to `DistributorFunded` and `StreamConverted` events.
+2. Snapshot OT holder balances at each fund event's slot via archival `getProgramAccounts` (free-tier RPC will not work — historical program-account state is required).
+3. Persist snapshots indexed by `{distributor, deposit_epoch, slot}`.
+4. On each `publish_root`, aggregate cumulative amounts across all known snapshots, verify `Σ == total_funded`, and publish.
+5. Allocate the rounding remainder and the < $100 sub-threshold share to the **ARL OtTreasury PDA** leaf.
+6. Move the publisher key into a managed KMS or HSM before mainnet — on-disk keypair files are not acceptable.
+
+## Related documents
+
+- [Yield Distribution contract](/contracts/yield-distribution) — the page updated by this entry
+- [Off-Chain Services](/bots/off-chain-services) — publisher bot operational details
+- [Ownership Tokens](/economics/ownership-tokens) — economic motivation for the $100 protocol-holdings threshold

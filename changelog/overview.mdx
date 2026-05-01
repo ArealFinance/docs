@@ -20,6 +20,15 @@ All notable changes to the Areal Finance protocol are documented here. Filter by
 <div className="changelog-entry">
   <div className="changelog-date">May 1, 2026</div>
 
+  ### [Yield Distribution — Per-Deposit Snapshot Algorithm for Merkle Root](/changelog/2026-05-01-yd-per-deposit-snapshot) <a href="/changelog/updates" className="changelog-tag-link"><span className="changelog-tag changelog-tag-update">Update</span></a> <a href="/changelog/security" className="changelog-tag-link"><span className="changelog-tag changelog-tag-security">Security</span></a>
+
+  Off-chain merkle-root publisher now uses **per-deposit snapshot aggregation** to compute `cumulative_amount` per holder. Each deposit is allocated only to holders captured in the snapshot taken at that deposit's slot, eliminating the front-running vector around announced distributions that the naive current-balance formula introduced. Adds Publisher Infrastructure (KMS / HSM key custody, archival RPC, independent verifiers) and Operational Parameters subsections. The on-chain contract surface is unchanged.
+
+</div>
+
+<div className="changelog-entry">
+  <div className="changelog-date">May 1, 2026</div>
+
   ### [Yield Distribution — LiquidityHolding PDA and Atomic Drain](/changelog/2026-05-01-yd-liquidity-holding) <a href="/changelog/features" className="changelog-tag-link"><span className="changelog-tag changelog-tag-feature">Feature</span></a>
 
   Documents the `LiquidityHolding` singleton PDA (state, seed, owned RWT ATA) and the `withdraw_liquidity_holding` instruction — Authority-gated atomic drain that bundles the SPL transfer with a CPI to `native_dex::nexus_record_deposit` in a single transaction, eliminating any window between RWT delivery and the Nexus principal-floor update. New `LiquidityHoldingWithdrawn` event.
