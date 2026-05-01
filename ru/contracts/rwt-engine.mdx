@@ -259,7 +259,7 @@ NAV = total_invested_capital * 1,000,000 / total_rwt_supply
     | `book_value_bps` | `u16` | % роста NAV |
     | `liquidity_bps` | `u16` | % в Nexus |
     | `protocol_revenue_bps` | `u16` | % в ARL Treasury |
-    | `liquidity_destination` | `Pubkey` | RWT ATA крэнка (крэнк направляет в Nexus через `nexus_deposit`) |
+    | `liquidity_destination` | `Pubkey` | RWT ATA PDA `LiquidityHolding` (программа Yield Distribution). Затем дренируется в Liquidity Nexus через `withdraw_liquidity_holding` (1 TX, атомарное обновление principal floor). |
     | `protocol_revenue_destination` | `Pubkey` | RWT ATA ARL Treasury |
 
     **Вызывающий:** Authority (Team Multisig)
@@ -398,7 +398,7 @@ NAV = total_invested_capital * 1,000,000 / total_rwt_supply
     4. Если claimed == 0, возврат (нечего распределять)
     5. Расчёт долей (в токенах RWT):
        - `book_value_share = claimed * book_value_bps / 10,000` (остаётся в хранилище)
-       - `liquidity_share = claimed * liquidity_bps / 10,000` (→ liquidity_dest, затем направляется в Nexus через `nexus_deposit`)
+       - `liquidity_share = claimed * liquidity_bps / 10,000` (→ `liquidity_dest` = RWT ATA PDA `LiquidityHolding` в Yield Distribution; затем дренируется в Liquidity Nexus через `withdraw_liquidity_holding`, 1 TX, атомарное обновление principal floor)
        - `protocol_revenue_share = claimed - book_value_share - liquidity_share` (→ ARL Treasury, рассчитывается как **остаток** — не из `protocol_revenue_bps` — для предотвращения потери пыли от целочисленного деления. Хранимый `protocol_revenue_bps` используется только для валидации в `update_distribution_config` и для отображения.)
     6. Перевод `liquidity_share` RWT → liquidity_dest (PDA хранилища подписывает)
     7. Перевод `protocol_revenue_share` RWT → protocol_revenue_dest (PDA хранилища подписывает)
@@ -457,7 +457,7 @@ NAV = total_invested_capital * 1,000,000 / total_rwt_supply
 | `manager` | `Pubkey` | Кошелёк менеджера (может выполнять vault_swap) |
 | `pause_authority` | `Pubkey` | Подписант экстренной приостановки (Team Multisig, неизменяемый) |
 | `mint_paused` | `bool` | Флаг приостановки минта |
-| `areal_fee_destination` | `Pubkey` | Куда идёт 0.5% комиссии минта (статический, неизменяемый) |
+| `areal_fee_destination` | `Pubkey` | Куда идёт 0.5% комиссии минта — USDC ATA Areal Finance (статический, неизменяемый). Тот же on-chain Pubkey фигурирует под именем аккаунта `dao_fee_account` в `mint_rwt`; обработчик валидирует `dao_fee_account.key == vault.areal_fee_destination`. |
 | `bump` | `u8` | Bump-сид PDA |
 
 **PDA Seed:** `["rwt_vault"]`
@@ -475,7 +475,7 @@ NAV = total_invested_capital * 1,000,000 / total_rwt_supply
 | `book_value_bps` | `u16` | % остающийся в хранилище для роста NAV (по умолчанию: 7,000 = 70%) |
 | `liquidity_bps` | `u16` | % отправляемый в Liquidity Nexus (по умолчанию: 1,500 = 15%) |
 | `protocol_revenue_bps` | `u16` | % отправляемый в ARL Treasury (по умолчанию: 1,500 = 15%) |
-| `liquidity_destination` | `Pubkey` | RWT ATA крэнка (крэнк направляет в Nexus через `nexus_deposit` для отслеживания основного долга) |
+| `liquidity_destination` | `Pubkey` | RWT ATA PDA `LiquidityHolding` (программа Yield Distribution). Затем дренируется в Liquidity Nexus через `withdraw_liquidity_holding` — 1 TX, атомарное обновление principal floor Nexus. |
 | `protocol_revenue_destination` | `Pubkey` | Адрес RWT ATA ARL Treasury |
 | `bump` | `u8` | Bump-сид PDA |
 
@@ -612,7 +612,12 @@ NAV = total_invested_capital * 1,000,000 / total_rwt_supply
 | USDC пользователя | Areal Fee (0.5%) | mint_rwt (dao_fee) | Пользователь |
 | Vault PDA | RWT ATA пользователя | mint_rwt (минтит RWT) | Пользователь |
 | YD Stream | Vault RWT Claim ATA | claim_yield (CPI claim) | Крэнк |
-| Vault RWT | RWT ATA крэнка (15%) → Nexus через `nexus_deposit` | claim_yield + nexus_deposit | Крэнк |
+| Vault RWT | RWT ATA LiquidityHolding (15%) → Nexus через `withdraw_liquidity_holding` (1 TX, атомарно) | claim_yield → withdraw_liquidity_holding | Крэнк → Authority |
 | Vault RWT | ARL Treasury ATA (15%) | claim_yield | Крэнк |
 | Vault any token | Vault any token | vault_swap (CPI DEX) | Менеджер |
 | Authority | Vault state | admin_mint_rwt, adjust_capital | Team Multisig |
+
+### См. также
+
+- [Liquidity Nexus](/ru/architecture/liquidity-nexus) — обзор подсистемы LP протокола, инвариант principal-lock и каналы депозитов, в которые попадает 15% доходности RWT
+- [Контракт Yield Distribution](/ru/contracts/yield-distribution) — PDA `LiquidityHolding` и инструкция атомарного drain

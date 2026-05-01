@@ -20,6 +20,15 @@ hidePagination: true
 <div className="changelog-entry">
   <div className="changelog-date">1 мая 2026</div>
 
+  ### [RWT Engine — Маршрутизация 15% доходности через LiquidityHolding](/ru/changelog/2026-05-01-rwt-engine-liquidity-holding) <a href="/ru/changelog/updates" className="changelog-tag-link"><span className="changelog-tag changelog-tag-update">Update</span></a>
+
+  `claim_yield` маршрутизирует 15% долю ликвидности в RWT ATA PDA `LiquidityHolding` в Yield Distribution; доля достигает Liquidity Nexus через атомарный drain в одну TX (`withdraw_liquidity_holding`), который обновляет principal floor Nexus в той же инструкции. Документирован dual-role alias `RwtVault.areal_fee_destination` под именем аккаунта `dao_fee_account` в `mint_rwt`. Экономический дележ 70 / 15 / 15 не изменился.
+
+</div>
+
+<div className="changelog-entry">
+  <div className="changelog-date">1 мая 2026</div>
+
   ### [Liquidity Nexus — Выделенная архитектурная страница](/ru/changelog/2026-05-01-liquidity-nexus) <a href="/ru/changelog/features" className="changelog-tag-link"><span className="changelog-tag changelog-tag-feature">Feature</span></a>
 
   Новая архитектурная страница формально документирует подсистему Liquidity Nexus — три уровня доверия, инвариант principal-lock `nexus_balance(t) ≥ total_deposited(t)`, два канала депозита (USDC из выручки OT, RWT из доходности RWT), kill-switch для Manager и политику прямого SPL Transfer. Вводит PDA `LiquidityHolding` в Yield Distribution как стейджинговый аккаунт для RWT-канала.

@@ -154,6 +154,7 @@
                 "group": "May 2026",
                 "icon": "calendar",
                 "pages": [
+                  "changelog/2026-05-01-rwt-engine-liquidity-holding",
                   "changelog/2026-05-01-liquidity-nexus"
                 ]
               },
@@ -288,6 +289,7 @@
                 "group": "Май 2026",
                 "icon": "calendar",
                 "pages": [
+                  "ru/changelog/2026-05-01-rwt-engine-liquidity-holding",
                   "ru/changelog/2026-05-01-liquidity-nexus"
                 ]
               },

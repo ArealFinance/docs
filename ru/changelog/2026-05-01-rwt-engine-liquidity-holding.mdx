@@ -1,0 +1,63 @@
+---
+title: "RWT Engine — Маршрутизация 15% доходности через LiquidityHolding"
+description: "claim_yield теперь маршрутизирует 15% долю ликвидности в PDA LiquidityHolding в Yield Distribution; доля достигает Liquidity Nexus через атомарный drain в одну TX. Документирован dual-role alias для areal_fee_destination."
+hidePagination: true
+---
+
+<div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "1.5rem" }}>
+  <span className="changelog-tag changelog-tag-update">Update</span>
+  <span className="changelog-date">1 мая 2026</span>
+</div>
+
+## Обзор
+
+Страница [контракта RWT Engine](/ru/contracts/rwt-engine) обновлена и теперь отражает: 15% доля ликвидности, формируемая `claim_yield`, больше не попадает в RWT ATA, принадлежащий крэнку. Она пишется в **RWT-аккаунт PDA `LiquidityHolding`** в программе Yield Distribution и достигает Liquidity Nexus через **атомарный drain в одну транзакцию** (`withdraw_liquidity_holding`), который обновляет principal floor Nexus в той же инструкции.
+
+Экономический дележ 70 / 15 / 15 не изменился. Изменился стейджинговый аккаунт и гарантия атомарности на RWT-канале депозита в Nexus.
+
+## Почему изменение
+
+Раньше 15% доля депонировалась в RWT ATA, контролируемый крэнком, и отдельный вызов `nexus_deposit` перемещал её в Nexus. Между двумя транзакциями было окно, в котором on-chain баланс Nexus и `total_deposited_rwt` могли расходиться, и в котором зависший крэнк или сбой RPC мог оставить RWT во владении кошелька крэнка, а не протокола.
+
+Новый стейджинговый путь полностью устраняет это окно: `claim_yield` пишет напрямую в PDA, принадлежащую контракту (без внешнего keypair), а drain в Nexus — это одна транзакция, объединяющая SPL-трансфер с CPI на обновление principal floor. Инвариант principal-lock `nexus_balance(t) ≥ total_deposited(t)` поэтому держится без промежуточных окон на RWT-канале.
+
+## Что изменилось на странице
+
+### Поле `liquidity_destination`
+
+Оба упоминания на странице (Accordion инструкции `update_distribution_config` и таблица состояния `RwtDistributionConfig`) теперь описывают destination как **RWT ATA PDA `LiquidityHolding`** в Yield Distribution, с явной ссылкой на атомарный drain `withdraw_liquidity_holding`.
+
+### `claim_yield` Логика шаг 5
+
+Описание расчёта `liquidity_share` теперь явно указывает стейджинговый аккаунт и последующий атомарный drain в Nexus.
+
+### `RwtVault.areal_fee_destination` — dual-role alias имени аккаунта
+
+Строка поля состояния теперь явно документирует: тот же on-chain Pubkey фигурирует под именем аккаунта **`dao_fee_account`** в `mint_rwt`, и обработчик валидирует `dao_fee_account.key == vault.areal_fee_destination`. Раньше это было недокументированной convention именования аккаунтов в Anchor; явная фиксация предотвращает предположение читателя о существовании двух разных fee-аккаунтов.
+
+### Сводка потоков токенов
+
+Строка 15% RWT обновлена и отражает новый поток: `Vault RWT → RWT ATA LiquidityHolding → Nexus через withdraw_liquidity_holding (1 TX, атомарно)`. Колонка триггера обновлена на `Крэнк → Authority`, так как drain — это Authority-gated инструкция.
+
+### Cross-link «См. также»
+
+Новая секция ссылается на [архитектурную страницу Liquidity Nexus](/ru/architecture/liquidity-nexus) и [контракт Yield Distribution](/ru/contracts/yield-distribution).
+
+## Без изменений
+
+- Дележ доходности 70 / 15 / 15 не изменился. Дефолты `book_value_bps`, `liquidity_bps`, `protocol_revenue_bps` остаются `7,000 / 1,500 / 1,500`.
+- Сигнатура инструкции `claim_yield`, CPI-вызов claim в Yield Distribution и расчёт `protocol_revenue_share` как остатка не изменены.
+- Семантика `mint_rwt`, дележ 0.5% mint fee и неизменяемость `areal_fee_destination` не изменены.
+
+## Миграция
+
+Это синхронизация документации, а не миграция стейта на живом деплое. Реализации, ориентирующиеся на спеку, должны:
+
+1. Трактовать `liquidity_destination` как RWT ATA, выводимый из PDA и принадлежащий программе Yield Distribution (а именно — RWT-аккаунт PDA `LiquidityHolding`), а не как ATA кошелька.
+2. Запускать канал депозита одним вызовом `withdraw_liquidity_holding` от Authority, а не отдельным `nexus_deposit` после `claim_yield`.
+
+## Связанные документы
+
+- [Контракт RWT Engine](/ru/contracts/rwt-engine) — страница, обновлённая этой записью
+- [Liquidity Nexus](/ru/architecture/liquidity-nexus) — обзор подсистемы канала депозита
+- [Контракт Yield Distribution](/ru/contracts/yield-distribution) — стейджинговая PDA и инструкция атомарного drain (полная спецификация — в следующей записи changelog)
