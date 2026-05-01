@@ -1,0 +1,42 @@
+---
+title: "Liquidity Nexus — Dedicated Architecture Page"
+description: "New architecture page formalises the Liquidity Nexus subsystem — principal-lock invariant, two deposit lanes (USDC + RWT), three trust tiers, and the manager kill-switch."
+hidePagination: true
+---
+
+<div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "1.5rem" }}>
+  <span className="changelog-tag changelog-tag-feature">Feature</span>
+  <span className="changelog-date">May 1, 2026</span>
+</div>
+
+## Overview
+
+A new architecture page formally documents the **Liquidity Nexus** — the singleton subsystem that holds protocol-owned liquidity and deploys it across Native DEX pools. The Nexus has been part of the on-chain footprint since the initial DEX release and was previously referenced in the Native DEX contract spec and the Treasury page, but its design as a standalone subsystem — including the principal-lock invariant, the two deposit lanes, and the trust tiering — was not documented in one place.
+
+This change formalises the public specification. No protocol behaviour is added or removed; the page describes the contract surface that a developer or auditor needs to understand the subsystem's safety properties.
+
+## What the new page covers
+
+- **Subsystem boundaries** — what the Nexus is, what it is not, and how it relates to the Native DEX, RWT Engine, and Yield Distribution contracts
+- **Three trust tiers** — Authority (Team Multisig), Manager (bot keypair), and Permissionless, each with explicit can-do / cannot-do limits
+- **Principal-lock invariant** — the formal safety property `nexus_balance(t) ≥ total_deposited(t)` that must hold for each token side at all times
+- **Two deposit lanes** — the USDC lane (10% of OT revenue) and the RWT lane (15% of RWT yield), with explicit single-TX atomicity guarantees on the principal floor
+- **Manager-controlled LP operations** — swap, add-liquidity, remove-liquidity, with the explicit limit that Manager actions cannot move tokens out of Nexus accounts to an external destination
+- **Authority-only profit withdrawal** — LP-fee rewards and realised profit, both gated on the Native DEX `authority` field
+- **Off-chain operator surface** — Nexus Manager bot, dry-run-by-default, multi-RPC fallback
+
+## Direct SPL Transfer policy
+
+The page explicitly calls out that tokens sent into a Nexus token account via raw SPL Transfer (bypassing the documented deposit lanes) **will increase the on-chain balance but will NOT advance `total_deposited`**. The principal-lock invariant still holds, but the principal floor will under-report. The policy guidance: always route capital through the documented lanes.
+
+## RWT lane and the LiquidityHolding PDA
+
+The new page introduces, for the first time in public docs, the **LiquidityHolding** PDA in the Yield Distribution contract — the staging account for the RWT deposit lane. The full contract-level specification of this PDA (state fields, seeds, and the atomic-drain instruction) will follow in a subsequent changelog entry that updates the Yield Distribution and RWT Engine contract pages.
+
+## Related documents
+
+- [Liquidity Nexus](/architecture/liquidity-nexus) — the new architecture page
+- [Liquidity & Native DEX](/architecture/liquidity-and-native-dex) — DEX-level overview the Nexus sits inside
+- [Native DEX contract](/contracts/native-dex) — `LiquidityNexus` state and instruction surface
+- [Yield Distribution contract](/contracts/yield-distribution) — staging PDA for the RWT lane (full coverage in a follow-up entry)
+- [Off-Chain Services](/bots/off-chain-services) — Nexus Manager bot

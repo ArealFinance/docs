@@ -66,6 +66,7 @@
                   "architecture/overview",
                   "architecture/governance-and-futarchy",
                   "architecture/liquidity-and-native-dex",
+                  "architecture/liquidity-nexus",
                   "architecture/yield-and-reward-distribution"
                 ]
               },
@@ -150,6 +151,13 @@
                 ]
               },
               {
+                "group": "May 2026",
+                "icon": "calendar",
+                "pages": [
+                  "changelog/2026-05-01-liquidity-nexus"
+                ]
+              },
+              {
                 "group": "April 2026",
                 "icon": "calendar",
                 "pages": [
@@ -192,6 +200,7 @@
                   "ru/architecture/overview",
                   "ru/architecture/governance-and-futarchy",
                   "ru/architecture/liquidity-and-native-dex",
+                  "ru/architecture/liquidity-nexus",
                   "ru/architecture/yield-and-reward-distribution"
                 ]
               },
@@ -273,6 +282,13 @@
                   "ru/changelog/breaking",
                   "ru/changelog/security",
                   "ru/changelog/compliance"
+                ]
+              },
+              {
+                "group": "Май 2026",
+                "icon": "calendar",
+                "pages": [
+                  "ru/changelog/2026-05-01-liquidity-nexus"
                 ]
               },
               {

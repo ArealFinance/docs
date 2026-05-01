@@ -1,0 +1,167 @@
+---
+title: Liquidity Nexus
+description: The protocol-owned liquidity subsystem — how Areal deploys its own capital into Native DEX pools while keeping principal one-way locked
+---
+
+## What the Liquidity Nexus is
+
+The **Liquidity Nexus** is a singleton on-chain account inside the Native DEX program that holds **protocol-owned liquidity** and deploys it across DEX pools. It is the subsystem through which Areal Finance accumulates a productive book of LP positions on its own DEX, earns swap-fee rewards on those positions, and routes realised profit to the Areal Treasury.
+
+Capital flows into the Nexus from two upstream programs:
+
+- **10% of OT revenue** in USDC, from `ownership_token::distribute_revenue`
+- **15% of RWT yield** in RWT, from `rwt_engine::claim_yield`
+
+A dedicated bot — the **Nexus Manager** — deploys this capital into LP positions on Areal's own DEX. LP-fee rewards earned on those positions, and any realised LP profit, are pulled out by Authority into the Areal Treasury.
+
+<Info>
+  The Nexus is the protocol's own LP. Once tokens enter, **principal is one-way** — there is no instruction that returns deposited capital to its source. The only path principal can leave the Nexus is as realised LP profit, withdrawn by Authority.
+</Info>
+
+---
+
+## Subsystem at a glance
+
+```
+┌─────────────────────────────────┐         ┌───────────────────────────┐
+│  Ownership Token contract        │         │  RWT Engine contract       │
+│  10% of OT revenue (USDC)        │         │  15% of RWT yield (RWT)    │
+└──────────────┬───────────────────┘         └─────────────┬─────────────┘
+               │                                            │
+               ▼                                            ▼
+   ┌──────────────────────┐               ┌────────────────────────────┐
+   │  Crank wallet         │               │  LiquidityHolding PDA       │
+   │  USDC ATA             │               │  (Yield Distribution)        │
+   │                       │               │  RWT ATA                     │
+   └──────────┬────────────┘               └──────────────┬──────────────┘
+              │                                            │
+              │  USDC deposit lane                         │  RWT deposit lane
+              │  (permissionless,                          │  (Authority,
+              │   single TX: transfer +                    │   single TX: atomic
+              │   principal-floor update)                  │   drain + CPI floor update)
+              │                                            │
+              ▼                                            ▼
+       ┌─────────────────────────────────────────────────────────┐
+       │                  Liquidity Nexus PDA                      │
+       │     manager, total_deposited_usdc, total_deposited_rwt    │
+       │     Nexus USDC ATA, Nexus RWT ATA, LP positions           │
+       └────────────────────────┬────────────────────────────────┘
+                                │
+                                │  Manager-only:
+                                │    swap, add liquidity, remove liquidity
+                                │
+                                ▼
+                ┌─────────────────────────────┐
+                │     Native DEX pools         │
+                │  (LP positions owned by      │
+                │   the Liquidity Nexus PDA)   │
+                └─────────────────────────────┘
+
+Authority-only:
+   Claim LP-fee rewards     → Areal Treasury RWT ATA
+   Withdraw realised profit → Areal Treasury (USDC or RWT)
+   Rotate Manager           → set new pubkey, or zero pubkey for kill-switch
+```
+
+---
+
+## Three trust tiers
+
+Every operation on the Nexus is gated by exactly one of three roles. The roles are non-overlapping by design — Authority cannot place LP, Manager cannot withdraw profit, and a permissionless caller cannot do either.
+
+| Tier | Wallet | Can do | Cannot do |
+|---|---|---|---|
+| **Authority** (Team Multisig) | Native DEX `authority` field | Initialize the Nexus, rotate its Manager, claim LP-fee rewards, withdraw realised profit | Place or close LP positions, move tokens between Nexus accounts |
+| **Manager** (bot keypair) | `LiquidityNexus.manager` | Swap, add liquidity, remove liquidity using Nexus capital | Transfer tokens out of Nexus accounts, rotate itself, withdraw any profit |
+| **Permissionless** | any signer | Trigger the USDC deposit lane | Anything that touches LP positions or moves tokens out of Nexus accounts |
+
+Authority can **rotate or disable** the Manager keypair at any time. Setting the manager to the zero pubkey acts as a kill-switch — every Manager-only instruction reverts until Authority sets a real pubkey again.
+
+---
+
+## Principal-lock invariant
+
+The single most important safety property of the Nexus subsystem:
+
+> For each token side **t ∈ \{USDC, RWT\}**, at all times: **`nexus_balance(t) ≥ total_deposited(t)`**.
+
+`total_deposited` is **monotonically non-decreasing** — it can only grow, never shrink. The fields are written exclusively by the two deposit lanes, and there is no instruction in the contract that can reduce them.
+
+The only path tokens leave the Nexus accounts to an external destination is the Authority-only profit withdrawal. It validates `amount ≤ nexus_balance(t) − total_deposited(t)` and reverts on violation. In other words, **profit can leave the Nexus, but principal cannot — by construction, not by policy**.
+
+This is intentionally one-way. Capital cannot accidentally leak back to the originating program, and any future "rebase" mechanic that rebalances total protocol principal between the Treasury and the Nexus must be a separate, explicit Authority-signed instruction added to the contract.
+
+---
+
+## Two deposit lanes
+
+The two upstream programs route into the Nexus via different patterns. Both **update `total_deposited` atomically** with the SPL transfer that moves the tokens — there is no window in which the on-chain Nexus balance and the principal floor can disagree.
+
+| Lane | Source | Staging | Atomicity |
+|---|---|---|---|
+| **USDC** | OT `distribute_revenue` (10% slice) | Crank wallet USDC ATA | Single TX — SPL transfer + `total_deposited_usdc` update |
+| **RWT** | RWT `claim_yield` (15% slice) | Yield Distribution `LiquidityHolding` PDA RWT ATA | Single TX — SPL transfer + CPI that writes `total_deposited_rwt` |
+
+The RWT lane stages through a dedicated PDA in the Yield Distribution contract called the **LiquidityHolding**. `claim_yield` writes the 15% RWT share into that PDA's RWT account, and an Authority-callable instruction in Yield Distribution drains it into the Nexus in **one transaction** — including a CPI that updates the Nexus principal floor in the same instruction. There is no window during which RWT sits in the Holding while the Nexus floor disagrees with the actual transfer. See the [Yield Distribution contract reference](/contracts/yield-distribution) for the staging PDA's state and instruction details.
+
+<Warning>
+  **Direct SPL Transfer policy.** Tokens sent into a Nexus token account via a raw SPL Transfer (i.e., bypassing the documented deposit lanes) **will increase the on-chain balance but will NOT advance `total_deposited`**. The principal-lock invariant still holds — untracked deposits effectively raise the withdrawable-profit ceiling — but the principal floor will under-report. Always route capital through the documented lanes.
+</Warning>
+
+---
+
+## Manager-controlled LP operations
+
+The Manager bot owns capital deployment. It cannot move tokens out of Nexus accounts to an external wallet, but it can **commit them to LP positions** via DEX instructions that take Nexus accounts as the source.
+
+The standard operations the Manager performs are:
+
+- **Swap** — rebalance Nexus token holdings between USDC, RWT, or any DEX-supported token side
+- **Add liquidity** — deploy capital into an existing pool, creating an `LpPosition` owned by the Nexus PDA
+- **Remove liquidity** — pull capital back into Nexus accounts as native tokens
+
+Each of these is a Manager-only DEX instruction that runs the standard pool-side validation but additionally checks that the signer matches `LiquidityNexus.manager`. If Authority disables the Manager (zero pubkey), every operation reverts.
+
+Manager actions never touch the principal floor, so they cannot violate the principal-lock invariant on their own — they only move tokens between Nexus accounts and pool reserves. Realised profit and loss accumulate as the gap between Nexus balance and `total_deposited`.
+
+---
+
+## Authority-only profit withdrawal
+
+LP fees and realised profit on Nexus positions are claimed exclusively by Authority:
+
+- **LP-fee rewards** — when the Nexus's positions in a pool accumulate swap-fee rewards, Authority claims them straight into the Areal Treasury RWT ATA via a dedicated DEX instruction. This does not touch the principal floor — fee rewards were never counted as principal.
+- **Realised profit** — for any token side, Authority can withdraw up to `nexus_balance(t) − total_deposited(t)` (the gap between current on-chain holdings and the principal floor). The instruction reverts on overflow. Withdrawals settle into the Areal Treasury.
+
+Both flows are gated on the Native DEX `authority` field — by default the Team Multisig.
+
+---
+
+## Off-chain operator surface
+
+The **Nexus Manager** bot owns the Manager keypair and runs a periodic decision loop. It reads on-chain pool state, evaluates whether Nexus capital should be reweighted between pools or left in place, and submits the corresponding swap / add-liquidity / remove-liquidity transactions.
+
+The bot defaults to **dry-run mode** for staging, with a separate flag required to enable on-chain submission. Multi-RPC fallback, single-instance locking, and a SOL-balance pre-flight check are part of the operator hardening. See [Off-Chain Services](/bots/off-chain-services) for the operational details.
+
+The deposit lanes do not require the Manager — the USDC lane is permissionless, and the RWT-lane drain is Authority-gated. The Manager is exclusively for capital deployment after deposits land.
+
+---
+
+## Boundaries
+
+The Nexus is a **liquidity layer**, not a yield layer or a governance layer. To keep the trust model clean, several adjacent capabilities are deliberately **not** part of it:
+
+- **No principal withdrawal.** There is no instruction that returns deposited capital to its source. Any future rebalance of total protocol principal between the Treasury and the Nexus must go through a separate, explicit Authority-signed instruction.
+- **No protocol yield split.** The 70 / 15 / 15 split of RWT yield is configured on the RWT Engine vault, not on the Nexus. The Nexus only sees its 15% share after it lands.
+- **No master-pool gating.** Whether a master pool accepts user-side LP, or only Nexus LP, is a parameter on the pool, not on the Nexus.
+
+---
+
+## Related documents
+
+- [Liquidity & Native DEX](/architecture/liquidity-and-native-dex) — DEX-level architecture and pool types the Nexus deploys into
+- [Native DEX contract](/contracts/native-dex) — `LiquidityNexus` state and the Manager-only / Authority-only instructions
+- [Yield Distribution contract](/contracts/yield-distribution) — `LiquidityHolding` PDA and the atomic-drain instruction for the RWT lane
+- [RWT Engine contract](/contracts/rwt-engine) — `claim_yield` 70 / 15 / 15 split that funds the RWT lane
+- [Treasury](/economics/treasury) — where Nexus profit settles
+- [Off-Chain Services](/bots/off-chain-services) — Nexus Manager bot

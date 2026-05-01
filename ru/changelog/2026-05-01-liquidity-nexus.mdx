@@ -1,0 +1,42 @@
+---
+title: "Liquidity Nexus — Выделенная архитектурная страница"
+description: "Новая архитектурная страница формализует подсистему Liquidity Nexus — инвариант principal-lock, два канала депозита (USDC + RWT), три уровня доверия и kill-switch для Manager."
+hidePagination: true
+---
+
+<div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "1.5rem" }}>
+  <span className="changelog-tag changelog-tag-feature">Feature</span>
+  <span className="changelog-date">1 мая 2026</span>
+</div>
+
+## Обзор
+
+Новая архитектурная страница формально документирует **Liquidity Nexus** — singleton-подсистему, которая хранит ликвидность, принадлежащую протоколу, и размещает её по пулам Native DEX. Nexus присутствовал в on-chain-схеме с первого релиза DEX и упоминался в спеке контракта Native DEX и на странице Казначейства, но дизайн как самостоятельной подсистемы — включая инвариант principal-lock, два канала депозита и trust-tiering — не был задокументирован в одном месте.
+
+Это изменение формализует публичную спецификацию. Никакое поведение протокола не добавляется и не удаляется; страница описывает контрактную поверхность, необходимую разработчику или аудитору, чтобы понять свойства безопасности подсистемы.
+
+## Что покрывает новая страница
+
+- **Границы подсистемы** — что Nexus есть, чем не является и как соотносится с контрактами Native DEX, RWT Engine и Yield Distribution
+- **Три уровня доверия** — Authority (Team Multisig), Manager (keypair бота) и Permissionless, у каждого явные can-do / cannot-do ограничения
+- **Инвариант principal-lock** — формальное свойство безопасности `nexus_balance(t) ≥ total_deposited(t)`, которое должно держаться для каждой стороны токена в любой момент
+- **Два канала депозита** — USDC-канал (10% выручки OT) и RWT-канал (15% доходности RWT), с явными гарантиями атомарности principal floor в одной TX
+- **LP-операции под управлением Manager** — swap, add-liquidity, remove-liquidity, с явным ограничением: действия Manager не могут вывести токены наружу из аккаунтов Nexus
+- **Вывод прибыли только Authority** — LP-награды и реализованная прибыль, оба гейтятся полем `authority` Native DEX
+- **Off-chain оператор** — бот Nexus Manager, dry-run по умолчанию, multi-RPC резервирование
+
+## Политика прямого SPL Transfer
+
+Страница явно указывает: токены, отправленные в аккаунт Nexus через прямой SPL Transfer (в обход документированных каналов депозита), **увеличат on-chain баланс, но НЕ продвинут `total_deposited`**. Инвариант principal-lock всё ещё держится, но principal floor будет занижен. Рекомендация: всегда маршрутизировать капитал через документированные каналы.
+
+## RWT-канал и PDA LiquidityHolding
+
+Новая страница впервые в публичной документации вводит **LiquidityHolding** — PDA в контракте Yield Distribution, выполняющую роль стейджингового аккаунта для RWT-канала депозита. Полная контрактная спецификация этой PDA (поля состояния, seeds, инструкция атомарного drain) будет в следующей записи changelog, которая обновит страницы контрактов Yield Distribution и RWT Engine.
+
+## Связанные документы
+
+- [Liquidity Nexus](/ru/architecture/liquidity-nexus) — новая архитектурная страница
+- [Ликвидность и нативный DEX](/ru/architecture/liquidity-and-native-dex) — обзор уровня DEX, внутри которого живёт Nexus
+- [Контракт Native DEX](/ru/contracts/native-dex) — состояние `LiquidityNexus` и поверхность инструкций
+- [Контракт Yield Distribution](/ru/contracts/yield-distribution) — стейджинговая PDA для RWT-канала (полное покрытие — в следующей записи)
+- [Off-Chain сервисы](/ru/bots/off-chain-services) — бот Nexus Manager
