@@ -735,10 +735,11 @@ description: "Разрешённый AMM со StandardCurve-пулами и од
 
     **Валидация:**
     - `lp_position.owner == lp_holder.key()`
-    - Хотя бы один из `claimable_a`, `claimable_b` `> 0`
     - `pool_vault_a.amount ≥ claimable_a` и `pool_vault_b.amount ≥ claimable_b`
 
-    **Эффект:** Выведенные суммы переводятся из резервных vault'ов пула в соответствующие ATA LP-холдера. Эмитирует `LpFeesClaimed`.
+    **No-op при нулевых обеих сторонах:** если `claimable_a == 0 && claimable_b == 0`, инструкция возвращает успех без выполнения SPL-трансфера.
+
+    **Эффект:** Выведенные суммы переводятся из резервных vault'ов пула в соответствующие ATA LP-холдера. Эмитирует `LpFeesClaimed { claimable_a, claimable_b, recipient, ... }` — dual-side событие claim.
 
     <Note>
       **Как работает per-side аккумулятор.** При каждом свопе контракт инкрементирует cumulative-per-share аккумулятор соответствующей стороны: `cumulative_fees_per_share_<side> += (fee_lp << 64) / total_lp_shares`. Каждая `LpPosition` снимает снимок этого значения (`fees_claimed_per_share_<side>`) при последнем взаимодействии. Pending-комиссии вычисляются лениво как `(cumulative − snapshot) × shares >> 64`, что даёт O(1) учёт на холдера без итерации по LP-холдерам. Аккумулятор хранит **fees per share** в Q64.64 fixed-point, не абсолютные комиссии — он не переполняется даже при высоком потоке комиссий.
@@ -842,7 +843,7 @@ description: "Разрешённый AMM со StandardCurve-пулами и од
   </Accordion>
 
   <Accordion title="nexus_claim_rewards">
-    Вывод накопленных LP-вознаграждений из резервных vault'ов пула в Areal Treasury. PDA Nexus выступает как LP-холдер и выводит свою пропорциональную долю на **обеих сторонах токенов** пула. Только Authority.
+    Вывод накопленных LP-вознаграждений из резервных vault'ов пула **в собственные токен-ATA Nexus**. PDA Nexus выступает как LP-холдер и выводит свою пропорциональную долю на **обеих сторонах токенов** пула. Средства приземляются в ATA Nexus, а **не** в Areal Treasury напрямую — settlement в Treasury — это отдельный Authority-шаг через [`nexus_withdraw_profits`](#nexus_withdraw_profits) (только разрыв над principal floor). Только Authority.
 
     | Parameter | Type | Description |
     |---|---|---|
@@ -858,18 +859,22 @@ description: "Разрешённый AMM со StandardCurve-пулами и од
     - `nexus_lp_position` (mut) — LP-позиция Nexus в этом пуле, обновляет `fees_claimed_per_share_a` и `_b`
     - `pool_vault_a` (mut) — резервный vault пула на стороне токена A
     - `pool_vault_b` (mut) — резервный vault пула на стороне токена B
-    - `treasury_token_a_ata` (mut) — ATA Areal Treasury на стороне токена A
-    - `treasury_token_b_ata` (mut) — ATA Areal Treasury на стороне токена B
+    - `nexus_token_a_ata` (mut) — ATA Nexus на стороне токена A, получает выведенные A-side комиссии
+    - `nexus_token_b_ata` (mut) — ATA Nexus на стороне токена B, получает выведенные B-side комиссии
     - `token_program`
 
     **Логика:**
     1. Вычисление `claimable_a` и `claimable_b` по той же Q64.64-формуле, что и `claim_lp_fees`.
-    2. Перевод `claimable_a` token-A из `pool_vault_a` → `treasury_token_a_ata`, если `> 0`; то же для B.
+    2. Перевод `claimable_a` token-A из `pool_vault_a` → `nexus_token_a_ata`, если `> 0`; то же для B.
     3. Обновление `nexus_lp_position.fees_claimed_per_share_a` и `_b` до текущих cumulative-значений.
-    4. Эмитирование `NexusRewardsClaimed`.
+    4. Эмитирование `LpFeesClaimed { claimable_a, claimable_b, recipient, ... }` — то же dual-side событие, что и в user-side `claim_lp_fees`; распознаётся по `recipient == nexus.address()`.
 
     <Note>
-      Используется тот же per-side аккумулятор, что и в `claim_lp_fees`. LP-позиции PDA Nexus зарабатывают комиссии как любой другой LP-холдер — вознаграждения идут в Areal Treasury, не возвращаются обратно в principal floor (инвариант principal-lock учитывает только `total_deposited_*`, не вознаграждения за свопы). Для RWT-парных пулов на практике сегодня ненулевая только RWT-сторона, но инструкция выполняет оба перевода безусловно — для forward-compat с не-RWT парами.
+      **Двухэтапный settlement в Treasury.** Эта инструкция перемещает LP-вознаграждения из резервных vault'ов пула в собственные ATA Nexus. Средства остаются внутри подсистемы Nexus и пополняют withdrawable-profit потолок — они **не** учитываются в principal floor (`total_deposited_*` пишут только `nexus_deposit` / `nexus_record_deposit`). Для settlement в Areal Treasury Authority затем вызывает [`nexus_withdraw_profits`](#nexus_withdraw_profits), который высвобождает до `nexus_balance(t) − total_deposited(t)` и падает при переполнении.
+    </Note>
+
+    <Note>
+      Используется тот же per-side аккумулятор, что и в `claim_lp_fees`. Для RWT-парных пулов на практике сегодня ненулевая только RWT-сторона (swap accrual пишет одну сторону за свап), но инструкция выполняет оба перевода безусловно — для forward-compat с не-RWT парами. Both-zero — это чистый no-op (обе стороны пропущены, snapshot всё равно обновляется).
     </Note>
   </Accordion>
 
@@ -1412,7 +1417,7 @@ PDA управления LP Areal Finance. Синглтон — один на DE
 | YD reward vault | Резервы пула (RWT) | compound_yield (CPI к YD) | Crank |
 | Доход OT (10% USDC) | USDC ATA crank → USDC ATA Nexus | OT `distribute_revenue` → `nexus_deposit` (два шага: crank получает, затем вносит) | Crank |
 | Доход RWT Engine (15% RWT) | RWT ATA LiquidityHolding → RWT ATA Nexus | YD `withdraw_liquidity_holding` (атомарный drain в одну TX + CPI `nexus_record_deposit`) | Authority |
-| LP-вознаграждения Nexus (токены A и/или B) | ATA Areal Treasury (A и B) | `nexus_claim_rewards` (per-side Q64.64 выплата) | Authority |
+| LP-вознаграждения Nexus (токены A и/или B) | ATA Nexus (A и B) | `nexus_claim_rewards` (per-side Q64.64 выплата; settlement в Treasury — отдельный вызов `nexus_withdraw_profits`) | Authority |
 | Токены Nexus | Хранилища пула | nexus_add_liquidity | Менеджер Nexus |
 | Хранилища пула | Токены Nexus | nexus_remove_liquidity | Менеджер Nexus |
 | Токен Nexus (USDC или RWT) | ATA Areal Treasury | nexus_withdraw_profits (только разрыв над principal floor) | Authority |

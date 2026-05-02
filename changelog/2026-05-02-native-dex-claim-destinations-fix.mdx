@@ -1,0 +1,84 @@
+---
+title: "Native DEX — Fix: Nexus Claim Destinations and Validation Wording"
+description: "Corrects three errors introduced by the earlier same-day per-side accumulator changelog: nexus_claim_rewards lands fees in Nexus-owned ATAs (not Treasury directly); claim_lp_fees has no 'at least one claimable > 0' validation; the actually-emitted Nexus claim event is LpFeesClaimed (dual-side), not the unused NexusRewardsClaimed."
+hidePagination: true
+---
+
+<div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "1.5rem" }}>
+  <span className="changelog-tag changelog-tag-fix">Fix</span>
+  <span className="changelog-date">May 2, 2026</span>
+</div>
+
+## Overview
+
+This entry corrects three errors in the earlier same-day changelog [Native DEX — Per-Side Q64.64 LP-Fee Accumulator](/changelog/2026-05-02-native-dex-fee-accumulator). The big-picture model documented there (per-side Q64.64 cumulative-per-share accumulator, dual-side payout, no per-pool `fee_vault` PDA) remains correct. The three corrections concern the **destination** of `nexus_claim_rewards`, a falsely documented validation in `claim_lp_fees`, and the actual event emitted by Nexus claims.
+
+No protocol change. The corrections bring the page in line with what the contract actually does.
+
+## What changed on the page
+
+### `nexus_claim_rewards` — destinations
+
+**Before this fix**, the page said:
+- `treasury_token_a_ata` (mut) — Areal Treasury ATA on token-A side
+- `treasury_token_b_ata` (mut) — Areal Treasury ATA on token-B side
+- Logic step 2: `pool_vault_a → treasury_token_a_ata`, same for B
+- "rewards go to the Areal Treasury"
+
+**Actual contract behaviour**: the destinations are the **Nexus's own ATAs**, not Treasury ATAs. Funds land inside the Nexus subsystem and contribute to the withdrawable-profit ceiling (the gap between `nexus_balance` and `total_deposited_*`). They are then settled into the Areal Treasury by a **separate Authority instruction** — [`nexus_withdraw_profits`](/contracts/native-dex#nexus_withdraw_profits) — which releases up to `nexus_balance(t) − total_deposited(t)` per side.
+
+The page now states this explicitly. Accounts updated: `nexus_token_a_ata` / `nexus_token_b_ata`. A new Note added: "Two-step Treasury settlement."
+
+### `claim_lp_fees` — Validation
+
+**Before this fix**, the Validation block included:
+- "At least one of `claimable_a`, `claimable_b` is `> 0`"
+
+**Actual contract behaviour**: there is no such validation. Both-zero is a clean no-op — the instruction returns successfully without any SPL transfer, and there is an explicit unit test confirming this behaviour. The page now removes the false validation line and adds a No-op subsection.
+
+### `claim_lp_fees` and `nexus_claim_rewards` — event emitted
+
+**Before this fix**, the page said:
+- `claim_lp_fees` emits `LpFeesClaimed`
+- `nexus_claim_rewards` emits `NexusRewardsClaimed`
+
+**Actual contract behaviour**: both instructions emit the **same** event — `LpFeesClaimed { claimable_a, claimable_b, recipient, ... }` — distinguishable only by `recipient == nexus.address()` for Nexus claims. A separate `NexusRewardsClaimed` struct exists in `events.rs` but is **deliberately not emitted**; it is reserved for a hypothetical future single-side claim variant.
+
+The page now spells out the dual-side event in both instruction Accordions and clarifies how Nexus claims are distinguished from user claims (`recipient` field).
+
+### Token Flow Summary
+
+The Nexus LP-fee row is updated:
+- **Before**: `Nexus LP fee rewards (token A and/or B) → Areal Treasury ATAs (A and B) via nexus_claim_rewards`
+- **After**: `Nexus LP fee rewards (token A and/or B) → Nexus ATAs (A and B) via nexus_claim_rewards (Treasury settlement is a separate nexus_withdraw_profits call)`
+
+## Why we got it wrong the first time
+
+The error came from extrapolating `nexus_claim_rewards` semantics from the user-side `claim_lp_fees` instruction without verifying the destination accounts. `claim_lp_fees` does pay LP holders directly into their wallet ATAs, so by symmetry it seemed reasonable that `nexus_claim_rewards` would pay the Nexus's "owner" — the Treasury — directly. But the contract intentionally keeps Nexus capital flows two-step: claim into Nexus first, then settle to Treasury via the principal-floor-aware `nexus_withdraw_profits`. This preserves the principal-lock invariant cleanly: only `nexus_withdraw_profits` ever moves tokens out of the Nexus subsystem, and it is the only instruction that gates against the principal floor.
+
+The "at least one claimable > 0" validation was a fabrication implied by treating two-zero as an error case, when the actual contract treats it as a normal no-op.
+
+The `NexusRewardsClaimed` vs `LpFeesClaimed` confusion was a guess based on the named struct in `events.rs`. The struct is real but unused; the handler emits `LpFeesClaimed` regardless of caller.
+
+## Unchanged
+
+- Per-side Q64.64 cumulative accumulator on `PoolState` — correct as documented.
+- `LpPosition` layout (`fees_claimed_per_share_a` / `_b`) — correct as documented.
+- `claim_lp_fees` account list (`pool_vault_a` / `_b`, `recipient_token_a_ata` / `_b`) — correct as documented.
+- Q64.64 formula `(cumulative − snapshot) × shares >> 64` — correct as documented.
+- Today's swap rule (RWT side only) and forward-compat note for non-RWT pairs — unchanged.
+
+## Migration
+
+Implementations consuming the spec from the previous changelog should:
+
+1. **Allocate Nexus-owned ATAs**, not Treasury ATAs, for the `nexus_claim_rewards` destination accounts.
+2. **Treat both-zero as a no-op**, not an error condition; do not return early or revert when `claimable_a == claimable_b == 0`.
+3. **Listen for `LpFeesClaimed`** for both user and Nexus claims; demultiplex via `recipient`.
+4. **Run `nexus_withdraw_profits` separately** to settle Nexus-held LP fee rewards into the Treasury.
+
+## Related documents
+
+- [Native DEX — Per-Side Q64.64 LP-Fee Accumulator](/changelog/2026-05-02-native-dex-fee-accumulator) — the entry this fix corrects
+- [Native DEX contract](/contracts/native-dex) — `nexus_claim_rewards` and `nexus_withdraw_profits`
+- [Liquidity Nexus](/architecture/liquidity-nexus) — principal-lock invariant context

@@ -154,6 +154,7 @@
                 "group": "May 2026",
                 "icon": "calendar",
                 "pages": [
+                  "changelog/2026-05-02-native-dex-claim-destinations-fix",
                   "changelog/2026-05-02-native-dex-fee-accumulator",
                   "changelog/2026-05-01-native-dex-nexus-surface",
                   "changelog/2026-05-01-yd-per-deposit-snapshot",
@@ -293,6 +294,7 @@
                 "group": "Май 2026",
                 "icon": "calendar",
                 "pages": [
+                  "ru/changelog/2026-05-02-native-dex-claim-destinations-fix",
                   "ru/changelog/2026-05-02-native-dex-fee-accumulator",
                   "ru/changelog/2026-05-01-native-dex-nexus-surface",
                   "ru/changelog/2026-05-01-yd-per-deposit-snapshot",

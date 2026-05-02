@@ -735,10 +735,11 @@ Purpose-built AMM for trading OT and RWT tokens. Two pool types: constant-produc
 
     **Validation:**
     - `lp_position.owner == lp_holder.key()`
-    - At least one of `claimable_a`, `claimable_b` is `> 0`
     - `pool_vault_a.amount ≥ claimable_a` and `pool_vault_b.amount ≥ claimable_b`
 
-    **Effect:** Claimed amounts transferred from each side's reserve vault to the LP holder's corresponding ATA. Emits `LpFeesClaimed`.
+    **No-op when both claimable amounts are zero:** if `claimable_a == 0 && claimable_b == 0`, the instruction returns successfully without performing any SPL transfer.
+
+    **Effect:** Claimed amounts transferred from each side's reserve vault to the LP holder's corresponding ATA. Emits `LpFeesClaimed { claimable_a, claimable_b, recipient, ... }` — the dual-side claim event.
 
     <Note>
       **How the per-side accumulator works.** On each swap the contract bumps the appropriate side's cumulative-per-share accumulator: `cumulative_fees_per_share_<side> += (fee_lp << 64) / total_lp_shares`. Each `LpPosition` snapshots this value (`fees_claimed_per_share_<side>`) on its last interaction. Pending fees are computed lazily as `(cumulative − snapshot) × shares >> 64`, which gives O(1) per-holder accounting without iterating over LP holders. The accumulator stores **fees per share** in Q64.64 fixed-point, not absolute fees — it never overflows even at high fee throughput.
@@ -842,7 +843,7 @@ Areal Finance LP management. Nexus PDA owns LP positions and token accounts. Man
   </Accordion>
 
   <Accordion title="nexus_claim_rewards">
-    Claim accumulated LP fee rewards from a pool's reserve vaults to the Areal Treasury. The Nexus PDA acts as an LP holder and claims its proportional share on **both token sides** of the pool. Authority only.
+    Claim accumulated LP fee rewards from a pool's reserve vaults **into the Nexus's own token ATAs**. The Nexus PDA acts as an LP holder and claims its proportional share on **both token sides** of the pool. Funds land in the Nexus ATAs, not in the Areal Treasury directly — Treasury sweep is a separate Authority step via [`nexus_withdraw_profits`](#nexus_withdraw_profits) (delta above the principal floor only). Authority only.
 
     | Parameter | Type | Description |
     |---|---|---|
@@ -858,18 +859,22 @@ Areal Finance LP management. Nexus PDA owns LP positions and token accounts. Man
     - `nexus_lp_position` (mut) — Nexus's LP position in this pool, updates `fees_claimed_per_share_a` and `_b`
     - `pool_vault_a` (mut) — pool's token-A reserve vault
     - `pool_vault_b` (mut) — pool's token-B reserve vault
-    - `treasury_token_a_ata` (mut) — Areal Treasury ATA on token-A side
-    - `treasury_token_b_ata` (mut) — Areal Treasury ATA on token-B side
+    - `nexus_token_a_ata` (mut) — Nexus-owned ATA on token-A side, receives claimed A-side fees
+    - `nexus_token_b_ata` (mut) — Nexus-owned ATA on token-B side, receives claimed B-side fees
     - `token_program`
 
     **Logic:**
     1. Compute `claimable_a` and `claimable_b` using the same Q64.64 formula as `claim_lp_fees`.
-    2. Transfer `claimable_a` token-A from `pool_vault_a` → `treasury_token_a_ata` if `> 0`; same for B.
+    2. Transfer `claimable_a` token-A from `pool_vault_a` → `nexus_token_a_ata` if `> 0`; same for B.
     3. Update `nexus_lp_position.fees_claimed_per_share_a` and `_b` to the current cumulative values.
-    4. Emit `NexusRewardsClaimed`.
+    4. Emit `LpFeesClaimed { claimable_a, claimable_b, recipient, ... }` — the same dual-side event used by user-side `claim_lp_fees`; distinguishable by `recipient == nexus.address()`.
 
     <Note>
-      Uses the same per-side accumulator as `claim_lp_fees`. The Nexus PDA's LP positions earn fees like any other LP holder — rewards go to the Areal Treasury, not redeposited into the principal floor (the principal-lock invariant accounts only for `total_deposited_*`, not for swap-fee rewards). For RWT-paired pools, only the RWT-side amount is non-zero in practice today, but the instruction issues both transfers unconditionally for forward-compat with non-RWT pairs.
+      **Two-step Treasury settlement.** This instruction moves LP fee rewards from the pool reserve vaults into the Nexus's own ATAs. Funds remain inside the Nexus subsystem at this point and contribute to the withdrawable profit ceiling — they are **not** counted toward the principal floor (`total_deposited_*` is only written by `nexus_deposit` / `nexus_record_deposit`). To settle into the Areal Treasury, Authority then calls [`nexus_withdraw_profits`](#nexus_withdraw_profits), which releases up to `nexus_balance(t) − total_deposited(t)` and reverts on overflow.
+    </Note>
+
+    <Note>
+      Uses the same per-side accumulator as `claim_lp_fees`. For RWT-paired pools, only the RWT-side amount is non-zero in practice today (swap accrual writes one side per swap), but the instruction issues both transfers unconditionally for forward-compat with non-RWT pairs. Both-zero is a clean no-op (both sides skipped, snapshot still refreshed).
     </Note>
   </Accordion>
 
@@ -1412,7 +1417,7 @@ Areal Finance LP management PDA. Singleton — one per DEX. Owns token ATAs and 
 | YD reward vault | Pool reserves (RWT) | compound_yield (CPI to YD) | Crank |
 | OT Revenue (10% USDC) | Crank USDC ATA → Nexus USDC ATA | OT `distribute_revenue` → `nexus_deposit` (two-step: crank receives, then deposits) | Crank |
 | RWT Engine yield (15% RWT) | LiquidityHolding RWT ATA → Nexus RWT ATA | YD `withdraw_liquidity_holding` (single-TX atomic drain + `nexus_record_deposit` CPI) | Authority |
-| Nexus LP fee rewards (token A and/or B) | Areal Treasury ATAs (A and B) | `nexus_claim_rewards` (per-side Q64.64 payout) | Authority |
+| Nexus LP fee rewards (token A and/or B) | Nexus ATAs (A and B) | `nexus_claim_rewards` (per-side Q64.64 payout; Treasury settlement is a separate `nexus_withdraw_profits` call) | Authority |
 | Nexus tokens | Pool vaults | nexus_add_liquidity | Nexus manager |
 | Pool vaults | Nexus tokens | nexus_remove_liquidity | Nexus manager |
 | Nexus token (USDC or RWT) | Areal Treasury ATA | nexus_withdraw_profits (delta above principal floor only) | Authority |
