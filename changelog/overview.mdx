@@ -18,6 +18,15 @@ All notable changes to the Areal Finance protocol are documented here. Filter by
 ---
 
 <div className="changelog-entry">
+  <div className="changelog-date">May 2, 2026</div>
+
+  ### [Native DEX — Per-Side Q64.64 LP-Fee Accumulator (Replaces Legacy Single-Side Model)](/changelog/2026-05-02-native-dex-fee-accumulator) <a href="/changelog/breaking" className="changelog-tag-link"><span className="changelog-tag changelog-tag-breaking">Breaking</span></a> <a href="/changelog/updates" className="changelog-tag-link"><span className="changelog-tag changelog-tag-update">Update</span></a>
+
+  Native DEX page now describes the **per-side Q64.64 cumulative-per-share LP-fee accumulator** that the contract actually implements. Drops the legacy per-pool `fee_vault: Pubkey`, the single-side proportional formula, and the `LpPosition.fees_claimed` / `fee_debt` fields. `claim_lp_fees` and `nexus_claim_rewards` now pay both token sides (A and B) — the dual-side layout is forward-compat for non-RWT pairs, while today's swap rule still always accrues on the RWT side. Also fixes an internal inconsistency in the Initial Release "Instant Claim" formula.
+
+</div>
+
+<div className="changelog-entry">
   <div className="changelog-date">May 1, 2026</div>
 
   ### [Native DEX — Nexus Surface (Direct SPL Transfer Policy, Record Deposit, Withdraw Profits)](/changelog/2026-05-01-native-dex-nexus-surface) <a href="/changelog/features" className="changelog-tag-link"><span className="changelog-tag changelog-tag-feature">Feature</span></a>

@@ -18,6 +18,15 @@ hidePagination: true
 ---
 
 <div className="changelog-entry">
+  <div className="changelog-date">2 мая 2026</div>
+
+  ### [Native DEX — Per-side Q64.64 LP-fee аккумулятор (заменяет legacy single-side модель)](/ru/changelog/2026-05-02-native-dex-fee-accumulator) <a href="/ru/changelog/breaking" className="changelog-tag-link"><span className="changelog-tag changelog-tag-breaking">Breaking</span></a> <a href="/ru/changelog/updates" className="changelog-tag-link"><span className="changelog-tag changelog-tag-update">Update</span></a>
+
+  Страница Native DEX теперь описывает **per-side Q64.64 cumulative-per-share LP-fee аккумулятор**, реализованный в контракте. Удалены legacy per-pool `fee_vault: Pubkey`, single-side пропорциональная формула и поля `LpPosition.fees_claimed` / `fee_debt`. `claim_lp_fees` и `nexus_claim_rewards` теперь выплачивают обе стороны токенов (A и B) — dual-side раскладка — forward-compat для не-RWT пар, а сегодняшнее правило свопа всё ещё начисляет только на RWT-стороне. Также исправлена внутренняя несогласованность в формуле «Instant Claim» Initial Release.
+
+</div>
+
+<div className="changelog-entry">
   <div className="changelog-date">1 мая 2026</div>
 
   ### [Native DEX — Поверхность Nexus (политика прямого SPL Transfer, record deposit, withdraw profits)](/ru/changelog/2026-05-01-native-dex-nexus-surface) <a href="/ru/changelog/features" className="changelog-tag-link"><span className="changelog-tag changelog-tag-feature">Feature</span></a>

@@ -1,0 +1,98 @@
+---
+title: "Native DEX — Per-side Q64.64 LP-fee аккумулятор (заменяет legacy single-side модель)"
+description: "Страница Native DEX теперь описывает dual-side Q64.64 cumulative-per-share LP-fee аккумулятор, реализованный в контракте. Удаляется legacy per-pool fee_vault PDA и single-side пропорциональная формула; claim_lp_fees и nexus_claim_rewards теперь выплачивают обе стороны токенов; layout LpPosition меняется."
+hidePagination: true
+---
+
+<div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "1.5rem" }}>
+  <span className="changelog-tag changelog-tag-breaking">Breaking</span>
+  <span className="changelog-tag changelog-tag-update">Update</span>
+  <span className="changelog-date">2 мая 2026</span>
+</div>
+
+## Обзор
+
+Страница [контракта Native DEX](/ru/contracts/native-dex) обновлена и теперь описывает **per-side Q64.64 cumulative-per-share LP-fee аккумулятор**, реализованный в контракте. Initial Release описывал single-side `cumulative_fees_per_share` аккумулятор с отдельным `fee_vault: Pubkey` на каждом пуле, а `claim_lp_fees` выплачивал только RWT — кроме того, та страница содержала внутренне противоречивую формулу claim в начале секции Fee Architecture (`fee_vault_balance × shares / total − already_claimed`), не соответствующую cumulative-per-share Note ниже. Эта запись переписывает раздел вокруг того, что реально делает контракт.
+
+Это **docs-catches-up-to-code** синхронизация, а не изменение протокола. On-chain layout — per-side Q64.64 со времени контрактного обновления на поздней стадии pre-launch spec-цикла; публичная docs одновременно с ним не была обновлена.
+
+## Что изменилось на странице
+
+### Секция Fee Architecture (Steps 2 + 5)
+
+- **Step 2 (Fee Split)** — bullet про LP Fee теперь описывает per-side начисление на аккумуляторах `PoolState` с выплатой в обеих сторонах токенов, вместо «в **RWT**, переводится в fee vault пула».
+- **Step 5 (LP Fee → per-side аккумулятор)** — переименован и переписан. Прежняя формула `Claimable = fee_vault_balance × lp_shares / total_shares − already_claimed` была (a) внутренне несогласованной с Note в `claim_lp_fees` (где описан стандартный cumulative-per-share паттерн с `fees_claimed` снимками), (b) не тем, что делает контракт. Заменена на реальное per-side Q64.64 выражение `(cumulative_fees_per_share_<side> − fees_claimed_per_share_<side>) × shares >> 64`. Добавлена «текущее правило свопа»: текущая реализация всегда начисляет на RWT-стороне, поэтому для RWT-парных пулов non-RWT аккумулятор не продвигается; dual-side раскладка — forward-compat для не-RWT пар.
+
+### Accordion `claim_lp_fees` — полная переработка
+
+- **Аккаунты** — удалены `fee_vault` и `lp_holder_rwt_ata`; добавлены `pool_vault_a` (mut), `pool_vault_b` (mut), `recipient_token_a_ata` (mut), `recipient_token_b_ata` (mut). `lp_position` теперь обновляет `fees_claimed_per_share_a` и `_b` вместо единого `fees_claimed`.
+- **Логика** — заменяет single-side `cumulative_per_share / PRECISION` на dual-side Q64.64 форму `(cumulative − snapshot) × shares >> 64`. Обе стороны вычисляются; каждая сторона с `> 0` вызывает SPL transfer из собственного резервного vault'а пула в соответствующее ATA холдера.
+- **Валидация** — удалены `fee_vault.amount ≥ claimable` и `claimable > 0`; добавлены эквивалентные dual-side проверки плюс требование, что хотя бы один из `claimable_a`, `claimable_b` не ноль.
+- **Note** — переписана вокруг Q64.64 fixed-point семантики, ленивого вычисления `(cumulative − snapshot) × shares >> 64` и сегодняшнего RWT-only правила свопа с forward-compat для не-RWT пар.
+
+### Accordion `nexus_claim_rewards` — полная переработка
+
+Зеркало `claim_lp_fees`: удалены `fee_vault` и single-side `treasury_token_account`; добавлены `pool_vault_a`, `pool_vault_b`, `treasury_token_a_ata`, `treasury_token_b_ata`. Логика и Note обновлены соответственно. Отмечено, что инвариант principal-lock учитывает только `total_deposited_*`, не вознаграждения за свопы — LP-комиссии Nexus идут в Treasury, не возвращаются в principal floor.
+
+### Таблица `PoolState`
+
+- **Удалено**: строка `fee_vault: Pubkey` (это поле не существует в on-chain layout).
+- **Заменено**: single `cumulative_fees_per_share: u128` → dual `cumulative_fees_per_share_a: u128` + `_b: u128` (Q64.64).
+
+### Таблица `LpPosition`
+
+- **Удалено**: строки `fees_claimed: u128` и `fee_debt: u128` (эти поля не существуют в on-chain layout).
+- **Добавлено**: `fees_claimed_per_share_a: u128` и `_b: u128` (Q64.64 снимки cumulative-аккумуляторов пула на момент последнего взаимодействия).
+
+### Сводка потоков токенов
+
+- Строка LP-комиссии: источник перенесён с «Fee vault пула (RWT)» на «Резервный vault'е пула на стороне начисления»; строка назначения обновлена на «Резервные vault'ы пула (A и B) → ATA LP-холдера (A и B) через `claim_lp_fees` (per-side Q64.64 выплата)».
+- Строка LP-вознаграждений Nexus: назначение перенесено с «RWT ATA Areal Treasury» на «ATA Areal Treasury (A и B)» через `nexus_claim_rewards` (per-side Q64.64 выплата).
+
+### Прочие текстовые правки
+
+Сводка `swap` (Effect), bullet «Fee destinations» в `swap`, summary страницы на L12, Note в `compound_yield`, Note в едином LP-интерфейсе StandardCurve, открывающий параграф Liquidity Nexus, fee-routing note в `zap_liquidity` и bullet про LP-комиссии в Integration Guide — все переформулированы вокруг per-side аккумулятора на `PoolState` вместо per-pool `fee_vault`.
+
+## Почему предыдущая страница была неправильной
+
+Две независимые ошибки исправляются одним sweep:
+
+1. **Внутренняя несогласованность Initial Release docs.** Формула в Step 5 «Instant Claim» `fee_vault_balance × lp_shares / total_shares − already_claimed` была сама по себе противоречивой Note в `claim_lp_fees` (где описан стандартный cumulative-per-share паттерн с `fees_claimed` снимками). Обе формулы не могут быть правильными одновременно. Initial Release уже выпускался с путаной моделью fee-claim.
+2. **Расхождение между docs и кодом.** Per-side Q64.64 аккумулятор контракта был реализован при последующем обновлении контракта, но публичная docs одновременно с ним не была обновлена. Промежуточная редакция docs частично прошла по этому — обновив только строки таблиц для `PoolState` и `LpPosition`, но не accordions `claim_lp_fees` / `nexus_claim_rewards`, не Step Fee Architecture, не прозу. Сейчас применяем согласованный sweep одним pass.
+
+## Breaking-изменения (vs Initial Release docs)
+
+| Поверхность | Было (Initial Release) | Стало (соответствует коду) |
+|---|---|---|
+| `PoolState.cumulative_fees_per_share` | single `u128` `× PRECISION` | dual `_a` / `_b`, Q64.64 (`<< 64`) |
+| `PoolState.fee_vault: Pubkey` | RWT ATA, владелец — PDA пула | **Удалено.** Комиссии остаются в `vault_a` / `vault_b` |
+| `LpPosition.fees_claimed`, `fee_debt` | single `u128` каждое | **Удалены.** Заменены на `fees_claimed_per_share_a` / `_b` (Q64.64) |
+| Аккаунты `claim_lp_fees` | `fee_vault` + `lp_holder_rwt_ata` | `pool_vault_a` + `pool_vault_b` + `recipient_token_a_ata` + `recipient_token_b_ata` |
+| Выплата `claim_lp_fees` | Только RWT | Обе стороны токенов (A и B); для RWT-парных пулов non-RWT сторона на практике `0` |
+| Аккаунты / выплата `nexus_claim_rewards` | Single fee vault → RWT ATA Treasury | Dual `pool_vault_a`/`_b` → Treasury A/B ATA |
+| Формула claim | `shares × cumulative / PRECISION − fees_claimed` | `(cumulative_<side> − fees_claimed_<side>) × shares >> 64` per-side |
+
+## Без изменений
+
+- Дележ базовой комиссии 50/50 между LP и Areal Treasury не изменился.
+- Математика constant-product (StandardCurve) и bin-walk (MonotonicLadder) не изменились.
+- «Fees on top of swap» — резервы пула (`pool_state.reserve_a` / `_b`) по-прежнему не дилюются комиссиями.
+- Пропуск комиссии на mint-пути на мастер-пулах не изменился.
+- Дополнительная OT-treasury комиссия на OT-парах не изменилась.
+
+## Миграция
+
+Это синхронизация docs-to-code. Реализации, ориентирующиеся на спеку, должны:
+
+1. Использовать `cumulative_fees_per_share_a` / `_b` и `fees_claimed_per_share_a` / `_b` (Q64.64) во всех on-chain layouts; не сохранять поле `fees_claimed` или `fee_debt`.
+2. Выделять оба token-side ATA в caller'ах `claim_lp_fees` и `nexus_claim_rewards`; не предполагать RWT-only выплату.
+3. Удалить любую per-pool `fee_vault` PDA / ATA-учётность — в on-chain layout такого поля нет, и резервные vault'ы выполняют двойную роль fee-учёта.
+4. Вычислять claimable-суммы как `(cumulative_<side> − snapshot_<side>) × shares >> 64` per-side; сумма — pending-комиссии холдера на этой стороне.
+
+On-chain миграционного долга нет — pre-update деплои никогда не были инициализированы.
+
+## Связанные документы
+
+- [Контракт Native DEX](/ru/contracts/native-dex) — страница, обновлённая этой записью
+- [Liquidity Nexus](/ru/architecture/liquidity-nexus) — контекст подсистемы для `nexus_claim_rewards`
+- [Ликвидность и нативный DEX](/ru/architecture/liquidity-and-native-dex) — user-facing описание fee-модели (уже согласовано)

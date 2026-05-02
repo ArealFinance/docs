@@ -9,7 +9,7 @@ description: "Permissioned AMM with standard curve pools and single-sided Monoto
   This contract specification has passed business logic audit, technical review, cross-program integration check (OT + RWT + YD), fee architecture verification, and crank flow analysis. A developer can implement from this document.
 </Card>
 
-Purpose-built AMM for trading OT and RWT tokens. Two pool types: constant-product (**StandardCurve**) for OT/RWT and third-party pairs, and single-sided bin-based concentrated liquidity (**Monotonic Ladder**) for RWT/USDC and RWT/USDY master pools. Pool creation is whitelisted. Swap fees split between LP holders (claimable from per-pool fee vault) and Areal Finance (protocol fee in RWT), charged **on top of the swap** to preserve pool capitalization. OT pairs charge an additional 0.5% to the OT project treasury. Master pools route USDC→RWT trades to `rwt_engine::mint_rwt` when DEX ask is not competitive — no DEX fee on mint-path.
+Purpose-built AMM for trading OT and RWT tokens. Two pool types: constant-product (**StandardCurve**) for OT/RWT and third-party pairs, and single-sided bin-based concentrated liquidity (**Monotonic Ladder**) for RWT/USDC and RWT/USDY master pools. Pool creation is whitelisted. Swap fees split between LP holders (tracked per-side via Q64.64 accumulators on `PoolState`, claimable via `claim_lp_fees`) and Areal Finance (protocol fee in RWT), charged **on top of the swap** to preserve pool capitalization. OT pairs charge an additional 0.5% to the OT project treasury. Master pools route USDC→RWT trades to `rwt_engine::mint_rwt` when DEX ask is not competitive — no DEX fee on mint-path.
 
 <Warning>
   **Upgradeable contract.** Program upgrade authority = Team Multisig (Squads). Separate from config authority and pause authority.
@@ -64,7 +64,7 @@ Purpose-built AMM for trading OT and RWT tokens. Two pool types: constant-produc
     Applied to every swap. Default: 50 bps (0.5%). Max: 1,000 bps (10%). Set per pool at creation, copied from DexConfig.
   </Step>
   <Step title="Fee Split">
-    - **LP Fee** (default 50% of base) → in **RWT**, collected in a per-pool fee vault (RWT token account owned by pool PDA). LP holders claim anytime via `claim_lp_fees` — no vesting, no merkle proof, no off-chain server.
+    - **LP Fee** (default 50% of base) → accrued **per-side** via Q64.64 cumulative-per-share accumulators on `PoolState` (`cumulative_fees_per_share_a` / `_b`). Fees stay inside the pool's reserve vaults (`vault_a` / `vault_b`); `pool_state.reserve_a` / `_b` are not diluted. LP holders claim at any time via `claim_lp_fees` and receive **both token sides** — no vesting, no merkle proof, no off-chain server.
     - **Protocol Fee** (default 50% of base) → always in **RWT**, transferred to `areal_fee_destination` (Areal Finance RWT ATA).
   </Step>
   <Step title="Fees On Top (No Pool Dilution)">
@@ -73,8 +73,8 @@ Purpose-built AMM for trading OT and RWT tokens. Two pool types: constant-produc
   <Step title="Always RWT">
     Every pool pairs with RWT (e.g., OT/RWT, RWT/USDC). All fees (LP, protocol, OT treasury) are always taken in RWT. No fee token designation needed, no conversion logic.
   </Step>
-  <Step title="LP Fee → Fee Vault (Instant Claim)">
-    LP fees are collected in a **per-pool fee vault** (RWT token account owned by pool PDA). LP holders claim their proportional share at any time via `claim_lp_fees` — no vesting, no merkle proof, no off-chain server. Claimable amount = `fee_vault_balance × lp_shares / total_shares - already_claimed`.
+  <Step title="LP Fee → Per-Side Accumulator (Instant Claim)">
+    LP fees stay inside the pool's reserve vaults (`vault_a` and `vault_b`). The contract maintains two per-side **Q64.64 cumulative-per-share accumulators** on `PoolState` (`cumulative_fees_per_share_a` / `_b`); each `LpPosition` snapshots them on every interaction (`fees_claimed_per_share_a` / `_b`). LP holders claim at any time via `claim_lp_fees` and receive both sides of the pool — no vesting, no merkle proof, no off-chain server. Per-side claimable: `(cumulative_fees_per_share_<side> − fees_claimed_per_share_<side>) × shares >> 64`. The current swap implementation always accrues the LP fee on the **RWT side**, so for an RWT-paired pool only the RWT-side accumulator advances; the dual-side layout is forward-compat for non-RWT pairs.
   </Step>
   <Step title="OT Treasury Fee (OT pairs only)">
     Pools paired with an OT token charge an **additional 50 bps (0.5%)** on every swap — sent entirely in RWT to the OT project's Treasury RWT ATA (controlled by Futarchy). Total effective fee for OT pairs: **100 bps (1%)**. Non-OT pools (e.g., RWT/USDC) are unaffected — standard 50 bps only. The OT treasury fee is calculated on the same gross amount as the base fee (no compounding). Stored as `OT_TREASURY_FEE_BPS = 50` program constant — changeable only via program upgrade.
@@ -554,7 +554,7 @@ Purpose-built AMM for trading OT and RWT tokens. Two pool types: constant-produc
     ```
 
     **Fee destinations (both directions):**
-    - `fee_lp` → RWT transferred to pool's `fee_vault` (per-pool RWT account, claimable by LP holders via `claim_lp_fees`)
+    - `fee_lp` → stays inside the pool's reserve vault on the fee-bearing side (currently always the RWT side); the contract bumps `pool_state.cumulative_fees_per_share_<side>` so LP holders can claim their share later via `claim_lp_fees`
     - `fee_protocol` → RWT transferred to `areal_fee_account` (Areal Finance RWT ATA)
     - `ot_treasury_fee` → RWT transferred to `ot_treasury_fee_account` (OT pairs only)
     - For non-OT pools, `ot_treasury_fee = 0` (no additional fee)
@@ -617,7 +617,7 @@ Purpose-built AMM for trading OT and RWT tokens. Two pool types: constant-produc
     - `amount_out > 0`
     - Pool and DEX must be active
 
-    **Effect:** User sends input → vault. Pool sends output → user. LP fee → pool fee_vault (claimable by LP holders). Protocol fee → areal_fee_account. OT treasury fee → ot_treasury_fee_account (OT pairs only). All fees in RWT, charged on top of swap — pool reserves unaffected. Emits `SwapExecuted`.
+    **Effect:** User sends input → vault. Pool sends output → user. LP fee stays inside the pool's reserve vault on the fee-bearing side; `pool_state.cumulative_fees_per_share_<side>` is bumped so LP holders can claim later. Protocol fee → `areal_fee_account`. OT treasury fee → `ot_treasury_fee_account` (OT pairs only). All fees in RWT, charged on top of swap — pool reserves are not diluted. Emits `SwapExecuted`.
 
     ---
 
@@ -670,7 +670,7 @@ Purpose-built AMM for trading OT and RWT tokens. Two pool types: constant-produc
 
 <AccordionGroup>
   <Accordion title="compound_yield">
-    Claim RWT yield from Yield Distribution on behalf of the pool PDA, auto-compounding OT yield into pool reserves. Benefits all LP holders proportionally. Note: this is for OT yield only — LP swap fees are collected in a separate fee vault and claimed individually via `claim_lp_fees`.
+    Claim RWT yield from Yield Distribution on behalf of the pool PDA, auto-compounding OT yield into pool reserves. Benefits all LP holders proportionally. Note: this is for OT yield only — LP swap fees are tracked separately via the per-side accumulator on `PoolState` and claimed individually via `claim_lp_fees`.
 
     | Parameter | Type | Description |
     |---|---|---|
@@ -700,46 +700,57 @@ Purpose-built AMM for trading OT and RWT tokens. Two pool types: constant-produc
   </Accordion>
 
   <Accordion title="claim_lp_fees">
-    Claim accumulated LP swap fee rewards from the pool's fee vault. Each LP holder claims proportionally to their share of total LP supply. No vesting — rewards are available instantly.
+    Claim accumulated LP swap fee rewards from the pool's reserve vaults. Each LP holder claims proportionally to their share of total LP supply. No vesting — rewards are available instantly. Pays out **both token sides** of the pool (A and B); the side that the swap fee accrued on is the side that pays in this claim.
 
     **Caller:** LP holder (permissionless — anyone with an LP position)
 
     **Accounts:**
     - `lp_holder` (signer) — must own the LP position
-    - `pool_state` — reads `total_lp_shares`
-    - `lp_position` (mut) — reads `shares`, updates `fees_claimed`
-    - `fee_vault` (mut) — pool's RWT fee vault, constraint: `owner == pool_state.key()`
-    - `lp_holder_rwt_ata` (mut) — holder's RWT ATA, receives claimed fees
+    - `pool_state` — reads `total_lp_shares` and both cumulative accumulators
+    - `lp_position` (mut) — reads `shares`, updates `fees_claimed_per_share_a` and `fees_claimed_per_share_b`
+    - `pool_vault_a` (mut) — pool's token-A reserve vault, owned by pool PDA
+    - `pool_vault_b` (mut) — pool's token-B reserve vault, owned by pool PDA
+    - `recipient_token_a_ata` (mut) — holder's token-A ATA, receives claimed A-side fees
+    - `recipient_token_b_ata` (mut) — holder's token-B ATA, receives claimed B-side fees
     - `token_program`
 
     **Logic:**
     ```
-    cumulative_per_share = pool_state.cumulative_fees_per_share  // u128, updated on each swap
-    entitled = lp_position.shares * cumulative_per_share / PRECISION
-    claimable = entitled - lp_position.fees_claimed
-    
-    if claimable == 0: return
-    
-    transfer claimable RWT: fee_vault → lp_holder_rwt_ata (pool PDA signs)
-    lp_position.fees_claimed += claimable
+    delta_a = pool_state.cumulative_fees_per_share_a − lp_position.fees_claimed_per_share_a
+    delta_b = pool_state.cumulative_fees_per_share_b − lp_position.fees_claimed_per_share_b
+
+    claimable_a = (delta_a × lp_position.shares) >> 64    // Q64.64 → integer token amount
+    claimable_b = (delta_b × lp_position.shares) >> 64
+
+    if claimable_a == 0 && claimable_b == 0: return
+
+    if claimable_a > 0:
+        transfer claimable_a token_A: pool_vault_a → recipient_token_a_ata (pool PDA signs)
+    if claimable_b > 0:
+        transfer claimable_b token_B: pool_vault_b → recipient_token_b_ata (pool PDA signs)
+
+    lp_position.fees_claimed_per_share_a = pool_state.cumulative_fees_per_share_a
+    lp_position.fees_claimed_per_share_b = pool_state.cumulative_fees_per_share_b
     ```
 
     **Validation:**
     - `lp_position.owner == lp_holder.key()`
-    - `claimable > 0`
-    - `fee_vault.amount >= claimable`
+    - At least one of `claimable_a`, `claimable_b` is `> 0`
+    - `pool_vault_a.amount ≥ claimable_a` and `pool_vault_b.amount ≥ claimable_b`
 
-    **Effect:** RWT transferred from fee vault to LP holder. Emits `LpFeesClaimed`.
+    **Effect:** Claimed amounts transferred from each side's reserve vault to the LP holder's corresponding ATA. Emits `LpFeesClaimed`.
 
     <Note>
-      **How cumulative_fees_per_share works:** On each swap, the contract updates `pool_state.cumulative_fees_per_share += fee_lp * PRECISION / total_lp_shares`. This allows O(1) per-holder accounting — no iteration over LP holders needed. Each LP position tracks its own `fees_claimed` to prevent double-claiming. Pattern used by Sushiswap MasterChef, Raydium, and most DeFi fee distributors.
+      **How the per-side accumulator works.** On each swap the contract bumps the appropriate side's cumulative-per-share accumulator: `cumulative_fees_per_share_<side> += (fee_lp << 64) / total_lp_shares`. Each `LpPosition` snapshots this value (`fees_claimed_per_share_<side>`) on its last interaction. Pending fees are computed lazily as `(cumulative − snapshot) × shares >> 64`, which gives O(1) per-holder accounting without iterating over LP holders. The accumulator stores **fees per share** in Q64.64 fixed-point, not absolute fees — it never overflows even at high fee throughput.
+
+      **Today's swap rule.** The current swap implementation always accrues the LP fee on the **RWT side** of the pool. For an RWT-paired pool (`RWT/USDC`, `OT/RWT`, etc.) only one of the two accumulators ever advances per swap, so `claimable_<non-RWT-side>` is `0` for any RWT-paired LP position. The dual-side accumulator is forward-compat for non-RWT pairs (e.g. `OT/USDC`) and avoids special-cased single-side logic in the contract.
     </Note>
   </Accordion>
 </AccordionGroup>
 
 ### Liquidity Nexus
 
-Areal Finance LP management. Nexus PDA owns LP positions and token accounts. Manager bot executes operations; funds are protected by the program (manager cannot extract tokens directly). LP fee rewards accumulate in the pool fee vault and are claimed to Areal Treasury via `nexus_claim_rewards`.
+Areal Finance LP management. Nexus PDA owns LP positions and token accounts. Manager bot executes operations; funds are protected by the program (manager cannot extract tokens directly). LP fee rewards accrue per-side on the pool's accumulators and are claimed to the Areal Treasury via `nexus_claim_rewards`.
 
 <Warning>
   **Direct SPL Transfer policy.** Tokens sent into a Nexus token account via a raw SPL Transfer (i.e., bypassing `nexus_deposit` or `nexus_record_deposit`) **WILL** increase the on-chain Nexus token balance but **will NOT** advance `total_deposited_*` — they are intentionally non-tracked. Such balances are still spendable by the manager via `nexus_swap` / `nexus_add_liquidity`, but `nexus_withdraw_profits` releases only the delta above the tracked principal floor, so untracked deposits effectively raise the withdrawable-profit ceiling. Do not rely on this for accounting; always route capital via `nexus_deposit` (USDC lane) or `withdraw_liquidity_holding` in Yield Distribution (RWT lane).
@@ -831,7 +842,7 @@ Areal Finance LP management. Nexus PDA owns LP positions and token accounts. Man
   </Accordion>
 
   <Accordion title="nexus_claim_rewards">
-    Claim accumulated LP fee rewards from pool fee vaults to Areal Treasury. Nexus PDA acts as LP holder and claims its proportional share. Authority only.
+    Claim accumulated LP fee rewards from a pool's reserve vaults to the Areal Treasury. The Nexus PDA acts as an LP holder and claims its proportional share on **both token sides** of the pool. Authority only.
 
     | Parameter | Type | Description |
     |---|---|---|
@@ -843,20 +854,22 @@ Areal Finance LP management. Nexus PDA owns LP positions and token accounts. Man
     - `authority` (signer) — must match `dex_config.authority`
     - `dex_config` — for authority validation
     - `nexus` — PDA, signs as LP holder
-    - `pool_state` — reads `cumulative_fees_per_share`
-    - `nexus_lp_position` (mut) — Nexus's LP position in this pool, updates `fees_claimed`
-    - `fee_vault` (mut) — pool's RWT fee vault
-    - `treasury_token_account` (mut) — Areal Treasury RWT ATA, receives claimed rewards
+    - `pool_state` — reads both cumulative accumulators
+    - `nexus_lp_position` (mut) — Nexus's LP position in this pool, updates `fees_claimed_per_share_a` and `_b`
+    - `pool_vault_a` (mut) — pool's token-A reserve vault
+    - `pool_vault_b` (mut) — pool's token-B reserve vault
+    - `treasury_token_a_ata` (mut) — Areal Treasury ATA on token-A side
+    - `treasury_token_b_ata` (mut) — Areal Treasury ATA on token-B side
     - `token_program`
 
     **Logic:**
-    1. Calculate claimable using same formula as `claim_lp_fees`
-    2. Transfer RWT from fee_vault → `treasury_token_account` (Areal Treasury)
-    3. Update `nexus_lp_position.fees_claimed`
-    4. Emit `NexusRewardsClaimed`
+    1. Compute `claimable_a` and `claimable_b` using the same Q64.64 formula as `claim_lp_fees`.
+    2. Transfer `claimable_a` token-A from `pool_vault_a` → `treasury_token_a_ata` if `> 0`; same for B.
+    3. Update `nexus_lp_position.fees_claimed_per_share_a` and `_b` to the current cumulative values.
+    4. Emit `NexusRewardsClaimed`.
 
     <Note>
-      Uses the same `cumulative_fees_per_share` accounting as regular LP claims. Nexus PDA's LP positions earn fees like any other LP holder — rewards go directly to Areal Treasury.
+      Uses the same per-side accumulator as `claim_lp_fees`. The Nexus PDA's LP positions earn fees like any other LP holder — rewards go to the Areal Treasury, not redeposited into the principal floor (the principal-lock invariant accounts only for `total_deposited_*`, not for swap-fee rewards). For RWT-paired pools, only the RWT-side amount is non-zero in practice today, but the instruction issues both transfers unconditionally for forward-compat with non-RWT pairs.
     </Note>
   </Accordion>
 
@@ -1150,8 +1163,8 @@ One per token pair. Stores reserves, shares, fees.
 | `fee_bps` | `u16` | Swap fee (copied from DexConfig at creation) |
 | `is_active` | `bool` | Pool active flag (pauseable by Team Multisig) |
 | `total_fees_accumulated` | `u64` | Lifetime total fees (LP + protocol) |
-| `fee_vault` | `Pubkey` | RWT token account for LP fee collection (authority = pool PDA) |
-| `cumulative_fees_per_share` | `u128` | Running sum of `fee_lp * PRECISION / total_lp_shares` — used for O(1) per-holder fee accounting |
+| `cumulative_fees_per_share_a` | `u128` | Q64.64 running sum on the token-A side: `cumulative_fees_per_share_a += (fee_lp_a << 64) / total_lp_shares` per swap. O(1) per-holder fee accounting |
+| `cumulative_fees_per_share_b` | `u128` | Q64.64 running sum on the token-B side: `cumulative_fees_per_share_b += (fee_lp_b << 64) / total_lp_shares` per swap |
 | `bin_step_bps` | `u16` | Log bin step (0 for StandardCurve; typically 10 = 0.1% for MonotonicLadder) |
 | `active_bin_id` | `i32` | Current active bin (MonotonicLadder only) |
 | `left_anchor_bin` | `i32` | Top of permanent tail (MonotonicLadder only, immutable) |
@@ -1185,8 +1198,8 @@ Per (pool, provider) LP tracking. Created on first add via `init_if_needed`.
 | `pool` | `Pubkey` | Associated pool |
 | `owner` | `Pubkey` | LP provider wallet |
 | `shares` | `u128` | LP shares held |
-| `fees_claimed` | `u128` | Cumulative LP fees claimed (prevents double-claiming) |
-| `fee_debt` | `u128` | Fee snapshot at time of deposit — excludes pre-deposit fees from claim |
+| `fees_claimed_per_share_a` | `u128` | Q64.64 snapshot of `PoolState.cumulative_fees_per_share_a` taken at position open / last claim. Pending token-A fees = `(cumulative_fees_per_share_a − fees_claimed_per_share_a) × shares >> 64` |
+| `fees_claimed_per_share_b` | `u128` | Q64.64 snapshot of `PoolState.cumulative_fees_per_share_b`. Pending token-B fees = `(cumulative_fees_per_share_b − fees_claimed_per_share_b) × shares >> 64` |
 | `last_update_ts` | `i64` | Last interaction timestamp |
 | `bump` | `u8` | PDA bump seed |
 
@@ -1352,7 +1365,7 @@ Areal Finance LP management PDA. Singleton — one per DEX. Owns token ATAs and 
   <Accordion title="→ Yield Distribution (compound_yield)">
     - Pool PDA claims OT yield RWT from YD via CPI → auto-compounds into pool reserves
     - All LP holders benefit proportionally (deeper pool = better trades)
-    - LP swap fees are handled separately via per-pool fee vault (`claim_lp_fees`)
+    - LP swap fees are handled separately via the per-side accumulator on `PoolState` (`claim_lp_fees`)
   </Accordion>
 
   <Accordion title="← Pool Rebalancer (grow_liquidity / compress_liquidity)">
@@ -1389,8 +1402,8 @@ Areal Finance LP management PDA. Singleton — one per DEX. Owns token ATAs and 
 |------|-----|-----------|-------------|
 | User token_in | Pool vault_in | swap | User |
 | Pool vault_out | User token_out | swap | User |
-| Swap fee (LP share) | Pool fee_vault (RWT) | swap | Automatic |
-| Pool fee_vault | LP holder RWT ATA | claim_lp_fees | LP holder |
+| Swap fee (LP share) | Stays in pool reserve vault on the fee-bearing side; tracked via `cumulative_fees_per_share_<side>` on `PoolState` | swap | Automatic |
+| Pool reserve vaults (A and B) | LP holder ATAs (A and B) | claim_lp_fees (per-side Q64.64 payout) | LP holder |
 | Swap fee (protocol share) | Areal Finance RWT ATA (always in RWT) | swap | Automatic |
 | Swap fee (OT treasury) | OT Treasury RWT ATA (OT pairs only, always in RWT) | swap | Automatic |
 | LP tokens A+B | Pool vaults | add_liquidity | LP provider |
@@ -1399,7 +1412,7 @@ Areal Finance LP management PDA. Singleton — one per DEX. Owns token ATAs and 
 | YD reward vault | Pool reserves (RWT) | compound_yield (CPI to YD) | Crank |
 | OT Revenue (10% USDC) | Crank USDC ATA → Nexus USDC ATA | OT `distribute_revenue` → `nexus_deposit` (two-step: crank receives, then deposits) | Crank |
 | RWT Engine yield (15% RWT) | LiquidityHolding RWT ATA → Nexus RWT ATA | YD `withdraw_liquidity_holding` (single-TX atomic drain + `nexus_record_deposit` CPI) | Authority |
-| Nexus LP fee rewards (RWT) | Areal Treasury RWT ATA | `nexus_claim_rewards` | Authority |
+| Nexus LP fee rewards (token A and/or B) | Areal Treasury ATAs (A and B) | `nexus_claim_rewards` (per-side Q64.64 payout) | Authority |
 | Nexus tokens | Pool vaults | nexus_add_liquidity | Nexus manager |
 | Pool vaults | Nexus tokens | nexus_remove_liquidity | Nexus manager |
 | Nexus token (USDC or RWT) | Areal Treasury ATA | nexus_withdraw_profits (delta above principal floor only) | Authority |

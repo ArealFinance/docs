@@ -9,7 +9,7 @@ description: "Разрешённый AMM со StandardCurve-пулами и од
   Эта спецификация контракта прошла аудит бизнес-логики, техническую проверку, проверку кросс-программной интеграции (OT + RWT + YD), верификацию архитектуры комиссий и анализ потоков crank-операций. Разработчик может реализовать контракт по этому документу.
 </Card>
 
-Специализированный AMM для торговли токенами OT и RWT. Два типа пулов: постоянное произведение (**StandardCurve**) для пар OT/RWT и сторонних, и односторонняя концентрированная ликвидность на основе бинов (**Monotonic Ladder**) для мастер-пулов RWT/USDC и RWT/USDY. Создание пулов ограничено вайтлистом. Swap-комиссии делятся между LP-холдерами (доступны для вывода из fee vault каждого пула) и Areal Finance (протокольная комиссия в RWT), взимаются **поверх свопа** для сохранения капитализации пула. OT-пары взимают дополнительные 0,5% в казначейство OT-проекта. Мастер-пулы маршрутизируют USDC→RWT сделки в `rwt_engine::mint_rwt`, когда DEX ask неконкурентен — на mint-пути DEX-комиссия не взимается.
+Специализированный AMM для торговли токенами OT и RWT. Два типа пулов: постоянное произведение (**StandardCurve**) для пар OT/RWT и сторонних, и односторонняя концентрированная ликвидность на основе бинов (**Monotonic Ladder**) для мастер-пулов RWT/USDC и RWT/USDY. Создание пулов ограничено вайтлистом. Swap-комиссии делятся между LP-холдерами (учитываются per-side через Q64.64 аккумуляторы на `PoolState`, забираются через `claim_lp_fees`) и Areal Finance (протокольная комиссия в RWT), взимаются **поверх свопа** для сохранения капитализации пула. OT-пары взимают дополнительные 0,5% в казначейство OT-проекта. Мастер-пулы маршрутизируют USDC→RWT сделки в `rwt_engine::mint_rwt`, когда DEX ask неконкурентен — на mint-пути DEX-комиссия не взимается.
 
 <Warning>
   **Обновляемый контракт.** Полномочия на обновление программы = Team Multisig (Squads). Отделены от authority конфигурации и authority паузы.
@@ -64,7 +64,7 @@ description: "Разрешённый AMM со StandardCurve-пулами и од
     Применяется к каждому свопу. По умолчанию: 50 bps (0,5%). Максимум: 1 000 bps (10%). Устанавливается для каждого пула при создании, копируется из DexConfig.
   </Step>
   <Step title="Распределение комиссии">
-    - **LP-комиссия** (по умолчанию 50% от базовой) → в **RWT**, переводится в fee vault пула. LP-холдеры забирают вознаграждения через `claim_lp_fees` — мгновенно, без vesting.
+    - **LP-комиссия** (по умолчанию 50% от базовой) → начисляется **на каждой стороне** через Q64.64 cumulative-per-share аккумуляторы на `PoolState` (`cumulative_fees_per_share_a` / `_b`). Комиссии остаются внутри резервных vault'ов пула (`vault_a` / `vault_b`); `pool_state.reserve_a` / `_b` не дилюются. LP-холдеры забирают вознаграждения через `claim_lp_fees` и получают **обе стороны токенов** — мгновенно, без vesting.
     - **Протокольная комиссия** (по умолчанию 50% от базовой) → всегда в **RWT**, переводится на `areal_fee_destination` (RWT ATA Areal Finance).
   </Step>
   <Step title="Комиссии поверх свопа (без размывания пула)">
@@ -73,8 +73,8 @@ description: "Разрешённый AMM со StandardCurve-пулами и од
   <Step title="Всегда в RWT">
     Каждый пул образует пару с RWT (например, OT/RWT, RWT/USDC). Все комиссии (LP, протокольная, казначейство OT) всегда берутся в RWT. Не нужно указание токена комиссии, логика конвертации не требуется.
   </Step>
-  <Step title="LP-комиссия → Fee Vault (мгновенный вывод)">
-    LP-комиссии собираются в **fee vault каждого пула** (RWT-аккаунт, принадлежащий PDA пула). LP-холдеры забирают свою пропорциональную долю в любое время через `claim_lp_fees` — без вестинга, без merkle proof, без офф-чейн сервера. Доступная сумма = `fee_vault_balance × lp_shares / total_shares - already_claimed`.
+  <Step title="LP-комиссия → per-side аккумулятор (мгновенный вывод)">
+    LP-комиссии остаются внутри резервных vault'ов пула (`vault_a` и `vault_b`). Контракт ведёт два per-side **Q64.64 cumulative-per-share аккумулятора** на `PoolState` (`cumulative_fees_per_share_a` / `_b`); каждая `LpPosition` снимает их снимок при каждом взаимодействии (`fees_claimed_per_share_a` / `_b`). LP-холдеры забирают вознаграждения в любой момент через `claim_lp_fees` и получают обе стороны пула — без вестинга, без merkle proof, без офф-чейн сервера. Доступная сумма по стороне: `(cumulative_fees_per_share_<side> − fees_claimed_per_share_<side>) × shares >> 64`. Текущая реализация свопа всегда начисляет LP-комиссию на **RWT-стороне**, поэтому для RWT-парного пула продвигается только RWT-аккумулятор; dual-side раскладка — forward-compat для не-RWT пар.
   </Step>
   <Step title="Комиссия казначейства OT (только для пар с OT)">
     Пулы с токеном OT взимают **дополнительные 50 bps (0,5%)** на каждом свопе — отправляются целиком в RWT на Treasury RWT ATA проекта OT (управляется Futarchy). Итоговая эффективная комиссия для пар с OT: **100 bps (1%)**. Пулы без OT (например, RWT/USDC) не затронуты — стандартные 50 bps. Комиссия казначейства OT рассчитывается от той же валовой суммы, что и базовая комиссия (без компаундинга). Хранится как программная константа `OT_TREASURY_FEE_BPS = 50` — изменяется только через обновление программы.
@@ -243,7 +243,7 @@ description: "Разрешённый AMM со StandardCurve-пулами и од
 ### Ликвидность
 
 <Note>
-  **Единый LP-интерфейс для пулов StandardCurve.** Пользователи взаимодействуют через `add_liquidity`, `zap_liquidity` и `remove_liquidity` в парах OT/RWT и сторонних парах. LP получают пропорциональные доли и зарабатывают через per-pool fee vault с клеймом через `claim_lp_fees`.
+  **Единый LP-интерфейс для пулов StandardCurve.** Пользователи взаимодействуют через `add_liquidity`, `zap_liquidity` и `remove_liquidity` в парах OT/RWT и сторонних парах. LP получают пропорциональные доли и зарабатывают через per-side аккумулятор на `PoolState` с клеймом через `claim_lp_fees`.
 
   **Мастер-пулы (Monotonic Ladder) засеиваются исключительно через Nexus.** Пользовательский `add_liquidity` и `zap_liquidity` на мастер-пулах RWT/USDC и RWT/USDY **падает с `MasterPoolUserLpDisabled`**. Обоснование: Ladder — это односторонняя USDC-структура с протокольно-управляемой геометрией (permanent tail, веса active zone, маршрутизация в mint). Приём произвольного пользовательского LP нарушил бы инварианты density и создал бы ask-side позиции, подрывающие маршрутизацию в mint. Пользователи, желающие доходность на потоке мастер-пула, могут держать RWT напрямую (он растёт через NAV) и арбитражить при лаге рыночной цены.
 
@@ -345,7 +345,7 @@ description: "Разрешённый AMM со StandardCurve-пулами и од
     </Note>
 
     <Note>
-      Внутренний своп несёт те же комиссии, что и обычный своп (LP-комиссия → fee vault пула, протокольная комиссия → Areal Finance, комиссия казначейства OT → OT Treasury для пар с OT). Это сделано намеренно — zap не должен быть лазейкой без комиссий.
+      Внутренний своп несёт те же комиссии, что и обычный своп (LP-комиссия → инкремент `cumulative_fees_per_share_<side>`, протокольная комиссия → Areal Finance, комиссия казначейства OT → OT Treasury для пар с OT). Это сделано намеренно — zap не должен быть лазейкой без комиссий.
     </Note>
   </Accordion>
 
@@ -554,7 +554,7 @@ description: "Разрешённый AMM со StandardCurve-пулами и од
     ```
 
     **Адреса назначения комиссий (оба направления):**
-    - `fee_lp` → RWT переводится в `fee_vault` пула (RWT-аккаунт каждого пула, доступен LP-холдерам через `claim_lp_fees`)
+    - `fee_lp` → остаётся внутри резервного vault'а пула на стороне начисления (сейчас — всегда RWT-сторона); контракт инкрементирует `pool_state.cumulative_fees_per_share_<side>`, чтобы LP-холдеры могли позже забрать свою долю через `claim_lp_fees`
     - `fee_protocol` → RWT переводится на `areal_fee_account` (RWT ATA Areal Finance)
     - `ot_treasury_fee` → RWT переводится на `ot_treasury_fee_account` (только для пар с OT)
     - Для пулов без OT `ot_treasury_fee = 0` (без дополнительной комиссии)
@@ -617,7 +617,7 @@ description: "Разрешённый AMM со StandardCurve-пулами и од
     - `amount_out > 0`
     - Пул и DEX должны быть активны
 
-    **Эффект:** Пользователь отправляет вход → хранилище. Пул отправляет выход → пользователь. LP-комиссия → fee_vault пула (доступна LP-холдерам). Протокольная комиссия → areal_fee_account. Комиссия казначейства OT → ot_treasury_fee_account (только для пар с OT). Все комиссии в RWT, взимаются поверх свопа — резервы пула не затронуты. Эмитирует `SwapExecuted`.
+    **Эффект:** Пользователь отправляет вход → хранилище. Пул отправляет выход → пользователь. LP-комиссия остаётся внутри резервного vault'а пула на стороне начисления; `pool_state.cumulative_fees_per_share_<side>` инкрементируется, чтобы LP-холдеры могли забрать долю позже. Протокольная комиссия → `areal_fee_account`. Комиссия казначейства OT → `ot_treasury_fee_account` (только для пар с OT). Все комиссии в RWT, взимаются поверх свопа — резервы пула не дилюются. Эмитирует `SwapExecuted`.
 
     ---
 
@@ -670,7 +670,7 @@ description: "Разрешённый AMM со StandardCurve-пулами и од
 
 <AccordionGroup>
   <Accordion title="compound_yield">
-    Получение дохода в RWT из Yield Distribution от имени PDA пула, автокомпаундинг дохода OT в резервы пула. Выгодно всем LP-холдерам пропорционально. Примечание: это только для дохода OT — комиссии LP за свопы собираются в отдельном fee vault и выводятся индивидуально через `claim_lp_fees`.
+    Получение дохода в RWT из Yield Distribution от имени PDA пула, автокомпаундинг дохода OT в резервы пула. Выгодно всем LP-холдерам пропорционально. Примечание: это только для дохода OT — комиссии LP за свопы учитываются отдельно через per-side аккумулятор на `PoolState` и выводятся индивидуально через `claim_lp_fees`.
 
     | Parameter | Type | Description |
     |---|---|---|
@@ -700,46 +700,57 @@ description: "Разрешённый AMM со StandardCurve-пулами и од
   </Accordion>
 
   <Accordion title="claim_lp_fees">
-    Вывод накопленных LP-вознаграждений за свопы из fee vault пула. Каждый LP-холдер выводит пропорционально своей доле в общем объёме LP. Без вестинга — вознаграждения доступны мгновенно.
+    Вывод накопленных LP-вознаграждений за свопы из резервных vault'ов пула. Каждый LP-холдер выводит пропорционально своей доле в общем объёме LP. Без вестинга — вознаграждения доступны мгновенно. Выплачивает **обе стороны токенов** пула (A и B); сторона, на которой накопилась комиссия за своп, — это сторона, по которой идёт выплата.
 
     **Вызывающий:** LP-холдер (без ограничений — любой с LP-позицией)
 
     **Аккаунты:**
     - `lp_holder` (signer) — должен владеть LP-позицией
-    - `pool_state` — читает `total_lp_shares`
-    - `lp_position` (mut) — читает `shares`, обновляет `fees_claimed`
-    - `fee_vault` (mut) — RWT fee vault пула, ограничение: `owner == pool_state.key()`
-    - `lp_holder_rwt_ata` (mut) — RWT ATA холдера, получает выведенные комиссии
+    - `pool_state` — читает `total_lp_shares` и оба cumulative-аккумулятора
+    - `lp_position` (mut) — читает `shares`, обновляет `fees_claimed_per_share_a` и `fees_claimed_per_share_b`
+    - `pool_vault_a` (mut) — резервный vault пула на стороне токена A, владелец — PDA пула
+    - `pool_vault_b` (mut) — резервный vault пула на стороне токена B, владелец — PDA пула
+    - `recipient_token_a_ata` (mut) — ATA холдера на стороне A, получает выведенные A-side комиссии
+    - `recipient_token_b_ata` (mut) — ATA холдера на стороне B, получает выведенные B-side комиссии
     - `token_program`
 
     **Логика:**
     ```
-    cumulative_per_share = pool_state.cumulative_fees_per_share  // u128, updated on each swap
-    entitled = lp_position.shares * cumulative_per_share / PRECISION
-    claimable = entitled - lp_position.fees_claimed
-    
-    if claimable == 0: return
-    
-    transfer claimable RWT: fee_vault → lp_holder_rwt_ata (pool PDA signs)
-    lp_position.fees_claimed += claimable
+    delta_a = pool_state.cumulative_fees_per_share_a − lp_position.fees_claimed_per_share_a
+    delta_b = pool_state.cumulative_fees_per_share_b − lp_position.fees_claimed_per_share_b
+
+    claimable_a = (delta_a × lp_position.shares) >> 64    // Q64.64 → целое количество токенов
+    claimable_b = (delta_b × lp_position.shares) >> 64
+
+    if claimable_a == 0 && claimable_b == 0: return
+
+    if claimable_a > 0:
+        transfer claimable_a token_A: pool_vault_a → recipient_token_a_ata (pool PDA signs)
+    if claimable_b > 0:
+        transfer claimable_b token_B: pool_vault_b → recipient_token_b_ata (pool PDA signs)
+
+    lp_position.fees_claimed_per_share_a = pool_state.cumulative_fees_per_share_a
+    lp_position.fees_claimed_per_share_b = pool_state.cumulative_fees_per_share_b
     ```
 
     **Валидация:**
     - `lp_position.owner == lp_holder.key()`
-    - `claimable > 0`
-    - `fee_vault.amount >= claimable`
+    - Хотя бы один из `claimable_a`, `claimable_b` `> 0`
+    - `pool_vault_a.amount ≥ claimable_a` и `pool_vault_b.amount ≥ claimable_b`
 
-    **Эффект:** RWT переводятся из fee vault LP-холдеру. Эмитирует `LpFeesClaimed`.
+    **Эффект:** Выведенные суммы переводятся из резервных vault'ов пула в соответствующие ATA LP-холдера. Эмитирует `LpFeesClaimed`.
 
     <Note>
-      **Как работает cumulative_fees_per_share:** При каждом свопе контракт обновляет `pool_state.cumulative_fees_per_share += fee_lp * PRECISION / total_lp_shares`. Это позволяет вести учёт O(1) для каждого холдера — итерация по LP-холдерам не нужна. Каждая LP-позиция отслеживает свои `fees_claimed` для предотвращения двойного вывода. Паттерн используется в Sushiswap MasterChef, Raydium и большинстве DeFi-распределителей комиссий.
+      **Как работает per-side аккумулятор.** При каждом свопе контракт инкрементирует cumulative-per-share аккумулятор соответствующей стороны: `cumulative_fees_per_share_<side> += (fee_lp << 64) / total_lp_shares`. Каждая `LpPosition` снимает снимок этого значения (`fees_claimed_per_share_<side>`) при последнем взаимодействии. Pending-комиссии вычисляются лениво как `(cumulative − snapshot) × shares >> 64`, что даёт O(1) учёт на холдера без итерации по LP-холдерам. Аккумулятор хранит **fees per share** в Q64.64 fixed-point, не абсолютные комиссии — он не переполняется даже при высоком потоке комиссий.
+
+      **Текущее правило свопа.** Текущая реализация свопа всегда начисляет LP-комиссию на **RWT-стороне** пула. Для RWT-парного пула (`RWT/USDC`, `OT/RWT` и т.д.) продвигается только один из двух аккумуляторов на каждом свопе, поэтому `claimable_<сторона-без-RWT>` равен `0` для любой LP-позиции в RWT-парном пуле. Dual-side аккумулятор — forward-compat для не-RWT пар (например `OT/USDC`) и избегает специальной single-side логики в контракте.
     </Note>
   </Accordion>
 </AccordionGroup>
 
 ### Liquidity Nexus
 
-Управление LP Areal Finance. PDA Nexus владеет LP-позициями и токен-аккаунтами. Бот-менеджер выполняет операции; средства защищены программой (менеджер не может извлечь токены напрямую). Вознаграждения LP-комиссий накапливаются в fee vault пула и выводятся в Areal Treasury через `nexus_claim_rewards`.
+Управление LP Areal Finance. PDA Nexus владеет LP-позициями и токен-аккаунтами. Бот-менеджер выполняет операции; средства защищены программой (менеджер не может извлечь токены напрямую). Вознаграждения LP-комиссий накапливаются per-side на аккумуляторах пула и выводятся в Areal Treasury через `nexus_claim_rewards`.
 
 <Warning>
   **Политика прямого SPL Transfer.** Токены, отправленные в токен-аккаунт Nexus через прямой SPL Transfer (т.е. в обход `nexus_deposit` или `nexus_record_deposit`), **увеличат** on-chain баланс Nexus, но **НЕ продвинут** `total_deposited_*` — они намеренно нетрекаемые. Такие балансы всё равно тратятся менеджером через `nexus_swap` / `nexus_add_liquidity`, но `nexus_withdraw_profits` высвобождает только разрыв над треком principal floor, поэтому нетрекаемые депозиты эффективно поднимают потолок выводимой прибыли. Не полагайтесь на это для учёта; всегда маршрутизируйте капитал через `nexus_deposit` (USDC-канал) или `withdraw_liquidity_holding` в Yield Distribution (RWT-канал).
@@ -831,7 +842,7 @@ description: "Разрешённый AMM со StandardCurve-пулами и од
   </Accordion>
 
   <Accordion title="nexus_claim_rewards">
-    Вывод накопленных LP-вознаграждений из fee vault пулов в Areal Treasury. PDA Nexus выступает как LP-холдер и выводит свою пропорциональную долю. Только Authority.
+    Вывод накопленных LP-вознаграждений из резервных vault'ов пула в Areal Treasury. PDA Nexus выступает как LP-холдер и выводит свою пропорциональную долю на **обеих сторонах токенов** пула. Только Authority.
 
     | Parameter | Type | Description |
     |---|---|---|
@@ -843,20 +854,22 @@ description: "Разрешённый AMM со StandardCurve-пулами и од
     - `authority` (signer) — должен соответствовать `dex_config.authority`
     - `dex_config` — для валидации authority
     - `nexus` — PDA, подписывает как LP-холдер
-    - `pool_state` — читает `cumulative_fees_per_share`
-    - `nexus_lp_position` (mut) — LP-позиция Nexus в этом пуле, обновляет `fees_claimed`
-    - `fee_vault` (mut) — RWT fee vault пула
-    - `treasury_token_account` (mut) — RWT ATA Areal Treasury, получает выведенные вознаграждения
+    - `pool_state` — читает оба cumulative-аккумулятора
+    - `nexus_lp_position` (mut) — LP-позиция Nexus в этом пуле, обновляет `fees_claimed_per_share_a` и `_b`
+    - `pool_vault_a` (mut) — резервный vault пула на стороне токена A
+    - `pool_vault_b` (mut) — резервный vault пула на стороне токена B
+    - `treasury_token_a_ata` (mut) — ATA Areal Treasury на стороне токена A
+    - `treasury_token_b_ata` (mut) — ATA Areal Treasury на стороне токена B
     - `token_program`
 
     **Логика:**
-    1. Расчёт доступного для вывода по той же формуле, что и `claim_lp_fees`
-    2. Перевод RWT из fee_vault → `treasury_token_account` (Areal Treasury)
-    3. Обновление `nexus_lp_position.fees_claimed`
-    4. Эмитирует `NexusRewardsClaimed`
+    1. Вычисление `claimable_a` и `claimable_b` по той же Q64.64-формуле, что и `claim_lp_fees`.
+    2. Перевод `claimable_a` token-A из `pool_vault_a` → `treasury_token_a_ata`, если `> 0`; то же для B.
+    3. Обновление `nexus_lp_position.fees_claimed_per_share_a` и `_b` до текущих cumulative-значений.
+    4. Эмитирование `NexusRewardsClaimed`.
 
     <Note>
-      Используется тот же учёт `cumulative_fees_per_share`, что и для обычных LP-выводов. LP-позиции PDA Nexus зарабатывают комиссии как любой другой LP-холдер — вознаграждения идут напрямую в Areal Treasury.
+      Используется тот же per-side аккумулятор, что и в `claim_lp_fees`. LP-позиции PDA Nexus зарабатывают комиссии как любой другой LP-холдер — вознаграждения идут в Areal Treasury, не возвращаются обратно в principal floor (инвариант principal-lock учитывает только `total_deposited_*`, не вознаграждения за свопы). Для RWT-парных пулов на практике сегодня ненулевая только RWT-сторона, но инструкция выполняет оба перевода безусловно — для forward-compat с не-RWT парами.
     </Note>
   </Accordion>
 
@@ -1150,8 +1163,8 @@ description: "Разрешённый AMM со StandardCurve-пулами и од
 | `fee_bps` | `u16` | Комиссия за своп (скопирована из DexConfig при создании) |
 | `is_active` | `bool` | Флаг активности пула (может быть приостановлен Team Multisig) |
 | `total_fees_accumulated` | `u64` | Общие комиссии за всё время (LP + протокольные) |
-| `fee_vault` | `Pubkey` | RWT-аккаунт для сбора LP-комиссий (authority = PDA пула) |
-| `cumulative_fees_per_share` | `u128` | Нарастающая сумма `fee_lp * PRECISION / total_lp_shares` — используется для учёта комиссий O(1) на холдера |
+| `cumulative_fees_per_share_a` | `u128` | Q64.64 нарастающая сумма на стороне токена A: `cumulative_fees_per_share_a += (fee_lp_a << 64) / total_lp_shares` на каждом свопе. O(1) учёт комиссий на холдера |
+| `cumulative_fees_per_share_b` | `u128` | Q64.64 нарастающая сумма на стороне токена B: `cumulative_fees_per_share_b += (fee_lp_b << 64) / total_lp_shares` на каждом свопе |
 | `bin_step_bps` | `u16` | Логарифмический шаг бина (0 для StandardCurve; обычно 10 = 0,1% для MonotonicLadder) |
 | `active_bin_id` | `i32` | Текущий активный бин (только MonotonicLadder) |
 | `left_anchor_bin` | `i32` | Верх permanent tail (только MonotonicLadder, иммутабельный) |
@@ -1185,8 +1198,8 @@ description: "Разрешённый AMM со StandardCurve-пулами и од
 | `pool` | `Pubkey` | Связанный пул |
 | `owner` | `Pubkey` | Кошелёк LP-провайдера |
 | `shares` | `u128` | LP-доли во владении |
-| `fees_claimed` | `u128` | Кумулятивные выведенные LP-комиссии (предотвращает двойной вывод) |
-| `fee_debt` | `u128` | Снимок комиссий на момент депозита — исключает комиссии до депозита из вывода |
+| `fees_claimed_per_share_a` | `u128` | Q64.64 снимок `PoolState.cumulative_fees_per_share_a`, снимаемый при открытии позиции / последнем claim. Pending-комиссии по A: `(cumulative_fees_per_share_a − fees_claimed_per_share_a) × shares >> 64` |
+| `fees_claimed_per_share_b` | `u128` | Q64.64 снимок `PoolState.cumulative_fees_per_share_b`. Pending-комиссии по B: `(cumulative_fees_per_share_b − fees_claimed_per_share_b) × shares >> 64` |
 | `last_update_ts` | `i64` | Метка времени последнего взаимодействия |
 | `bump` | `u8` | Bump seed PDA |
 
@@ -1352,7 +1365,7 @@ PDA управления LP Areal Finance. Синглтон — один на DE
   <Accordion title="→ Yield Distribution (compound_yield)">
     - PDA пула получает доход в RWT от OT из YD через CPI → автокомпаундинг в резервы пула
     - Все LP-холдеры получают выгоду пропорционально (более глубокий пул = лучшие сделки)
-    - LP-комиссии за свопы обрабатываются отдельно через fee vault каждого пула (`claim_lp_fees`)
+    - LP-комиссии за свопы обрабатываются отдельно через per-side аккумулятор на `PoolState` (`claim_lp_fees`)
   </Accordion>
 
   <Accordion title="← Pool Rebalancer (grow_liquidity / compress_liquidity)">
@@ -1389,8 +1402,8 @@ PDA управления LP Areal Finance. Синглтон — один на DE
 |------|-----|-----------|-------------|
 | Токен пользователя (вход) | Хранилище пула (vault_in) | swap | Пользователь |
 | Хранилище пула (vault_out) | Токен пользователя (выход) | swap | Пользователь |
-| Комиссия за своп (доля LP) | Fee vault пула (RWT) | swap | Автоматически |
-| Fee vault пула | RWT ATA LP-холдера | claim_lp_fees | LP-холдер |
+| Комиссия за своп (доля LP) | Остаётся в резервном vault'е пула на стороне начисления; учитывается через `cumulative_fees_per_share_<side>` на `PoolState` | swap | Автоматически |
+| Резервные vault'ы пула (A и B) | ATA LP-холдера (A и B) | claim_lp_fees (per-side Q64.64 выплата) | LP-холдер |
 | Комиссия за своп (доля протокола) | RWT ATA Areal Finance (всегда в RWT) | swap | Автоматически |
 | Комиссия за своп (казначейство OT) | RWT ATA OT Treasury (только пары с OT, всегда в RWT) | swap | Автоматически |
 | LP-токены A+B | Хранилища пула | add_liquidity | LP-провайдер |
@@ -1399,7 +1412,7 @@ PDA управления LP Areal Finance. Синглтон — один на DE
 | YD reward vault | Резервы пула (RWT) | compound_yield (CPI к YD) | Crank |
 | Доход OT (10% USDC) | USDC ATA crank → USDC ATA Nexus | OT `distribute_revenue` → `nexus_deposit` (два шага: crank получает, затем вносит) | Crank |
 | Доход RWT Engine (15% RWT) | RWT ATA LiquidityHolding → RWT ATA Nexus | YD `withdraw_liquidity_holding` (атомарный drain в одну TX + CPI `nexus_record_deposit`) | Authority |
-| LP-вознаграждения Nexus (RWT) | RWT ATA Areal Treasury | `nexus_claim_rewards` | Authority |
+| LP-вознаграждения Nexus (токены A и/или B) | ATA Areal Treasury (A и B) | `nexus_claim_rewards` (per-side Q64.64 выплата) | Authority |
 | Токены Nexus | Хранилища пула | nexus_add_liquidity | Менеджер Nexus |
 | Хранилища пула | Токены Nexus | nexus_remove_liquidity | Менеджер Nexus |
 | Токен Nexus (USDC или RWT) | ATA Areal Treasury | nexus_withdraw_profits (только разрыв над principal floor) | Authority |
