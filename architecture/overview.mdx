@@ -63,11 +63,11 @@ All pairs are denominated in RWT, creating a unified trading hub. Non-OT pairs (
 
 ## Yield & Reward Distribution
 
-Areal implements a **no-staking reward model** for Ownership Token holders. Simply holding OTs in your wallet is enough — the protocol tracks balances and accrues rewards every second.
+Areal implements a **no-staking reward model** for Ownership Token holders. Simply holding OTs in your wallet is enough — the protocol tracks balances at each fund event and accrues rewards per second.
 
-The process: a project DAO allocates revenue → funds are split 50/50 into RWT and USDY → deposited into the master liquidity pool for 12 months → earn additional yield from swap fees and token appreciation → withdrawn daily and distributed to holders **in RWT**.
+The process: a project DAO allocates revenue → 0.25% Areal protocol fee is deducted; of the remainder, 70% flows into the per-OT YD Accumulator (USDC), 20% into the project's OT Treasury, 10% into the Liquidity Nexus → a permissionless crank converts the Accumulator USDC into RWT (swap up to NAV on the DEX, mint the remainder) and deposits it into the per-OT reward vault → holders claim RWT at any time via a merkle proof, with their share vesting per second over the configured distribution period (default 365 days).
 
-This mechanism amplifies rewards during distribution, unifies payouts across all projects, and strengthens the RWT economy.
+A per-deposit snapshot algorithm ensures each fund event is allocated only to holders who held OT at the time of that event — front-run-resistant by construction. All payouts are unified in RWT, strengthening the RWT economy across projects.
 
 <Card title="Deep dive: Yield & Reward Distribution" icon="arrow-right" href="/architecture/yield-and-reward-distribution">
   No-staking architecture, distribution flow, yield amplification through liquidity, and aggregated portfolio

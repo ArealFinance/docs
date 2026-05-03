@@ -1,0 +1,82 @@
+---
+title: "Yield & Reward Distribution — Architecture Page Aligned with the Actual Flow"
+description: "Rewrites the Yield & Reward Distribution architecture page (and the matching block in the Architecture Overview) to describe the flow that the contracts actually implement: 0.25% Areal fee, 70/20/10 split of OT revenue, USDC → RWT conversion via convert_to_rwt, per-OT reward vault with per-second vesting, and per-deposit snapshot fairness."
+hidePagination: true
+---
+
+<div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "1.5rem" }}>
+  <span className="changelog-tag changelog-tag-update">Update</span>
+  <span className="changelog-date">May 3, 2026</span>
+</div>
+
+## Overview
+
+The [Yield & Reward Distribution architecture page](/architecture/yield-and-reward-distribution) and the matching block in the [Architecture Overview](/architecture/overview) are rewritten to describe the **actual** OT-revenue distribution flow that the contracts implement. The Initial Release version of these pages described an entirely different mechanism (50 / 50 split into RWT and USDY, deployed into the RWT/USDY master pool for 12 months, daily withdrawal) that does not exist in any contract — neither in `contracts/yield-distribution.mdx`, nor in `contracts/ownership-token.mdx`, nor in the on-chain code.
+
+This is a **docs-catches-up-to-code** alignment, not a protocol change. The actual flow has been documented contract-by-contract for some time (in `contracts/ownership-token.mdx` and `contracts/yield-distribution.mdx`); only the high-level architecture pages were stuck on the old model.
+
+## What the actual flow is
+
+After this rewrite, both pages describe the flow as it really runs:
+
+1. **OT `distribute_revenue`** is called by a permissionless crank when the cooldown and minimum-balance conditions are met.
+2. **0.25% Areal protocol fee** is deducted first (to the Areal Treasury USDC ATA).
+3. The remainder is split per the project's configured destinations (defaults: **70 / 20 / 10**, configurable via `batch_update_destinations`):
+   - 70% → per-OT **YD Accumulator** (USDC), the staging account that funds the merkle reward stream
+   - 20% → the project's **OT Treasury** (multi-token PDA wallet, governed by Futarchy)
+   - 10% → routed into the **Liquidity Nexus** via a crank-driven `nexus_deposit` (USDC lane)
+4. **`yield_distribution::convert_to_rwt`** is called by a permissionless crank. In a single atomic instruction it: (a) swaps USDC into RWT on the Native DEX up to the NAV price, (b) mints the remainder via `rwt_engine::mint_rwt` at NAV, (c) deducts a 0.25% YD protocol fee in RWT, (d) deposits the rest into the per-OT reward vault and extends the merkle distributor's vesting state.
+5. **Per-second vesting.** Each holder's claimable RWT vests linearly over `vesting_period_secs` (default 365 days). Each new fund event extends vesting on the unvested remainder; previously vested amounts stay claimable.
+6. **Holders claim** at any time via a merkle proof. The off-chain publisher uses a **per-deposit snapshot algorithm** so that each fund event is allocated only to holders who held OT at the slot of that event — front-run-resistant by construction.
+
+## What changed on the pages
+
+### `architecture/yield-and-reward-distribution.mdx`
+
+- **`How It Works` Steps** — fully rewritten. The old "50/50 RWT+USDY into master pool for 12 months → daily withdrawal" flow is replaced with the actual OT `distribute_revenue` → `convert_to_rwt` → per-OT reward vault → merkle-claim with per-second vesting flow. Five steps, each grounded in the contract instruction it represents.
+- **Mermaid diagram** — replaced. The new diagram shows the 0.25% Areal fee, the 70/20/10 fan-out, the `convert_to_rwt` arrow into the per-OT reward vault, and the merkle-claim arrow to OT holders.
+- **`No-Staking Architecture` cards** — kept but updated. "Real-time tracking" → "Per-event tracking" (snapshots per fund event); "Per-second accrual" → "Per-second vesting".
+- **`Yield Amplification Through Liquidity` section** — removed. It described amplification from the (non-existent) 50/50 master-pool deployment. The actual flow has no such amplification — RWT in the reward vault does not earn additional yield while vesting; the reward is fixed at conversion time.
+- **New `Per-Deposit Snapshot Fairness` section** — explains why a naive current-balance snapshot would be front-runnable around announced distributions, and how per-deposit snapshots eliminate that vector. Cross-link to the [Yield Distribution contract](/contracts/yield-distribution) for the full algorithm.
+- **`Summary` cards** — updated to reflect the real model: "12-month deployment" → "70/20/10 split" + "USDC → RWT conversion"; "Yield amplification" / "Daily distribution" → "Per-second vesting" + "Front-run-resistant".
+
+### `architecture/overview.mdx` — Yield & Reward Distribution block
+
+- **Lead paragraph** — updated. "Tracks balances and accrues rewards every second" → "tracks balances at each fund event and accrues rewards per second" (more precise).
+- **Process paragraph** — replaced end-to-end. The old "split 50/50 into RWT and USDY → master pool for 12 months → daily withdrawal" is replaced with the actual 0.25% Areal fee + 70/20/10 split + `convert_to_rwt` + per-OT reward vault + per-second vesting flow.
+- **Closing paragraph** — replaced. The old amplification claim is replaced with the per-deposit snapshot fairness property. The unification-in-RWT property is preserved.
+- The deep-link card description is updated to reflect the new section structure.
+
+## Why the previous pages were wrong
+
+The Initial Release versions of these two pages described a design that was never implemented:
+
+- **No 50/50 RWT+USDY split exists** in any contract. `convert_to_rwt` swaps USDC up to NAV and mints the remainder — there is no USDY purchase step.
+- **No master-pool LP deployment for distribution exists.** The only LP positions on the master pool are owned by the Liquidity Nexus, funded by the 10% revenue slice (not 100% of revenue), and they are managed by the Nexus Manager bot — not retired after 12 months.
+- **No daily withdrawal exists.** The reward mechanism is per-second vesting of RWT in a per-OT reward vault, claimed by holders via merkle proof, not periodically pushed.
+- **No yield amplification during distribution exists.** RWT in the reward vault does not earn additional yield while vesting; the reward amount is fixed at the time `convert_to_rwt` runs.
+
+These pages had been stale for some time; the lower-level contract pages were correct (`ownership-token`, `yield-distribution`, `bots/off-chain-services` all describe the actual flow). This entry brings the architecture-level summary in line with them.
+
+## Unchanged
+
+- The no-staking property — holders earn by holding, no contracts to interact with.
+- The unification of all OT-project payouts in RWT.
+- The aggregated Portfolio view on areal.finance.
+- The 0.25% Areal protocol fee on `distribute_revenue` (always deducted first).
+
+## Migration
+
+This is a documentation alignment, not a protocol or behavioural change. Implementations and integrators should:
+
+1. Stop modelling distributions as a 50 / 50 RWT+USDY deployment with a fixed lock period.
+2. Treat the OT-revenue distribution flow as a 70 / 20 / 10 split of USDC, with the 70% portion converted to RWT via `convert_to_rwt` and merkle-distributed to holders with per-second vesting.
+3. Use a per-deposit snapshot algorithm in the publisher (already documented in detail in [Yield Distribution contract — Merkle Tree Construction](/contracts/yield-distribution#merkle-tree-construction-off-chain)).
+
+## Related documents
+
+- [Yield & Reward Distribution](/architecture/yield-and-reward-distribution) — the architecture page rewritten by this entry
+- [Architecture Overview](/architecture/overview) — the overview block rewritten by this entry
+- [Ownership Token contract](/contracts/ownership-token) — `distribute_revenue` and the 70/20/10 split
+- [Yield Distribution contract](/contracts/yield-distribution) — `convert_to_rwt`, reward vault, merkle distributor, and the per-deposit snapshot algorithm
+- [Off-Chain Services](/bots/off-chain-services) — Revenue Crank, Convert & Fund Crank, Yield Claim Crank, Merkle Publisher

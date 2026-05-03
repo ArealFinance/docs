@@ -20,6 +20,15 @@ All notable changes to the Areal Finance protocol are documented here. Filter by
 <div className="changelog-entry">
   <div className="changelog-date">May 3, 2026</div>
 
+  ### [Yield & Reward Distribution — Architecture Page Aligned with the Actual Flow](/changelog/2026-05-03-yield-reward-distribution-realignment) <a href="/changelog/updates" className="changelog-tag-link"><span className="changelog-tag changelog-tag-update">Update</span></a>
+
+  Yield & Reward Distribution architecture page (and the matching block in the Architecture Overview) rewritten to describe the **actual** OT-revenue flow: 0.25% Areal protocol fee + 70/20/10 split, USDC → RWT via `convert_to_rwt`, per-OT reward vault with per-second vesting, per-deposit snapshot fairness. The Initial Release "50/50 RWT+USDY → master pool for 12 months → daily withdrawal" model never existed in code — `convert_to_rwt` swaps USDC up to NAV and mints the remainder, holders claim by merkle proof.
+
+</div>
+
+<div className="changelog-entry">
+  <div className="changelog-date">May 3, 2026</div>
+
   ### [Off-Chain Services — Nexus Manager Hardening and Yield-Claim RWT Lane](/changelog/2026-05-03-off-chain-services-nexus-manager) <a href="/changelog/updates" className="changelog-tag-link"><span className="changelog-tag changelog-tag-update">Update</span></a>
 
   Off-Chain Services page documents the Nexus Manager bot's `Operational hardening` (multi-RPC fallback, single-instance lock, WS reconcile, SOL pre-flight, kill-switch authority, decision engine, dry-run `SEND_TX` flag). Yield Claim Crank's RWT-lane step is rewritten — the 15% RWT slice now lands in YD `LiquidityHolding` and is drained by Authority via `withdraw_liquidity_holding`, not by the crank via `nexus_deposit`. Wallet rows updated: manager pubkey lives on `LiquidityNexus.manager` (not `dex_config.nexus_manager`); registration uses `initialize_nexus` / `update_nexus_manager`.

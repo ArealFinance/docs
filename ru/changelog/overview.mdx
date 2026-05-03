@@ -20,6 +20,15 @@ hidePagination: true
 <div className="changelog-entry">
   <div className="changelog-date">3 мая 2026</div>
 
+  ### [Распределение доходности и наград — синхронизация архитектурной страницы с реальным flow](/ru/changelog/2026-05-03-yield-reward-distribution-realignment) <a href="/ru/changelog/updates" className="changelog-tag-link"><span className="changelog-tag changelog-tag-update">Update</span></a>
+
+  Архитектурная страница «Распределение доходности и наград» (и соответствующий блок в Architecture Overview) переписаны под **реальный** flow OT-выручки: 0,25% Areal-комиссия + дележ 70/20/10, USDC → RWT через `convert_to_rwt`, per-OT reward vault с per-second вестингом, per-deposit snapshot fairness. Модель Initial Release «50/50 RWT+USDY → мастер-пул на 12 месяцев → ежедневный вывод» никогда не существовала в коде — `convert_to_rwt` свапает USDC до NAV и минтит остаток, холдеры клеймят по merkle-доказательству.
+
+</div>
+
+<div className="changelog-entry">
+  <div className="changelog-date">3 мая 2026</div>
+
   ### [Off-Chain сервисы — hardening Nexus Manager и RWT-канал Yield Claim Crank](/ru/changelog/2026-05-03-off-chain-services-nexus-manager) <a href="/ru/changelog/updates" className="changelog-tag-link"><span className="changelog-tag changelog-tag-update">Update</span></a>
 
   Страница Off-Chain сервисов документирует `Operational hardening` бота Nexus Manager (multi-RPC резервирование, single-instance lock, WS reconcile, SOL pre-flight, kill-switch authority, decision engine, dry-run флаг `SEND_TX`). Step RWT-канала в Yield Claim Crank переписан — 15% RWT теперь приземляется в `LiquidityHolding` YD и дренируется Authority через `withdraw_liquidity_holding`, а не крэнком через `nexus_deposit`. Обновлены строки кошельков: pubkey менеджера живёт в `LiquidityNexus.manager` (не `dex_config.nexus_manager`); регистрация — через `initialize_nexus` / `update_nexus_manager`.

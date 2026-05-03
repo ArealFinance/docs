@@ -1,0 +1,82 @@
+---
+title: "Распределение доходности и наград — синхронизация архитектурной страницы с реальным flow"
+description: "Переписывает архитектурную страницу Yield & Reward Distribution (и соответствующий блок в Architecture Overview) под flow, реально реализованный в контрактах: 0,25% Areal-комиссия, дележ выручки OT 70/20/10, конвертация USDC → RWT через convert_to_rwt, per-OT reward vault с per-second вестингом и per-deposit snapshot fairness."
+hidePagination: true
+---
+
+<div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "1.5rem" }}>
+  <span className="changelog-tag changelog-tag-update">Update</span>
+  <span className="changelog-date">3 мая 2026</span>
+</div>
+
+## Обзор
+
+[Архитектурная страница «Распределение доходности и наград»](/ru/architecture/yield-and-reward-distribution) и соответствующий блок в [Architecture Overview](/ru/architecture/overview) переписаны под **реальный** flow распределения OT-выручки, реализованный в контрактах. В Initial Release версии этих страниц был описан совершенно другой механизм (дележ 50/50 на RWT и USDY, депозит в мастер-пул RWT/USDY на 12 месяцев, ежедневный вывод), которого нет ни в одном контракте — ни в `contracts/yield-distribution.mdx`, ни в `contracts/ownership-token.mdx`, ни в on-chain коде.
+
+Это **docs-catches-up-to-code** синхронизация, а не изменение протокола. Реальный flow контракт-за-контрактом был задокументирован уже какое-то время (в `contracts/ownership-token.mdx` и `contracts/yield-distribution.mdx`); только верхнеуровневые архитектурные страницы застряли на старой модели.
+
+## Что такое реальный flow
+
+После этой переработки обе страницы описывают flow так, как он реально работает:
+
+1. **OT `distribute_revenue`** вызывается permissionless-крэнком, когда выполнены условия cooldown и минимального баланса.
+2. **Протокольная комиссия Areal 0,25%** вычитается первой (в USDC ATA Areal Treasury).
+3. Остаток делится по сконфигурированным назначениям проекта (дефолты: **70 / 20 / 10**, настраивается через `batch_update_destinations`):
+   - 70% → per-OT **YD Accumulator** (USDC), стейджинговый аккаунт, питающий merkle-стрим наград
+   - 20% → **OT Treasury** проекта (multi-token PDA-кошелёк, управляемый Futarchy)
+   - 10% → маршрутизируется в **Liquidity Nexus** через crank-управляемый `nexus_deposit` (USDC-канал)
+4. **`yield_distribution::convert_to_rwt`** вызывается permissionless-крэнком. В одной атомарной инструкции: (a) свапает USDC в RWT на Native DEX до NAV-цены, (b) минтит остаток через `rwt_engine::mint_rwt` по NAV, (c) вычитает протокольную комиссию YD 0,25% в RWT, (d) депонирует остальное в per-OT reward vault и расширяет состояние вестинга merkle-distributor.
+5. **Per-second вестинг.** Claimable RWT каждого холдера вестится линейно по `vesting_period_secs` (по умолчанию 365 дней). Каждое новое fund-событие расширяет вестинг на не-завестившийся остаток; ранее завестившиеся суммы остаются claimable.
+6. **Холдеры клеймят** в любой момент через merkle-доказательство. Офф-чейн publisher использует **алгоритм per-deposit snapshot**, чтобы каждое fund-событие распределялось только между холдерами, которые держали OT на слоте этого события — front-run-resistant by construction.
+
+## Что изменилось на страницах
+
+### `architecture/yield-and-reward-distribution.mdx`
+
+- **Steps `Как это работает`** — полностью переписаны. Старый flow «50/50 RWT+USDY в мастер-пул на 12 месяцев → ежедневный вывод» заменён на реальный OT `distribute_revenue` → `convert_to_rwt` → per-OT reward vault → merkle-клейм с per-second вестингом. Пять шагов, каждый привязан к инструкции контракта.
+- **Mermaid-диаграмма** — заменена. Новая показывает 0,25% Areal-комиссию, fan-out 70/20/10, стрелку `convert_to_rwt` в per-OT reward vault и стрелку merkle-клейма к OT-холдерам.
+- **Карточки `Архитектура без стейкинга`** — оставлены, но обновлены. «Трекинг в реальном времени» → «Per-event трекинг» (snapshot на каждое fund-событие); «Начисление каждую секунду» → «Per-second вестинг».
+- **Секция `Усиление доходности через ликвидность`** — удалена. Она описывала амплификацию от (несуществующего) 50/50 размещения в мастер-пуле. Реальный flow такой амплификации не имеет — RWT в reward vault не зарабатывает дополнительную доходность во время вестинга; награда фиксируется на момент конвертации.
+- **Новая секция `Справедливость per-deposit snapshot`** — объясняет, почему наивный snapshot текущего баланса был бы front-runnable вокруг анонсированных распределений, и как per-deposit snapshots устраняют этот вектор. Cross-link на [контракт Yield Distribution](/ru/contracts/yield-distribution) для полного алгоритма.
+- **Карточки `Резюме`** — обновлены под реальную модель: «Размещение на 12 месяцев» → «Дележ 70/20/10» + «USDC → RWT конвертация»; «Усиление доходности» / «Ежедневное распределение» → «Per-second вестинг» + «Защита от front-run».
+
+### `architecture/overview.mdx` — блок Yield & Reward Distribution
+
+- **Лидирующий параграф** — обновлён. «Трекает балансы и начисляет награды каждую секунду» → «снимает snapshot балансов на каждом fund-событии и начисляет награды per second» (точнее).
+- **Параграф процесса** — заменён end-to-end. Старый «дележ 50/50 на RWT и USDY → мастер-пул на 12 месяцев → ежедневный вывод» заменён на реальный flow с 0,25% Areal-комиссией + дележ 70/20/10 + `convert_to_rwt` + per-OT reward vault + per-second вестинг.
+- **Заключительный параграф** — заменён. Старое утверждение про амплификацию заменено на свойство per-deposit snapshot fairness. Свойство унификации в RWT сохранено.
+- Описание deep-link карточки обновлено под новую структуру секций.
+
+## Почему предыдущие страницы были неправильными
+
+Initial Release версии этих двух страниц описывали дизайн, который никогда не был реализован:
+
+- **Нет дележа 50/50 RWT+USDY** ни в одном контракте. `convert_to_rwt` свапает USDC до NAV и минтит остаток — никакой покупки USDY нет.
+- **Нет размещения LP в мастер-пуле для распределения.** Единственные LP-позиции на мастер-пуле — это позиции Liquidity Nexus, фондируемые 10% долей выручки (не 100% выручки), и управляются ботом Nexus Manager — не выводятся через 12 месяцев.
+- **Нет ежедневного вывода.** Механизм наград — это per-second вестинг RWT в per-OT reward vault, клеймится холдерами по merkle-доказательству, а не push'ится периодически.
+- **Нет yield amplification во время распределения.** RWT в reward vault не зарабатывает дополнительную доходность во время вестинга; сумма награды фиксируется на момент `convert_to_rwt`.
+
+Эти страницы устарели уже какое-то время; нижнеуровневые контрактные страницы были корректны (`ownership-token`, `yield-distribution`, `bots/off-chain-services` все описывают реальный flow). Эта запись приводит архитектурное summary в соответствие.
+
+## Без изменений
+
+- Свойство no-staking — холдеры зарабатывают, держа токены, без взаимодействия с контрактами.
+- Унификация всех выплат OT-проектов в RWT.
+- Агрегированный Portfolio view на areal.finance.
+- Протокольная комиссия Areal 0,25% на `distribute_revenue` (всегда вычитается первой).
+
+## Миграция
+
+Это синхронизация документации, а не изменение протокола или поведения. Реализации и интеграторы должны:
+
+1. Перестать моделировать распределения как 50/50 RWT+USDY с фиксированным периодом блокировки.
+2. Трактовать flow распределения OT-выручки как дележ 70/20/10 USDC, с 70% долей, конвертируемой в RWT через `convert_to_rwt` и распределяемой merkle-методом холдерам с per-second вестингом.
+3. Использовать алгоритм per-deposit snapshot в publisher'е (уже подробно задокументирован в [контракте Yield Distribution — Построение дерева Меркла](/ru/contracts/yield-distribution#построение-дерева-меркла-офф-чейн)).
+
+## Связанные документы
+
+- [Распределение доходности и наград](/ru/architecture/yield-and-reward-distribution) — архитектурная страница, переписанная этой записью
+- [Architecture Overview](/ru/architecture/overview) — обзорный блок, переписанный этой записью
+- [Контракт Ownership Token](/ru/contracts/ownership-token) — `distribute_revenue` и дележ 70/20/10
+- [Контракт Yield Distribution](/ru/contracts/yield-distribution) — `convert_to_rwt`, reward vault, merkle distributor и алгоритм per-deposit snapshot
+- [Off-Chain сервисы](/ru/bots/off-chain-services) — Revenue Crank, Convert & Fund Crank, Yield Claim Crank, Merkle Publisher
