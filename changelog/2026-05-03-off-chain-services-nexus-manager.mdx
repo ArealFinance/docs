@@ -1,0 +1,84 @@
+---
+title: "Off-Chain Services — Nexus Manager Hardening and Yield-Claim RWT Lane"
+description: "Off-Chain Services page documents the Nexus Manager bot's operational hardening (multi-RPC fallback, single-instance lock, WS reconcile, SOL pre-flight, kill-switch, decision engine, dry-run flag), and updates the Yield Claim Crank to reflect that the 15% RWT slice now lands in the Yield Distribution LiquidityHolding PDA and is drained into the Nexus by Authority via withdraw_liquidity_holding."
+hidePagination: true
+---
+
+<div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "1.5rem" }}>
+  <span className="changelog-tag changelog-tag-update">Update</span>
+  <span className="changelog-date">May 3, 2026</span>
+</div>
+
+## Overview
+
+The [Off-Chain Services page](/bots/off-chain-services) is updated on two fronts:
+
+1. **Yield Claim Crank** — its description of the RWT lane is brought in line with the rest of the docs sweep (the 15% RWT slice now goes through the Yield Distribution `LiquidityHolding` PDA and is drained into the Nexus by Authority via `withdraw_liquidity_holding`, not by the crank via `nexus_deposit`).
+2. **Nexus Manager** — gets a new `### Operational hardening` section covering the seven shared operational primitives the bot uses (multi-RPC fallback, single-instance lock, WS reconcile, SOL pre-flight, kill-switch authority, decision engine, and the `SEND_TX` dry-run flag). The privileged-wallet rows for the Nexus Manager are also updated to reflect that the manager pubkey now lives on `LiquidityNexus.manager`, not on `dex_config`.
+
+No protocol change. Documentation alignment + new operational detail.
+
+## What changed on the page
+
+### Yield Claim Crank — RWT lane
+
+- **`### How It Works`, "Claim for RWT Vault" Step** — step 4 rewritten. Was: "Crank then calls `native_dex::nexus_deposit` to route 15% RWT into Nexus with principal tracking." Now: "The 15% RWT slice lands in the Yield Distribution `LiquidityHolding` PDA RWT ATA. Authority subsequently drains it into the Nexus via `withdraw_liquidity_holding` (single TX, atomic principal-floor update via CPI to `nexus_record_deposit`). The crank does not handle the RWT lane — it is Authority-gated."
+- **Configuration table** — adds `SEND_TX` env var (default `false`, dry-run mode).
+- **On-Chain Interaction table** — `Route to Nexus` row narrowed to `Route USDC to Nexus` and explicitly notes that the RWT lane is Authority-gated and not driven by this crank.
+
+### Nexus Manager — `Deposit Capital` Step
+
+Step rewritten as a two-lane description. Previously: "After OT `distribute_revenue` sends 10% USDC to crank, or after RWT `claim_yield` sends 15% RWT to crank — crank calls `native_dex::nexus_deposit`..." (single description for both lanes, both routed through the crank). Now:
+
+- **USDC lane** — OT `distribute_revenue` sends 10% USDC to a crank wallet, which calls `native_dex::nexus_deposit` to route USDC into the Nexus and bump `total_deposited_usdc`.
+- **RWT lane** — RWT `claim_yield` sends the 15% liquidity slice into the YD `LiquidityHolding` PDA's RWT ATA. Authority then calls `yield_distribution::withdraw_liquidity_holding`, which atomically transfers RWT into the Nexus RWT ATA AND CPIs into `nexus_record_deposit` to update `total_deposited_rwt` — single TX.
+
+The earlier "Deposit | `native_dex::nexus_deposit` | crank (signer)..." row in the Nexus Manager's On-Chain Interaction table is removed: the Nexus Manager itself does not call `nexus_deposit` — that is the Yield Claim Crank's surface (USDC lane only). The Nexus Manager only swaps and adds/removes liquidity from the Nexus's existing balances.
+
+### Nexus Manager — new `### Operational hardening` section
+
+Seven bullets describing the bot's runtime safety and operational primitives:
+
+- **Multi-RPC fallback** — multi-endpoint RPC client with consensus-read for security-critical state (Nexus principal floor, pool reserve depth before a swap)
+- **Single-instance lock** — PID-file lock prevents two manager instances from racing
+- **WS reconcile after disconnect** — on reconnect, walks program signatures since the last-seen slot to backfill missed `NexusDeposited` and `NexusManagerUpdated` events
+- **SOL pre-flight check** — manager wallet must have enough SOL before the first submit each cycle; otherwise a structured `skip` with reason `low_sol`
+- **Kill-switch authority** — Authority can disable the manager by calling `update_nexus_manager(new_manager: [0u8; 32])`; the three manager-only DEX instructions (`nexus_swap`, `nexus_add_liquidity`, `nexus_remove_liquidity`) all check `signer != [0u8; 32]` and revert with `NexusManagerDisabled` until Authority sets a real pubkey
+- **Decision engine** — ranks managed pools by drift from a target distribution (default: equal weight) and emits one of four decision kinds per cycle (`swap`, `add_liquidity`, `remove_liquidity`, `skip`); decisions persisted append-only on disk in JSONL
+- **`SEND_TX` flag — dry-run mode** — defaults to `SEND_TX=false` (compute and log decisions, no submit); flipped to `true` for production after staging-mode verification
+
+### Wallet identity for the Nexus Manager
+
+Two places now read `LiquidityNexus.manager` instead of `dex_config.nexus_manager`:
+
+- The page-summary table at the top (column "Permissions / Required wallet")
+- The "Wallet & Privileges" table in the Shared Infrastructure section
+
+### Wallet registration step
+
+The "Register bot wallets on-chain" step in the deployment checklist is updated. Previously: `update_dex_config(nexus_manager: manager_pubkey)`. Now: `initialize_nexus(manager: manager_pubkey)` for first-time singleton creation; subsequent rotation via `update_nexus_manager(new_manager)`; with a note that the manager pubkey now lives on `LiquidityNexus.manager`.
+
+## Why this matters
+
+The Off-Chain Services page is the operator-facing reference for everyone running an Areal bot fleet. Three concrete consequences of leaving it stale:
+
+1. A bot operator following the Initial Release checklist would call `update_dex_config(nexus_manager: …)` and find the instruction either rejected or no-op (the `nexus_manager` field has been moved off `dex_config`).
+2. The Yield Claim Crank checklist would describe a `nexus_deposit` call for the RWT lane that today produces no on-chain effect for a permissionless caller (the lane is Authority-gated through `withdraw_liquidity_holding`).
+3. New Nexus Manager operators would lack the safety primitives now formally guaranteed in the spec — single-instance lock, multi-RPC consensus reads, kill-switch behaviour — and would have no contractual expectation that the bot defaults to dry-run mode.
+
+The page now describes what the bots actually do at runtime and what an operator running the production bot fleet should expect.
+
+## Migration
+
+Bot operators following the page should:
+
+1. Use `initialize_nexus` for first-time setup, `update_nexus_manager` for rotation. Stop calling `update_dex_config(nexus_manager)` — the field is gone.
+2. Drop the assumption that the Yield Claim Crank handles the RWT lane. Wire the Authority-gated `withdraw_liquidity_holding` call into the relevant operator runbook.
+3. Set `SEND_TX=false` for all Yield Claim Crank and Nexus Manager bot deployments by default; flip to `true` only after staging-mode verification.
+
+## Related documents
+
+- [Off-Chain Services](/bots/off-chain-services) — the page updated by this entry
+- [Liquidity Nexus](/architecture/liquidity-nexus) — subsystem-level overview that the Nexus Manager bot operates on
+- [Native DEX contract](/contracts/native-dex) — `nexus_swap`, `nexus_add_liquidity`, `nexus_remove_liquidity`, `update_nexus_manager`
+- [Yield Distribution contract](/contracts/yield-distribution) — `withdraw_liquidity_holding` (the Authority-gated drain that completes the RWT lane)

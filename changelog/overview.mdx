@@ -18,6 +18,15 @@ All notable changes to the Areal Finance protocol are documented here. Filter by
 ---
 
 <div className="changelog-entry">
+  <div className="changelog-date">May 3, 2026</div>
+
+  ### [Off-Chain Services — Nexus Manager Hardening and Yield-Claim RWT Lane](/changelog/2026-05-03-off-chain-services-nexus-manager) <a href="/changelog/updates" className="changelog-tag-link"><span className="changelog-tag changelog-tag-update">Update</span></a>
+
+  Off-Chain Services page documents the Nexus Manager bot's `Operational hardening` (multi-RPC fallback, single-instance lock, WS reconcile, SOL pre-flight, kill-switch authority, decision engine, dry-run `SEND_TX` flag). Yield Claim Crank's RWT-lane step is rewritten — the 15% RWT slice now lands in YD `LiquidityHolding` and is drained by Authority via `withdraw_liquidity_holding`, not by the crank via `nexus_deposit`. Wallet rows updated: manager pubkey lives on `LiquidityNexus.manager` (not `dex_config.nexus_manager`); registration uses `initialize_nexus` / `update_nexus_manager`.
+
+</div>
+
+<div className="changelog-entry">
   <div className="changelog-date">May 2, 2026</div>
 
   ### [Native DEX — Fix: Nexus Claim Destinations and Validation Wording](/changelog/2026-05-02-native-dex-claim-destinations-fix) <a href="/changelog/fixes" className="changelog-tag-link"><span className="changelog-tag changelog-tag-fix">Fix</span></a>

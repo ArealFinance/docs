@@ -1,0 +1,84 @@
+---
+title: "Off-Chain сервисы — hardening Nexus Manager и RWT-канал Yield Claim Crank"
+description: "Страница Off-Chain сервисов документирует operational hardening бота Nexus Manager (multi-RPC fallback, single-instance lock, WS reconcile, SOL pre-flight, kill-switch, decision engine, dry-run флаг) и обновляет Yield Claim Crank — теперь 15% RWT попадают в PDA LiquidityHolding в Yield Distribution и дренируются в Nexus Authority-инструкцией withdraw_liquidity_holding."
+hidePagination: true
+---
+
+<div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "1.5rem" }}>
+  <span className="changelog-tag changelog-tag-update">Update</span>
+  <span className="changelog-date">3 мая 2026</span>
+</div>
+
+## Обзор
+
+Страница [Off-Chain сервисы](/ru/bots/off-chain-services) обновлена по двум направлениям:
+
+1. **Yield Claim Crank** — описание RWT-канала приведено в соответствие с остальной частью docs sweep'а (15% RWT теперь идёт через PDA `LiquidityHolding` в Yield Distribution и дренируется в Nexus Authority-инструкцией `withdraw_liquidity_holding`, а не через crank-кошелёк и `nexus_deposit`).
+2. **Nexus Manager** — получает новую секцию `### Operational hardening`, покрывающую семь общих операционных примитивов бота (multi-RPC резервирование, single-instance lock, WS reconcile, SOL pre-flight, kill-switch authority, decision engine и dry-run флаг `SEND_TX`). Привилегированные записи кошелька Nexus Manager обновлены: pubkey менеджера теперь живёт в `LiquidityNexus.manager`, а не в `dex_config`.
+
+Изменений в протоколе нет. Синхронизация документации + новый операционный материал.
+
+## Что изменилось на странице
+
+### Yield Claim Crank — RWT-канал
+
+- **`### Как это работает`, Step «Клейм для RWT Vault»** — шаг 4 переписан. Было: «Кранк затем вызывает `native_dex::nexus_deposit` для маршрутизации 15% RWT в Nexus с отслеживанием принципала». Стало: «15% доля RWT приземляется в RWT ATA PDA `LiquidityHolding` в Yield Distribution. Authority впоследствии дренирует её в Nexus через `withdraw_liquidity_holding` (1 TX, атомарное обновление principal floor через CPI на `nexus_record_deposit`). Crank не работает с RWT-каналом — он Authority-gated».
+- **Таблица конфигурации** — добавлена env-переменная `SEND_TX` (по умолчанию `false`, dry-run режим).
+- **Таблица ончейн-взаимодействия** — строка «Маршрут в Nexus» сужена до «Маршрут USDC в Nexus» и явно отмечает, что RWT-канал Authority-gated и не управляется этим крэнком.
+
+### Nexus Manager — Step «Депозит капитала»
+
+Step переписан как описание двух каналов. Раньше: «После того как OT `distribute_revenue` отправляет 10% USDC кранку, или после того как RWT `claim_yield` отправляет 15% RWT кранку — кранк вызывает `native_dex::nexus_deposit`...» (единое описание для обеих lane, обе через crank). Теперь:
+
+- **USDC-канал** — OT `distribute_revenue` отправляет 10% USDC на crank-кошелёк, который вызывает `native_dex::nexus_deposit` для маршрутизации USDC в Nexus и инкремента `total_deposited_usdc`.
+- **RWT-канал** — RWT `claim_yield` отправляет 15% долю ликвидности в RWT ATA PDA `LiquidityHolding` в Yield Distribution. Authority затем вызывает `yield_distribution::withdraw_liquidity_holding`, которая атомарно переводит RWT в RWT ATA Nexus И делает CPI на `nexus_record_deposit` для обновления `total_deposited_rwt` — одна TX.
+
+Прежняя строка «Депозит | `native_dex::nexus_deposit` | crank (signer)...» в таблице ончейн-взаимодействия Nexus Manager удалена: сам Nexus Manager не вызывает `nexus_deposit` — это поверхность Yield Claim Crank (только USDC-канал). Nexus Manager только свопает и добавляет/выводит ликвидность из существующих балансов Nexus.
+
+### Nexus Manager — новая секция `### Operational hardening`
+
+Семь bullet'ов, описывающих runtime-безопасность и операционные примитивы бота:
+
+- **Multi-RPC резервирование** — multi-endpoint RPC-клиент с consensus-чтением security-критичного состояния (principal floor Nexus, глубина резервов пула перед свопом)
+- **Single-instance lock** — PID-file lock предотвращает гонку двух manager-инстансов
+- **WS reconcile после disconnect** — на reconnect проходит program signatures с последнего seen slot для backfill пропущенных событий `NexusDeposited` и `NexusManagerUpdated`
+- **SOL pre-flight проверка** — у manager-кошелька должно быть достаточно SOL до первой отправки в каждом цикле; иначе структурированный `skip` с reason `low_sol`
+- **Kill-switch authority** — Authority может отключить менеджер через `update_nexus_manager(new_manager: [0u8; 32])`; три manager-only DEX-инструкции (`nexus_swap`, `nexus_add_liquidity`, `nexus_remove_liquidity`) проверяют `signer != [0u8; 32]` и падают с `NexusManagerDisabled`, пока Authority не выставит реальный pubkey
+- **Decision engine** — ранжирует управляемые пулы по дрейфу от целевого распределения (по умолчанию: равный вес) и эмитирует один из четырёх типов решений за цикл (`swap`, `add_liquidity`, `remove_liquidity`, `skip`); решения append-only на диск в JSONL
+- **Флаг `SEND_TX` — режим dry-run** — по умолчанию `SEND_TX=false` (вычисляет и логирует решения, не отправляет); переключается в `true` для production после проверки staging-mode
+
+### Идентификация кошелька Nexus Manager
+
+В двух местах теперь читается `LiquidityNexus.manager` вместо `dex_config.nexus_manager`:
+
+- В page-summary таблице сверху (колонка «Permissions / Required wallet»)
+- В таблице «Кошельки и привилегии» в секции Shared Infrastructure
+
+### Шаг регистрации кошельков
+
+Шаг «Регистрация кошельков ботов ончейн» в чек-листе деплоя обновлён. Раньше: `update_dex_config(nexus_manager: manager_pubkey)`. Теперь: `initialize_nexus(manager: manager_pubkey)` для первичной инициализации singleton; последующая ротация через `update_nexus_manager(new_manager)`; с заметкой, что pubkey менеджера теперь живёт в `LiquidityNexus.manager`.
+
+## Почему это важно
+
+Страница Off-Chain сервисов — это operator-facing справочник для всех, кто запускает ботов Areal. Три конкретных последствия оставлять её устаревшей:
+
+1. Bot-оператор, следующий чек-листу Initial Release, вызовет `update_dex_config(nexus_manager: …)` и обнаружит, что инструкция либо отвергается, либо no-op (поле `nexus_manager` перенесено из `dex_config`).
+2. Чек-лист Yield Claim Crank описывает вызов `nexus_deposit` для RWT-канала, который сегодня не даёт никакого ончейн-эффекта для permissionless caller (канал Authority-gated через `withdraw_liquidity_holding`).
+3. Новые Nexus Manager-операторы не знали бы про safety-примитивы, теперь формально гарантированные в спеке — single-instance lock, multi-RPC consensus reads, kill-switch behaviour — и не имели бы контрактного ожидания, что бот по умолчанию в dry-run режиме.
+
+Страница теперь описывает, что боты реально делают в runtime, и что должен ожидать оператор, запускающий production bot fleet.
+
+## Миграция
+
+Bot-операторы, следующие странице, должны:
+
+1. Использовать `initialize_nexus` для первичного setup, `update_nexus_manager` для ротации. Перестать вызывать `update_dex_config(nexus_manager)` — поля больше нет.
+2. Отказаться от предположения, что Yield Claim Crank обрабатывает RWT-канал. Подключить Authority-gated вызов `withdraw_liquidity_holding` в соответствующий операторский runbook.
+3. Установить `SEND_TX=false` для всех деплоев Yield Claim Crank и Nexus Manager бот по умолчанию; переключать в `true` только после проверки staging-mode.
+
+## Связанные документы
+
+- [Off-Chain сервисы](/ru/bots/off-chain-services) — страница, обновлённая этой записью
+- [Liquidity Nexus](/ru/architecture/liquidity-nexus) — обзор подсистемы, на которой оперирует бот Nexus Manager
+- [Контракт Native DEX](/ru/contracts/native-dex) — `nexus_swap`, `nexus_add_liquidity`, `nexus_remove_liquidity`, `update_nexus_manager`
+- [Контракт Yield Distribution](/ru/contracts/yield-distribution) — `withdraw_liquidity_holding` (Authority-gated drain, завершающий RWT-канал)
