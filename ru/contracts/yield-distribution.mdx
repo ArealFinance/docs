@@ -598,7 +598,7 @@ Singleton-PDA, стейджит RWT, полученный от 15% доли ли
 | `total_drained` | `u64` | Lifetime RWT, дренированные в Nexus |
 | `bump` | `u8` | Bump-сид PDA |
 
-**PDA Seed:** `["liquidity_holding"]`
+**PDA Seed:** `["liq_holding"]`
 
 **Owned ATA:** PDA `LiquidityHolding` владеет одним RWT ATA (`liquidity_holding_rwt_ata`) — per-epoch стейджинговый аккаунт.
 
@@ -614,7 +614,7 @@ Singleton-PDA, стейджит RWT, полученный от 15% доли ли
 | MerkleDistributor | `"merkle_dist"`, `ot_mint` | Перманентный дистрибьютор для каждого OT |
 | Accumulator | `"accumulator"`, `ot_mint` | Приёмник USDC для каждого OT (принадлежит контракту) |
 | ClaimStatus | `"claim_status"`, `distributor`, `claimant` | Трекинг клеймов для каждого держателя |
-| LiquidityHolding | `"liquidity_holding"` | Singleton — стейджинг RWT для drain в Nexus |
+| LiquidityHolding | `"liq_holding"` | Singleton — стейджинг RWT для drain в Nexus |
 
 ## Константы
 

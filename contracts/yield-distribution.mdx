@@ -598,7 +598,7 @@ Singleton PDA that stages RWT received from the 15% liquidity slice of `rwt_engi
 | `total_drained` | `u64` | Lifetime RWT drained into the Nexus |
 | `bump` | `u8` | PDA bump seed |
 
-**PDA Seed:** `["liquidity_holding"]`
+**PDA Seed:** `["liq_holding"]`
 
 **Owned ATA:** the `LiquidityHolding` PDA owns a single RWT ATA (`liquidity_holding_rwt_ata`) which is the per-epoch staging account.
 
@@ -614,7 +614,7 @@ Singleton PDA that stages RWT received from the 15% liquidity slice of `rwt_engi
 | MerkleDistributor | `"merkle_dist"`, `ot_mint` | Per-OT perpetual distributor |
 | Accumulator | `"accumulator"`, `ot_mint` | Per-OT USDC receiver (contract-owned) |
 | ClaimStatus | `"claim_status"`, `distributor`, `claimant` | Per-holder claim tracking |
-| LiquidityHolding | `"liquidity_holding"` | Singleton — RWT staging for the Nexus drain |
+| LiquidityHolding | `"liq_holding"` | Singleton — RWT staging for the Nexus drain |
 
 ## Constants
 
