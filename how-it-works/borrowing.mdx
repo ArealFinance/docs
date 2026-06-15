@@ -1,0 +1,125 @@
+---
+title: Borrowing
+description: "Borrow against RWT or stRWT without selling, via the Omnipair lending market"
+---
+
+import { MarketLive } from "/snippets/market-live.mdx";
+
+**Hold RWT or stRWT and borrow against it without selling.** Borrowing runs on an external
+**RWT / stRWT** lending market built on **Omnipair**, an oracle-free GAMM (generalized AMM) where
+the pool itself prices collateral and debt.
+
+<a href="https://www.omnipair.fi/market/EYpKtcY5xkA8aQQTKYyEpFdRua5GM47YVWVfG9scn4Hd" target="_blank" rel="noreferrer" className="cta-card">
+  <img src="/images/omnipair.png" alt="Omnipair" />
+  <div>
+    <div className="cta-title">Open the RWT / stRWT market on Omnipair</div>
+    <div className="cta-sub">Deposit collateral and borrow in the live lending market</div>
+  </div>
+  <span className="cta-arrow">↗</span>
+</a>
+
+<MarketLive />
+
+## How to borrow
+
+<Steps>
+  <Step title="Open the market">
+    Open the RWT / stRWT market on Omnipair and connect your wallet.
+  </Step>
+  <Step title="Deposit collateral">
+    Supply **RWT** or **stRWT** as collateral.
+  </Step>
+  <Step title="Borrow">
+    Draw the paired token up to your borrow limit (collateral value times the max LTV).
+  </Step>
+  <Step title="Manage and repay">
+    Watch your health factor and repay the borrowed amount plus accrued interest at any time.
+  </Step>
+  <Step title="Withdraw">
+    Once the debt is cleared, withdraw your collateral.
+  </Step>
+</Steps>
+
+## Key terms
+
+<CardGroup cols={2}>
+  <Card title="Borrow limit" icon="gauge">
+    The most you can borrow now: collateral value times the max borrow LTV.
+  </Card>
+  <Card title="Max borrow LTV" icon="arrow-up">
+    The highest loan-to-value allowed when opening or increasing a loan.
+  </Card>
+  <Card title="Liquidation LTV" icon="triangle-exclamation">
+    The LTV at which the position becomes liquidatable.
+  </Card>
+  <Card title="Health factor" icon="heart-pulse">
+    Headroom before liquidation. Above 1 is safe; at 1 liquidation can occur.
+  </Card>
+  <Card title="Liquidation price" icon="dollar-sign">
+    The collateral price at which the health factor reaches 1.
+  </Card>
+  <Card title="Swap fee" icon="percent">
+    0.25% on swaps routed through the pool.
+  </Card>
+</CardGroup>
+
+## Looping strategy
+
+Looping is a common DeFi strategy that uses borrowing to amplify a position. You deposit
+collateral, borrow against it, convert the borrowed asset back into more collateral, and repeat.
+Each loop increases your exposure (and yield) on the same starting capital, at the cost of higher
+liquidation risk.
+
+A natural loop here amplifies **staking yield**:
+
+<Steps>
+  <Step title="Stake and deposit">
+    Stake RWT into stRWT and deposit the stRWT as collateral.
+  </Step>
+  <Step title="Borrow RWT">
+    Borrow RWT against the stRWT, staying well under the max LTV.
+  </Step>
+  <Step title="Re-stake">
+    Stake the borrowed RWT into more stRWT and deposit it as well.
+  </Step>
+  <Step title="Repeat">
+    Loop again to compound the exposure.
+  </Step>
+</Steps>
+
+Each loop puts more stRWT to work earning the staking reward share on borrowed capital, so the
+effective yield on your initial deposit is multiplied. This is profitable while the staking yield
+stays above the borrow interest rate. The trade-off is more debt and a tighter health factor, so
+the position is more sensitive to rate and price moves. Loop conservatively and keep a buffer.
+
+## Liquidation
+
+<Warning>
+If your health factor falls to 1 (your LTV reaches the liquidation LTV), the collateral can be
+liquidated to repay the debt. Watch the liquidation price, keep a buffer, and repay or add
+collateral before it is reached. Interest accrues on the debt over time, which lowers the health
+factor even if prices do not move.
+</Warning>
+
+## Pool parameters
+
+The RWT / stRWT pool is an Omnipair GAMM. These parameters define the borrowing conditions.
+
+- **Oracle-free pricing.** The pool prices collateral and debt from its own reserves, with no
+  external oracle. There is nothing to feed a wrong price and no oracle to fail.
+- **EMA half-life: 120 minutes.** Instead of the raw spot price, the pool uses an exponential
+  moving average (EMA) of its price. The half-life is how long it takes for a price change to be
+  half absorbed into that average. At 120 minutes the price reacts gradually, so a sudden swing
+  or a flash manipulation barely moves the value used for borrowing and liquidation. Longer
+  half-life means smoother and more manipulation-resistant pricing, at the cost of reacting more
+  slowly to genuine moves.
+- **Dynamic (AUTO) LTV.** The max borrow LTV and liquidation LTV are set automatically by the
+  protocol from live pool conditions, rather than fixed numbers.
+- **Target utilization: 30 to 50 percent.** The interest-rate model aims to keep borrowing
+  utilization inside this band. Below it, borrow rates stay low to encourage borrowing; above it,
+  rates climb to attract repayment and fresh liquidity.
+- **Variable interest rate.** The borrow rate is set by the rate model and moves with utilization.
+  Interest accrues to your debt continuously.
+- **Swap fee: 0.25%.** Charged on swaps routed through the pool.
+
+Both **RWT** and **stRWT** can be used as collateral and borrowed against each other.

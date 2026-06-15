@@ -1,0 +1,143 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "palm",
+  "name": "Areal Finance — RWT",
+  "colors": {
+    "primary": "#8aa0c8",
+    "light": "#cdd9ec",
+    "dark": "#5b6f94"
+  },
+  "favicon": "/images/favicondarkmode.svg",
+  "appearance": {
+    "default": "dark",
+    "strict": true
+  },
+  "background": {
+    "color": {
+      "dark": "#0b0c0e"
+    }
+  },
+  "fonts": {
+    "heading": {
+      "family": "Inter",
+      "weight": 700
+    },
+    "body": {
+      "family": "Inter",
+      "weight": 400
+    }
+  },
+  "navbar": {
+    "primary": {
+      "type": "button",
+      "label": "Launch App",
+      "href": "https://areal.finance"
+    }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "icon": "hand-wave",
+            "pages": [
+              "index"
+            ]
+          },
+          {
+            "group": "How it Works",
+            "icon": "diagram-project",
+            "pages": [
+              "how-it-works/overview",
+              "how-it-works/rwa-basket",
+              "how-it-works/rwt",
+              "how-it-works/strwt",
+              "how-it-works/liquidity",
+              "how-it-works/borrowing"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Revenue",
+        "groups": [
+          {
+            "group": "Revenue",
+            "icon": "chart-line",
+            "pages": [
+              "revenue/overview"
+            ]
+          },
+          {
+            "group": "Reports",
+            "icon": "file-lines",
+            "pages": [
+              "revenue/reports/rental-cars"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Contracts",
+        "groups": [
+          {
+            "group": "Smart Contracts",
+            "icon": "file-code",
+            "pages": [
+              "contracts/overview"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Changelog",
+        "groups": [
+          {
+            "group": "Changelog",
+            "icon": "clock-rotate-left",
+            "pages": [
+              "changelog/overview"
+            ]
+          },
+          {
+            "group": "By Tag",
+            "icon": "tags",
+            "pages": [
+              "changelog/features",
+              "changelog/updates",
+              "changelog/fixes",
+              "changelog/breaking",
+              "changelog/security",
+              "changelog/compliance"
+            ]
+          },
+          {
+            "group": "June 2026",
+            "icon": "calendar",
+            "pages": [
+              "changelog/2026-06-15-initial-docs"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "errors": {
+    "404": {
+      "redirect": true
+    }
+  },
+  "logo": {
+    "light": "/images/logowhite.svg",
+    "dark": "/images/logowhite.svg"
+  },
+  "footer": {
+    "socials": {
+      "x": "https://x.com/Areal_Finance",
+      "github": "https://github.com/ArealFinance"
+    }
+  },
+  "rounded": "relaxed"
+}

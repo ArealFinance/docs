@@ -1,0 +1,85 @@
+---
+title: Overview
+description: "From minting RWT to acquiring real-world assets and distributing their yield"
+---
+
+import { DistributionLive } from "/snippets/distribution-live.mdx";
+
+**Every unit of capital paid to mint RWT goes straight into acquiring real-world assets for the
+basket.** Those assets generate yield, and that yield is distributed according to a model the
+community defines.
+
+<DistributionLive />
+
+## How it works
+
+<Steps>
+  <Step title="Mint RWT">
+    Anyone can mint RWT by paying in **USDC** at RWT's current **Book NAV price** (the basket's
+    book value per token). The payment enters the protocol as new capital for the basket.
+  </Step>
+  <Step title="The community chooses the asset">
+    Which real-world asset to acquire is decided through a **decision market (futarchy)**: the
+    community proposes candidate assets, and the market selects the ones expected to create the
+    most value for the basket.
+  </Step>
+  <Step title="Acquire RWA">
+    The capital is used to buy the chosen income-generating real-world asset (RWA) and add it to
+    the basket.
+  </Step>
+  <Step title="The basket earns">
+    The RWA produce real, off-chain income, net of the costs of servicing them.
+  </Step>
+  <Step title="Distribute yield">
+    Net income is split according to the community-defined model (currently **40 / 30 / 20 / 10**):
+
+    | Share | Direction             | Effect                                                        |
+    |-------|-----------------------|--------------------------------------------------------------|
+    | 40%   | Compounding           | Buys new RWA, raising the basket's value per token (Book NAV). |
+    | 30%   | stRWT staking rewards | Flows to stakers as a rising stRWT to RWT exchange rate.       |
+    | 20%   | Liquidity             | Deepens the on-chain market for stable entry and exit.         |
+    | 10%   | Areal Finance DAO     | Funds development, operations, and governance.                 |
+
+    These shares are parameters: the community can change them through governance voting to keep
+    the protocol at maximum efficiency.
+  </Step>
+</Steps>
+
+## RWA Basket
+
+The RWA Basket is the productive core of the protocol: a community-owned portfolio of tokenized,
+income-generating real-world assets. It is what the minted capital buys and what produces the
+yield that flows through the model above. The community decides which assets to acquire, and each
+one adds its income to the protocol.
+
+In essence, the basket is the source of all yield in the protocol and the real backing behind the
+returns participants earn.
+
+<Card title="Explore the RWA Basket" icon="layer-group" href="/how-it-works/rwa-basket">
+  See the assets currently in the basket and the total RWA capitalization.
+</Card>
+
+## Two tokens
+
+Areal's goal is a maximally liquid, RWA-backed token. To keep RWT freely tradable while still
+rewarding the people who back the protocol for the long run, the model is split into two tokens:
+**RWT** stays liquid for anyone who wants exposure, and **stRWT** supports liquidity and rewards
+long-term holders who stake.
+
+| Token                       | What it is                                                                  |
+|-----------------------------|----------------------------------------------------------------------------|
+| **Real World Token** `RWT`  | A share in the RWA basket. Its fundamental price is **Book NAV per token**.  |
+| **Staked RWT** `stRWT`      | A share in the staking pool. Earns the 30% reward share via a rising rate.   |
+
+<div className="token-cards">
+  <a href="/how-it-works/rwt" className="token-card">
+    <img src="/images/rwt.png" alt="RWT" className="token-card-logo" />
+    <div className="token-card-title">Real World Token (RWT)</div>
+    <div className="token-card-desc">The base asset: Book NAV, minting, and how the price is anchored.</div>
+  </a>
+  <a href="/how-it-works/strwt" className="token-card">
+    <img src="/images/strwt.png" alt="stRWT" className="token-card-logo" />
+    <div className="token-card-title">Staked RWT (stRWT)</div>
+    <div className="token-card-desc">Stake RWT for a share of protocol income through a rising exchange rate.</div>
+  </a>
+</div>

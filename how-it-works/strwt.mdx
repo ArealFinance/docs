@@ -1,0 +1,79 @@
+---
+title: "Staked RWT (stRWT)"
+description: "The staking token: a share of the RWT staking pool, earning rewards via a rising rate"
+---
+
+import { StRwtLive } from "/snippets/strwt-live.mdx";
+
+**stRWT is the protocol's staking token.** It represents a share of the RWT staking pool and earns
+the protocol's staking reward share, paid not as claims to your wallet but through a steadily
+rising stRWT to RWT exchange rate.
+
+**Contract address (Solana)**
+
+```text Staked RWT CA
+sRWTy1bkqvRegb31RETanhbAtJ7eXN6XsTvaqBRh6kA
+```
+
+<StRwtLive />
+
+## Exchange rate
+
+The exchange rate is how many RWT one stRWT is worth. It is the pool's total RWT divided by the
+total stRWT supply (with small virtual offsets for safety):
+
+<div className="formula">Exchange rate = total RWT in pool / total stRWT supply</div>
+
+Rewards are paid by raising this rate rather than by minting new stRWT, so in RWT terms the rate
+only goes up. The widget above reads it live.
+
+## Staking
+
+Deposit RWT and receive newly minted stRWT at the current rate:
+
+<div className="formula">stRWT received = RWT deposited / current exchange rate</div>
+
+The higher the rate when you enter, the fewer stRWT you get for the same RWT. This ensures a new
+staker has no claim on rewards accrued before they joined.
+
+## Rewards
+
+Staking rewards are paid into the pool as RWT, funded by the staking share of the protocol's
+[income distribution](/how-it-works/overview). The stRWT supply stays the same while the pool's
+RWT grows, so each stRWT becomes redeemable for more RWT and the **exchange rate rises**.
+
+You never claim anything. As rewards arrive, the rate climbs and every stRWT is automatically
+worth more RWT, so your position compounds on its own. The current rate is shown live in the
+widget above.
+
+<div className="rate-flow">
+  <div className="rf-box">
+    <div className="rf-cap">Reward arrives</div>
+    <div className="rf-main rf-gold">+ RWT into the pool</div>
+  </div>
+  <div className="rf-arrow">→</div>
+  <div className="rf-box">
+    <div className="rf-cap">Staking pool</div>
+    <div className="rf-row"><span>RWT</span><span className="rf-up">grows ▲</span></div>
+    <div className="rf-row"><span>stRWT</span><span className="rf-flat">fixed</span></div>
+  </div>
+  <div className="rf-arrow">→</div>
+  <div className="rf-box">
+    <div className="rf-cap">Result</div>
+    <div className="rf-main">1 stRWT = more RWT</div>
+    <div className="rf-sub rf-up">exchange rate ▲</div>
+  </div>
+</div>
+
+Because the stRWT supply never changes, the only thing a reward can do is push the exchange rate
+up. It moves one way: up.
+
+## Unstaking
+
+Unstaking has a **21-day cooldown**:
+
+<div className="formula">RWT received = stRWT redeemed x rate at the start of unstaking</div>
+
+When you start unstaking, the stRWT is burned immediately and the owed RWT is fixed at the current
+rate. During the 21-day cooldown no further rewards accrue on that amount. After the window, the
+RWT can be withdrawn.

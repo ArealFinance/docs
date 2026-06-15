@@ -1,0 +1,14 @@
+{
+  "name": "rwt-docs",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Areal Finance — RWT documentation (Mintlify)",
+  "scripts": {
+    "dev": "mint dev",
+    "build": "mint build",
+    "check": "mint broken-links"
+  },
+  "devDependencies": {
+    "mint": "latest"
+  }
+}

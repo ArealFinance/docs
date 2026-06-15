@@ -1,0 +1,63 @@
+---
+title: "Real World Token (RWT)"
+description: "A share in the RWA basket, priced by Book NAV"
+---
+
+import { BookNavLive } from "/snippets/book-nav-live.mdx";
+
+**RWT is the protocol's base utility token.** It represents your participation in the RWA basket:
+holding RWT is holding a share of the basket's value and the yield it generates.
+
+**Contract address (Solana)**
+
+```text Real World Token CA
+RWTeFt9M635Tf6w6yveAoXQR2ZwfXs7MfA7W3grDuGT
+```
+
+<BookNavLive />
+
+## Book NAV Value
+
+**Book NAV** (net asset value) is the total value of the real-world assets held in the basket.
+Divided by the total RWT supply, it gives the **Book NAV Price**: the fundamental, on-chain value
+of a single RWT.
+
+<div className="formula">Book NAV Price = Book NAV / total RWT supply</div>
+
+It is computed directly from the on-chain protocol state (`EarnConfig`, which tracks the basket's
+invested capital) and the RWT mint supply, so it is always verifiable. The widget above reads it
+live, refreshed every 30 seconds.
+
+## Minting
+
+New RWT can be minted directly from the protocol at the current Book NAV Price plus a **1% fee**
+that goes to Areal Finance.
+
+<div className="formula">Cost to mint 1 RWT = Book NAV Price x (1 + 1%)</div>
+
+The mint body (at Book NAV) enters the basket, so supply and NAV grow together. This is the
+**mint invariant**: existing holders are never diluted.
+
+## Compounding
+
+The income earned by the RWA in the basket is reinvested straight back into the basket, **without
+minting any new RWT**. The basket's invested capital (the total invested amount) grows while the
+RWT supply stays the same, so the **Book NAV Price grows**:
+
+<div className="formula">invested capital ↑ , RWT supply unchanged → Book NAV Price ↑</div>
+
+This is the protocol's base mechanism for delivering yield: value accrues to every existing RWT as
+the basket compounds, instead of through inflation.
+
+## Price anchor
+
+Minting sets a ceiling on the market price. Whenever the market rises above `Book NAV x 1.01`,
+it becomes profitable to mint and sell, which pushes the price back toward Book NAV. So minting
+is mostly active when the market trades above Book NAV; below it, buying RWT on the secondary
+market is cheaper.
+
+<Note>
+There is no redeem. A holder exits only through the secondary market (DEX). The price is
+supported from below by buybacks (from the 30% reward share) and by liquidity depth, but it can
+temporarily trade below Book NAV.
+</Note>

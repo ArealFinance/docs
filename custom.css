@@ -1,0 +1,678 @@
+/* AREAL Design System — Moonlit Silver-Blue Theme */
+/* Brand: #14171f (deep blue-graphite), #f4f6fb (silvery white), #8aa0c8 (moon accent) */
+
+/* =============================================
+   1. Hide sidebar collapse button
+   ============================================= */
+#sidebar-content > button:has(> .sr-only) {
+  display: none !important;
+}
+
+/* =============================================
+   2. Hide search bar
+   ============================================= */
+#search-bar-entry,
+div:has(> #search-bar-entry) {
+  display: none !important;
+}
+
+@media (min-width: 1024px) {
+  #navigation-items {
+    padding-top: 0 !important;
+  }
+
+  /* Move tabs into main navbar row, next to Launch App */
+  div:has(> .nav-tabs) {
+    position: absolute !important;
+    top: 0;
+    right: 13rem;
+    height: 4rem !important;
+    padding: 0 !important;
+    display: flex !important;
+    align-items: center;
+    z-index: 20;
+  }
+
+  .nav-tabs {
+    height: 100% !important;
+    gap: 2rem !important;
+  }
+
+  /* Hide the active tab underline (it overflows the merged row) */
+  .nav-tabs-item > div {
+    display: none !important;
+  }
+}
+
+/* =============================================
+   3. TOC — left border indicator
+   ============================================= */
+.toc-item {
+  border-left: 2px solid rgba(0, 0, 0, 0.1);
+  padding-left: 12px;
+}
+
+html.dark .toc-item {
+  border-left-color: rgba(255, 255, 255, 0.1);
+}
+
+/* =============================================
+   3c. Full-width pagination (single Next button)
+   ============================================= */
+#pagination > div:empty {
+  display: none !important;
+}
+#pagination a {
+  border-color: rgba(138, 160, 200, 0.2) !important;
+  background: rgba(138, 160, 200, 0.04);
+}
+#pagination a:hover {
+  border-color: #8aa0c8 !important;
+}
+@media (min-width: 1024px) {
+  #pagination:has(> div:empty) {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* Unify Mintlify card borders with the palette */
+.card {
+  border-color: rgba(138, 160, 200, 0.18) !important;
+}
+
+/* =============================================
+   3j. Download link button
+   ============================================= */
+.dl-link {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 0.85rem; font-weight: 600;
+  padding: 7px 13px; margin: 0.25rem 0;
+  border: 1px solid rgba(138, 160, 200, 0.25);
+  border-radius: 10px;
+  background: rgba(138, 160, 200, 0.06);
+  color: #aebfdb !important; text-decoration: none !important;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.dl-link:hover { border-color: #8aa0c8; background: rgba(138, 160, 200, 0.1); }
+
+/* =============================================
+   3i. Rate flow diagram
+   ============================================= */
+.rate-flow { display: flex; align-items: stretch; gap: 0.6rem; flex-wrap: wrap; margin: 1.5rem 0; }
+.rf-box {
+  flex: 1 1 0; min-width: 150px;
+  border: 1px solid rgba(138, 160, 200, 0.2);
+  border-radius: 14px;
+  background: rgba(138, 160, 200, 0.04);
+  padding: 0.9rem 1rem;
+}
+.rf-cap { font-size: 10px; letter-spacing: 0.07em; text-transform: uppercase; color: rgba(233, 238, 246, 0.5); margin-bottom: 7px; }
+.rf-main { font-size: 0.98rem; font-weight: 700; color: #eef2f8; }
+.rf-row { font-size: 0.9rem; color: #eef2f8; margin-top: 3px; display: flex; justify-content: space-between; gap: 0.6rem; white-space: nowrap; }
+.rf-sub { font-size: 0.82rem; margin-top: 4px; }
+.rf-up { color: #41c98a; font-weight: 700; white-space: nowrap; }
+.rf-flat { color: rgba(233, 238, 246, 0.5); font-weight: 600; white-space: nowrap; }
+.rf-gold { color: #e3c27a; }
+.rf-arrow { display: flex; align-items: center; justify-content: center; color: #8aa0c8; font-size: 1.5rem; font-weight: 700; flex: 0 0 auto; }
+@media (max-width: 600px) {
+  .rate-flow { flex-direction: column; }
+  .rf-arrow { transform: rotate(90deg); }
+}
+
+/* =============================================
+   3h. Big CTA link card (external)
+   ============================================= */
+.cta-card {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1.1rem 1.3rem;
+  margin: 1.25rem 0;
+  border: 1px solid rgba(138, 160, 200, 0.25);
+  border-radius: 16px;
+  background: rgba(138, 160, 200, 0.06);
+  text-decoration: none !important;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.cta-card:hover { border-color: #8aa0c8; background: rgba(138, 160, 200, 0.1); }
+.cta-card img {
+  width: 48px !important; height: 48px !important; border-radius: 12px;
+  flex: 0 0 auto; margin: 0 !important;
+}
+.cta-title { font-weight: 700; font-size: 1.05rem; color: #eef2f8; }
+.cta-sub { font-size: 0.9rem; color: rgba(233, 238, 246, 0.6); margin-top: 2px; }
+.cta-arrow { margin-left: auto; color: #8aa0c8; font-size: 1.4rem; flex: 0 0 auto; }
+
+/* =============================================
+   3g. RWA basket summary card
+   ============================================= */
+.basket-summary {
+  max-width: 540px;
+  margin: 1.25rem 0;
+  padding: 1.1rem 1.3rem;
+  border: 1px solid rgba(138, 160, 200, 0.2);
+  border-radius: 16px;
+  background: rgba(138, 160, 200, 0.04);
+}
+.bs-label { font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(233, 238, 246, 0.55); }
+.bs-value { font-size: 30px; font-weight: 750; letter-spacing: -0.02em; color: #eef2f8; margin-top: 4px; }
+.bs-sub { font-size: 0.9rem; color: rgba(233, 238, 246, 0.55); margin-top: 3px; }
+
+/* =============================================
+   3f. RWA asset card (photo + details)
+   ============================================= */
+.asset-card {
+  max-width: 540px;
+  margin: 1.25rem 0;
+  border: 1px solid rgba(138, 160, 200, 0.2);
+  border-radius: 16px;
+  overflow: hidden;
+  background: rgba(138, 160, 200, 0.04);
+}
+.asset-card img {
+  width: 100% !important;
+  height: auto !important;
+  display: block;
+  margin: 0 !important;
+  border-radius: 0 !important;
+}
+.asset-body { padding: 1rem 1.2rem 1.15rem; }
+.asset-head { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; }
+.asset-name { font-weight: 700; font-size: 1.05rem; color: #eef2f8; }
+.asset-status {
+  display: inline-flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  font-size: 0.72rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+  color: #41c98a; background: rgba(65, 201, 138, 0.12);
+  padding: 3px 10px; border-radius: 999px;
+}
+.asset-status .sdot {
+  width: 7px; height: 7px; border-radius: 50%; background: #41c98a;
+  box-shadow: 0 0 0 0 rgba(65, 201, 138, 0.55); animation: pulse 2s infinite;
+}
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 rgba(65, 201, 138, 0.5); }
+  70% { box-shadow: 0 0 0 6px rgba(65, 201, 138, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(65, 201, 138, 0); }
+}
+.asset-sub { font-size: 0.9rem; color: rgba(233, 238, 246, 0.55); margin-top: 2px; }
+.asset-meta { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.85rem; }
+.asset-chip {
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 4px 11px;
+  border-radius: 999px;
+  background: rgba(138, 160, 200, 0.12);
+  color: #aebfdb;
+}
+.asset-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-top: 0.9rem;
+  padding-top: 0.8rem;
+  border-top: 1px solid rgba(138, 160, 200, 0.15);
+}
+.asset-added {
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(233, 238, 246, 0.5);
+}
+.asset-added strong {
+  color: #eef2f8;
+  font-weight: 700;
+}
+.asset-link {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: #aebfdb !important;
+  text-decoration: none !important;
+  white-space: nowrap;
+}
+.asset-link:hover { text-decoration: underline !important; }
+
+/* =============================================
+   3e. Non-copyable formula block
+   ============================================= */
+.formula {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9rem;
+  padding: 0.85rem 1.1rem;
+  margin: 1.1rem 0;
+  border: 1px solid rgba(138, 160, 200, 0.2);
+  border-radius: 12px;
+  background: rgba(138, 160, 200, 0.04);
+  color: #c9d1de;
+}
+
+/* =============================================
+   3d. Token cards with logos (2-column)
+   ============================================= */
+.token-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin: 1rem 0;
+}
+@media (max-width: 700px) {
+  .token-cards { grid-template-columns: 1fr; }
+}
+.token-card {
+  display: block;
+  padding: 1rem 1.2rem;
+  border: 1px solid rgba(138, 160, 200, 0.2);
+  border-radius: 14px;
+  background: rgba(138, 160, 200, 0.04);
+  text-decoration: none !important;
+  transition: border-color 0.15s ease;
+}
+.token-card:hover { border-color: #8aa0c8; }
+.token-card-logo {
+  width: 38px !important;
+  height: 38px !important;
+  border-radius: 50%;
+  display: block;
+  margin: 0 0 0.55rem 0 !important;
+}
+.token-card-title { font-weight: 700; font-size: 0.95rem; color: #eef2f8; }
+.token-card-desc {
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: rgba(233, 238, 246, 0.55);
+  margin-top: 3px;
+}
+
+/* =============================================
+   3a. Custom RWT link card (big logo left, text right)
+   ============================================= */
+.rwt-card {
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  padding: 1rem 1.25rem;
+  margin: 1rem 0;
+  border: 1px solid rgba(138, 160, 200, 0.2);
+  border-radius: 16px;
+  background: rgba(138, 160, 200, 0.04);
+  text-decoration: none !important;
+  transition: border-color 0.15s ease;
+}
+.rwt-card:hover {
+  border-color: #8aa0c8;
+}
+.rwt-card-logo {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.rwt-card-title {
+  font-weight: 700;
+  color: #eef2f8;
+}
+.rwt-card-desc {
+  font-size: 0.9rem;
+  color: rgba(233, 238, 246, 0.55);
+  margin-top: 2px;
+}
+
+/* =============================================
+   3b. Full-height nav / content divider
+   ============================================= */
+@media (min-width: 1024px) {
+  #sidebar-content {
+    border-right: none !important;
+  }
+  #content-container {
+    border-left: 1px solid rgba(255, 255, 255, 0.06);
+    min-height: calc(100vh - 4rem);
+  }
+}
+
+/* =============================================
+   4. Warm brand tones — Light mode
+   ============================================= */
+
+/* Sidebar warm background */
+#sidebar-content {
+  background-color: rgba(244, 246, 251, 0.6);
+}
+
+/* Sidebar border warmth */
+#sidebar-content {
+  border-color: rgba(20, 23, 31, 0.08) !important;
+}
+
+/* Sidebar group headers */
+.sidebar-group-header h5 {
+  letter-spacing: 0.01em;
+}
+
+/* Active sidebar item */
+#sidebar-content a[aria-current="page"],
+#sidebar-content li a.font-medium {
+  color: #14171f !important;
+  font-weight: 600;
+}
+
+/* Navbar warm background */
+#navbar > div:first-child {
+  background-color: rgba(244, 246, 251, 0.85) !important;
+  backdrop-filter: blur(12px);
+}
+
+#navbar > div:nth-child(2) {
+  background-color: rgba(244, 246, 251, 0.85) !important;
+}
+
+/* Primary button in navbar — Launch App (inverse, like the app's Buy button) */
+#topbar-cta-button a {
+  background-color: #14171f !important;
+  color: #ffffff !important;
+  padding: 0.5rem 1.25rem !important;
+  border-radius: 8px !important;
+  font-weight: 600 !important;
+  font-size: 12px !important;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  transition: background-color 0.2s ease, filter 0.2s ease;
+}
+
+#topbar-cta-button a:hover {
+  background-color: #2b3344 !important;
+}
+
+#topbar-cta-button a div {
+  color: #ffffff !important;
+}
+
+/* Dark mode: white button with dark text */
+html.dark #topbar-cta-button a {
+  background-color: #f4f6fb !important;
+  color: #14171f !important;
+}
+
+html.dark #topbar-cta-button a div {
+  color: #14171f !important;
+}
+
+html.dark #topbar-cta-button a:hover {
+  background-color: #ffffff !important;
+}
+
+/* Hide the arrow icon in CTA */
+#topbar-cta-button svg {
+  display: none !important;
+}
+
+/* Footer warm tones */
+#footer {
+  border-top-color: rgba(20, 23, 31, 0.08);
+}
+
+/* Links — warm hover */
+a:hover {
+  color: #8aa0c8;
+}
+
+/* Headings — noble dark */
+h1, h2, h3, h4, h5, h6 {
+  color: #14171f;
+}
+
+/* =============================================
+   5. Warm brand tones — Dark mode
+   ============================================= */
+
+html.dark #sidebar-content {
+  background-color: rgba(11, 12, 14, 0.6);
+  border-color: rgba(255, 255, 255, 0.05) !important;
+}
+
+html.dark #navbar > div:first-child {
+  background-color: rgba(11, 12, 14, 0.9) !important;
+  backdrop-filter: blur(12px);
+}
+
+html.dark #navbar > div:nth-child(2) {
+  background-color: rgba(11, 12, 14, 0.9) !important;
+}
+
+html.dark #sidebar-content a[aria-current="page"],
+html.dark #sidebar-content li a.font-medium {
+  color: #eef2f8 !important;
+}
+
+html.dark h1,
+html.dark h2,
+html.dark h3,
+html.dark h4,
+html.dark h5,
+html.dark h6 {
+  color: #eef2f8;
+}
+
+/* =============================================
+   6. Refined card & content spacing
+   ============================================= */
+
+/* Rounded corners matching brand */
+#search-bar-entry {
+  border-radius: 10px !important;
+}
+
+/* Next/prev page cards — warm */
+a[class*="border"][class*="rounded"] {
+  border-color: rgba(20, 23, 31, 0.08);
+}
+
+html.dark a[class*="border"][class*="rounded"] {
+  border-color: rgba(255, 255, 255, 0.07);
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+/* =============================================
+   7. Hide pagination on intro page
+   ============================================= */
+.intro-page ~ #pagination,
+.intro-page ~ * #pagination,
+body:has(.intro-page) #pagination {
+  display: none !important;
+}
+
+/* =============================================
+   8. Hero background — intro page only
+   ============================================= */
+
+/* Gradient overlay triggered by .intro-gradient class in MDX */
+.intro-gradient {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 100vh;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 70% 40% at 50% -5%, rgba(205, 217, 236, 0.45) 0%, transparent 70%),
+    radial-gradient(ellipse 50% 30% at 60% 0%, rgba(138, 160, 200, 0.20) 0%, transparent 60%);
+}
+
+html.dark .intro-gradient {
+  background:
+    radial-gradient(ellipse 70% 40% at 50% -5%, rgba(138, 160, 200, 0.14) 0%, transparent 70%),
+    radial-gradient(ellipse 50% 30% at 60% 0%, rgba(205, 217, 236, 0.06) 0%, transparent 60%);
+}
+
+/* =============================================
+   9. Changelog Tags
+   ============================================= */
+
+.changelog-tag {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  margin-right: 6px;
+  line-height: 1.6;
+}
+
+.changelog-tag-update {
+  background-color: rgba(138, 160, 200, 0.12);
+  color: #8aa0c8;
+}
+
+.changelog-tag-feature {
+  background-color: rgba(72, 187, 120, 0.12);
+  color: #38a169;
+}
+
+.changelog-tag-fix {
+  background-color: rgba(237, 137, 54, 0.12);
+  color: #dd6b20;
+}
+
+.changelog-tag-breaking {
+  background-color: rgba(245, 101, 101, 0.12);
+  color: #e53e3e;
+}
+
+.changelog-tag-security {
+  background-color: rgba(66, 153, 225, 0.12);
+  color: #3182ce;
+}
+
+.changelog-tag-compliance {
+  background-color: rgba(56, 178, 172, 0.12);
+  color: #2c7a7b;
+}
+
+html.dark .changelog-tag-update {
+  background-color: rgba(138, 160, 200, 0.18);
+  color: #cdd9ec;
+}
+
+html.dark .changelog-tag-feature {
+  background-color: rgba(72, 187, 120, 0.18);
+  color: #68d391;
+}
+
+html.dark .changelog-tag-fix {
+  background-color: rgba(237, 137, 54, 0.18);
+  color: #f6ad55;
+}
+
+html.dark .changelog-tag-breaking {
+  background-color: rgba(245, 101, 101, 0.18);
+  color: #fc8181;
+}
+
+html.dark .changelog-tag-security {
+  background-color: rgba(66, 153, 225, 0.18);
+  color: #63b3ed;
+}
+
+html.dark .changelog-tag-compliance {
+  background-color: rgba(56, 178, 172, 0.18);
+  color: #4fd1c5;
+}
+
+/* Changelog entry styling */
+.changelog-entry {
+  border-left: 2px solid rgba(138, 160, 200, 0.3);
+  padding-left: 1.25rem;
+  margin-bottom: 2.5rem;
+}
+
+html.dark .changelog-entry {
+  border-left-color: rgba(138, 160, 200, 0.4);
+}
+
+.changelog-date {
+  font-size: 13px;
+  font-weight: 500;
+  color: #888;
+  letter-spacing: 0.02em;
+  margin-bottom: 4px;
+}
+
+/* Clickable tag links */
+.changelog-tag-link,
+.changelog-tag-link:hover,
+.changelog-tag-link:focus,
+.changelog-tag-link:active,
+.changelog-tag-link:visited {
+  text-decoration: none !important;
+  border-bottom: none !important;
+  box-shadow: none !important;
+  background-image: none !important;
+  transition: transform 0.15s ease, filter 0.15s ease;
+  display: inline-flex;
+}
+
+.changelog-tag-link:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.1);
+}
+
+.changelog-tag-link:hover .changelog-tag {
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+html.dark .changelog-tag-link:hover .changelog-tag {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+/* Hide pagination on changelog pages */
+body:has(.changelog-entry) #pagination,
+body:has(.changelog-tag) #pagination {
+  display: none !important;
+}
+
+/* =============================================
+   11. Readability — brighter body text (dark)
+   ============================================= */
+html.dark {
+  color: #c9d1de;
+}
+
+html.dark p,
+html.dark li,
+html.dark td,
+html.dark th,
+html.dark dd,
+html.dark blockquote {
+  color: #c9d1de !important;
+}
+
+/* Bold and inline code stand out a touch more */
+html.dark strong,
+html.dark b {
+  color: #e8edf5 !important;
+}
+
+html.dark code {
+  color: #e0e6f0 !important;
+}
+
+/* Page subtitle / description under the title */
+html.dark .mdx-content > p:first-of-type,
+html.dark p.text-gray-500,
+html.dark p.text-gray-400 {
+  color: #aab4c6 !important;
+}
+
+/* Lighter mode: keep body text comfortably dark */
+html:not(.dark) p,
+html:not(.dark) li,
+html:not(.dark) td,
+html:not(.dark) th {
+  color: #2b3344;
+}

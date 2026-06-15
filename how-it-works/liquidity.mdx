@@ -1,0 +1,36 @@
+---
+title: Liquidity
+description: "How the protocol deepens RWT liquidity for stable entry and exit"
+---
+
+import { LiquidityLive } from "/snippets/liquidity-live.mdx";
+
+**A dedicated 20% of net income continuously deepens RWT liquidity**, so holders can enter and
+exit with minimal slippage.
+
+<LiquidityLive />
+
+## Why it matters
+
+RWT has no on-chain redeem, so the only way out is the secondary market. Deep, stable liquidity
+is therefore essential: it keeps slippage low, supports the price from below, and makes RWT a
+reliable tradable asset rather than a locked position.
+
+## How it is funded
+
+Of the net basket income, **20% is routed to liquidity** on an ongoing basis. The concrete
+mechanism (protocol-owned liquidity or otherwise) and the management of these funds live in the
+off-chain layer, keeping the on-chain core minimal. As the basket earns, liquidity grows
+automatically alongside Book NAV and staking rewards.
+
+## Where it lives
+
+Liquidity sits in on-chain pools across DEXs, such as the **Meteora RWT / USDC** pool. The widget
+above lists every live pool with its size and a link.
+
+## Liquidity and buyback
+
+Two income streams touch the same market: the **20% liquidity** flow deepens it, while the
+**30% staking rewards** in buyback mode purchase RWT from it. These partly offset each other, so
+the off-chain layer's strategy accounts for both. See [Staked RWT](/how-it-works/strwt) for how
+rewards are sourced.
