@@ -1,0 +1,45 @@
+---
+title: "RWT contracts"
+description: "On-chain accounts of the Real World Token"
+---
+
+**RWT** is a classic SPL token (6 decimals) on Solana mainnet. Its fundamental value, Book NAV,
+is tracked on-chain by the earn program through the `EarnConfig` account.
+
+## RWT mint
+
+The SPL token mint for RWT.
+
+```text RWT mint
+RWTeFt9M635Tf6w6yveAoXQR2ZwfXs7MfA7W3grDuGT
+```
+
+[View on Solscan ↗](https://solscan.io/token/RWTeFt9M635Tf6w6yveAoXQR2ZwfXs7MfA7W3grDuGT)
+
+## Earn program
+
+The program that accepts assets, tracks the basket's invested capital, and mints RWT against the
+mint invariant.
+
+```text Earn program
+GTASb5UcQEkcRWuMwfoNABBBNJitdxWByobMLZZ2UCw8
+```
+
+[View on Solscan ↗](https://solscan.io/account/GTASb5UcQEkcRWuMwfoNABBBNJitdxWByobMLZZ2UCw8)
+
+## EarnConfig PDA
+
+The protocol state account (seed `["earn_config"]`). It holds the invested capital used to derive
+Book NAV, and is also the RWT mint authority.
+
+```text EarnConfig PDA
+5GyVeryGnTPPtfteYaj5pNUjE9s2DDDpDnccgoFjV8L3
+```
+
+[View on Solscan ↗](https://solscan.io/account/5GyVeryGnTPPtfteYaj5pNUjE9s2DDDpDnccgoFjV8L3)
+
+<Note>
+Book NAV is not stored as a price. It is derived as invested capital divided by RWT supply, both
+read live from these accounts. See [Real World Token (RWT)](/how-it-works/rwt) for the full
+mechanism.
+</Note>

@@ -86,7 +86,9 @@
             "group": "Smart Contracts",
             "icon": "file-code",
             "pages": [
-              "contracts/overview"
+              "contracts/overview",
+              "contracts/rwt",
+              "contracts/strwt"
             ]
           }
         ]

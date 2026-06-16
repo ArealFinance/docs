@@ -81,6 +81,19 @@ html.dark .toc-item {
 }
 
 /* =============================================
+   3k. Embedded widget iframes (responsive heights)
+   ============================================= */
+.wfr { width: 100%; border: 0; display: block; }
+.wfr-overview { height: 300px; }
+.wfr-distribution { height: 320px; }
+.wfr-booknav { height: 360px; }
+.wfr-strwt { height: 360px; }
+.wfr-market { height: 330px; }
+.wfr-liquidity { height: 390px; }
+.wfr-revenue { height: 390px; }
+/* Heights above are fallbacks; custom.js auto-sizes each iframe to its content. */
+
+/* =============================================
    3j. Download link button
    ============================================= */
 .dl-link {
@@ -142,6 +155,53 @@ html.dark .toc-item {
 .cta-title { font-weight: 700; font-size: 1.05rem; color: #eef2f8; }
 .cta-sub { font-size: 0.9rem; color: rgba(233, 238, 246, 0.6); margin-top: 2px; }
 .cta-arrow { margin-left: auto; color: #8aa0c8; font-size: 1.4rem; flex: 0 0 auto; }
+
+/* =============================================
+   3i. App launch CTA banner (gradient, with button)
+   ============================================= */
+.app-cta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 1.6rem 1.7rem;
+  margin: 1.75rem 0 0.5rem;
+  border: 1px solid rgba(138, 160, 200, 0.28);
+  border-radius: 18px;
+  background:
+    radial-gradient(130% 150% at 0% 0%, rgba(138, 160, 200, 0.18), rgba(138, 160, 200, 0.04) 55%),
+    rgba(138, 160, 200, 0.05);
+  text-decoration: none !important;
+  transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+}
+.app-cta:hover {
+  border-color: rgba(138, 160, 200, 0.55);
+  transform: translateY(-1px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+}
+.app-cta-title { font-weight: 700; font-size: 1.22rem; color: #eef2f8; letter-spacing: -0.01em; }
+.app-cta-sub { font-size: 0.92rem; color: rgba(233, 238, 246, 0.62); margin-top: 5px; max-width: 48ch; }
+.app-cta-btn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0.72rem 1.2rem;
+  border-radius: 999px;
+  background: #8aa0c8;
+  color: #0b0c0e !important;
+  font-weight: 700;
+  font-size: 0.95rem;
+  white-space: nowrap;
+  transition: background 0.15s ease;
+}
+.app-cta:hover .app-cta-btn { background: #aebfdb; }
+.app-cta-arrow { font-size: 1.05rem; line-height: 1; }
+@media (max-width: 600px) {
+  .app-cta { flex-direction: column; align-items: flex-start; gap: 1.1rem; padding: 1.3rem 1.3rem; }
+  .app-cta-title { font-size: 1.1rem; }
+  .app-cta-btn { width: 100%; justify-content: center; padding: 0.8rem 1.2rem; }
+}
 
 /* =============================================
    3g. RWA basket summary card

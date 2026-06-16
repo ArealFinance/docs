@@ -1,0 +1,54 @@
+---
+title: "stRWT contracts"
+description: "On-chain accounts of Staked RWT"
+---
+
+**stRWT** is the staked version of RWT (SPL token, 6 decimals) on Solana mainnet. Staking is
+handled by a dedicated program; rewards accrue through a steadily rising stRWT to RWT exchange
+rate, with no claiming.
+
+## stRWT mint
+
+The SPL token mint for staked RWT.
+
+```text stRWT mint
+sRWTy1bkqvRegb31RETanhbAtJ7eXN6XsTvaqBRh6kA
+```
+
+[View on Solscan ↗](https://solscan.io/token/sRWTy1bkqvRegb31RETanhbAtJ7eXN6XsTvaqBRh6kA)
+
+## Staking program
+
+The program that mints and burns stRWT and maintains the staking pool.
+
+```text Staking program
+9tEKvDwkqkveBvmQfEzgPKWSNCDTGSSqYz4ZE6pP5DGY
+```
+
+[View on Solscan ↗](https://solscan.io/account/9tEKvDwkqkveBvmQfEzgPKWSNCDTGSSqYz4ZE6pP5DGY)
+
+## StakingConfig PDA
+
+The staking state account (seed `["staking_config"]`). It is also the stRWT mint authority.
+
+```text StakingConfig PDA
+EwXST2yoQRBf3FEYe6fyoseatHaVypYck3ZQ5bEGzEUe
+```
+
+[View on Solscan ↗](https://solscan.io/account/EwXST2yoQRBf3FEYe6fyoseatHaVypYck3ZQ5bEGzEUe)
+
+## Pool RWT vault
+
+The associated token account of the StakingConfig PDA that holds the staked RWT backing all stRWT.
+The exchange rate is derived from this balance and the stRWT supply.
+
+```text Pool RWT vault
+WtXa3NyQaiYdD6hJrDGkHcYyMKv722LqmPXij8hh2BT
+```
+
+[View on Solscan ↗](https://solscan.io/account/WtXa3NyQaiYdD6hJrDGkHcYyMKv722LqmPXij8hh2BT)
+
+<Note>
+The exchange rate is pool RWT divided by stRWT supply, both read live from these accounts. See
+[Staked RWT (stRWT)](/how-it-works/strwt) for the full mechanism.
+</Note>

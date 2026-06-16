@@ -10,7 +10,20 @@ tracks Book NAV, mints RWT against the mint invariant, and distributes staking r
 through a rising exchange rate. All price logic, oracles, and buyback/mint strategy live
 in an off-chain layer.
 
-<Note>
-This section is being built step by step. Contract-by-contract reference pages are added
-incrementally.
-</Note>
+Two token systems make up the protocol. Open either one for its on-chain addresses.
+
+<a href="/contracts/rwt" className="rwt-card">
+  <img src="/images/rwt.png" alt="RWT" className="rwt-card-logo" />
+  <div>
+    <div className="rwt-card-title">RWT contracts</div>
+    <div className="rwt-card-desc">Token mint, the earn program, and the EarnConfig PDA that tracks Book NAV.</div>
+  </div>
+</a>
+
+<a href="/contracts/strwt" className="rwt-card">
+  <img src="/images/strwt.png" alt="stRWT" className="rwt-card-logo" />
+  <div>
+    <div className="rwt-card-title">stRWT contracts</div>
+    <div className="rwt-card-desc">Staked token mint, the staking program, its config PDA, and the pool vault.</div>
+  </div>
+</a>
