@@ -91,6 +91,10 @@ html.dark .toc-item {
 .wfr-market { height: 330px; }
 .wfr-liquidity { height: 390px; }
 .wfr-revenue { height: 390px; }
+.wfr-holders { height: 360px; }
+.wfr-supply { height: 320px; }
+.wfr-apy { height: 320px; }
+.wfr-staked { height: 320px; }
 /* Heights above are fallbacks; custom.js auto-sizes each iframe to its content. */
 
 /* =============================================

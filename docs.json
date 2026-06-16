@@ -57,6 +57,13 @@
               "how-it-works/liquidity",
               "how-it-works/borrowing"
             ]
+          },
+          {
+            "group": "Statistics",
+            "icon": "chart-simple",
+            "pages": [
+              "statistics/areal-finance"
+            ]
           }
         ]
       },

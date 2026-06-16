@@ -1,0 +1,55 @@
+---
+title: "Areal Finance"
+description: "Live, on-chain statistics for the Areal protocol"
+---
+
+import { OverviewLive } from "/snippets/overview-live.mdx";
+import { HoldersLive } from "/snippets/holders-live.mdx";
+import { SupplyLive } from "/snippets/supply-live.mdx";
+import { ApyRwtLive } from "/snippets/apy-rwt-live.mdx";
+import { StakedLive } from "/snippets/staked-live.mdx";
+import { ApyStrwtLive } from "/snippets/apy-strwt-live.mdx";
+
+Every figure on this page is read directly from Solana mainnet and refreshes automatically.
+
+## Protocol overview
+
+<OverviewLive />
+
+## Unique holders
+
+Unique on-chain addresses holding RWT or stRWT (protocol pools excluded), captured by a daily
+snapshot.
+
+<HoldersLive />
+
+## Real World Token (RWT)
+
+### Total supply
+
+The total RWT in circulation. It grows only when new RWT is minted at Book NAV, never through
+inflation. The current value is read live; the chart is built from a daily snapshot.
+
+<SupplyLive />
+
+### APY
+
+Annualized RWT yield from Book NAV growth, captured by a daily snapshot.
+
+<ApyRwtLive />
+
+## Staked RWT (stRWT)
+
+### Staked supply
+
+stRWT in circulation over time, alongside the share of total RWT supply that is staked.
+
+<StakedLive />
+
+### APY
+
+Annualized stRWT yield in USD. Because staking accumulates RWT, which itself appreciates as Book
+NAV grows, this captures both the rising exchange rate and the RWT price growth. Captured by a
+daily snapshot.
+
+<ApyStrwtLive />
