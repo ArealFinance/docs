@@ -471,6 +471,61 @@ html.dark #topbar-cta-button a:hover {
   display: none !important;
 }
 
+/* Live RWT / stRWT price ticker in the navbar */
+.rwt-ticker {
+  position: fixed;
+  transform: translateY(-50%);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding-right: 1.4rem;        /* divider separates the token block from the nav (desktop) */
+  border-right: 1px solid rgba(138, 160, 200, 0.22);
+}
+/* Mobile: compact (logo + price only), no divider. */
+.rwt-ticker.compact {
+  padding-right: 0;
+  border-right: 0;
+}
+.rwt-ticker.compact .tk-sym { display: none; }
+.rwt-ticker.compact .tk + .tk { margin-left: 0.6rem; padding-left: 0.6rem; border-left: 1px solid rgba(138, 160, 200, 0.2); }
+.rwt-ticker.compact .tk img { width: 20px; height: 20px; }
+.rwt-ticker.compact .tk { font-size: 12px; gap: 5px; }
+.rwt-ticker .tk {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  text-decoration: none !important;
+  font-size: 14px;
+  line-height: 1;
+  white-space: nowrap;
+}
+.rwt-ticker .tk + .tk {
+  margin-left: 1.1rem;
+  padding-left: 1.1rem;
+  border-left: 1px solid rgba(138, 160, 200, 0.2);
+}
+.rwt-ticker .tk img {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.25);
+}
+.rwt-ticker .tk-sym {
+  color: rgba(233, 238, 246, 0.55);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.rwt-ticker .tk-px {
+  color: #ffffff;
+  font-weight: 700;
+  transition: color 0.15s ease;
+}
+.rwt-ticker .tk:hover .tk-px {
+  color: #aebfdb;
+}
+
 /* Footer warm tones */
 #footer {
   border-top-color: rgba(20, 23, 31, 0.08);
