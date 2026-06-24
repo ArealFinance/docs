@@ -20,7 +20,8 @@ window.addEventListener("message", function (e) {
   var EARN = "5GyVeryGnTPPtfteYaj5pNUjE9s2DDDpDnccgoFjV8L3"; // EarnConfig PDA
   var RWT = "RWTeFt9M635Tf6w6yveAoXQR2ZwfXs7MfA7W3grDuGT";
   var STRWT = "sRWTy1bkqvRegb31RETanhbAtJ7eXN6XsTvaqBRh6kA";
-  var POOL = "WtXa3NyQaiYdD6hJrDGkHcYyMKv722LqmPXij8hh2BT"; // staking RWT vault
+  var CFG = "EwXST2yoQRBf3FEYe6fyoseatHaVypYck3ZQ5bEGzEUe"; // StakingConfig PDA (rate counters)
+  var ACTIVE_OFFSET = 201; // total_rwt_active (u64 LE) — rate numerator (not vault balance)
   var last = { rwt: null, st: null };
 
   function rpc(method, params) {
@@ -118,7 +119,7 @@ window.addEventListener("message", function (e) {
     Promise.all([
       rpc("getAccountInfo", [EARN, { encoding: "base64" }]),
       rpc("getTokenSupply", [RWT]),
-      rpc("getAccountInfo", [POOL, { encoding: "jsonParsed" }]),
+      rpc("getAccountInfo", [CFG, { encoding: "base64" }]),
       rpc("getTokenSupply", [STRWT]),
     ]).then(function (res) {
       var bin = atob(res[0].result.value.data[0]);
@@ -126,9 +127,11 @@ window.addEventListener("message", function (e) {
       for (var i = 0; i < 16; i++) capital += BigInt(bin.charCodeAt(8 + i)) << (8n * BigInt(i));
       var rwtSupply = Number(res[1].result.value.amount);
       var nav = rwtSupply === 0 ? 1 : Number(capital) / rwtSupply;
-      var poolRaw = Number(res[2].result.value.data.parsed.info.tokenAmount.amount);
+      var cfgBin = atob(res[2].result.value.data[0]);
+      var active = 0n; // total_rwt_active (u64 LE) — excludes cooldown reserve
+      for (var j = 0; j < 8; j++) active += BigInt(cfgBin.charCodeAt(ACTIVE_OFFSET + j)) << (8n * BigInt(j));
       var stSupply = Number(res[3].result.value.amount);
-      var rate = (poolRaw + 1e7) / (stSupply + 1e6);
+      var rate = (Number(active) + 1e7) / (stSupply + 1e6);
       last.rwt = nav; last.st = rate * nav;
       var er = document.getElementById("tk-rwt"), es = document.getElementById("tk-strwt");
       if (er) er.textContent = fmt(last.rwt);
