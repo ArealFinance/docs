@@ -64,6 +64,13 @@
             "pages": [
               "statistics/areal-finance"
             ]
+          },
+          {
+            "group": "Legal",
+            "icon": "scale-balanced",
+            "pages": [
+              "security/terms-of-use"
+            ]
           }
         ]
       },
