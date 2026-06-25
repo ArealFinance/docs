@@ -1,0 +1,67 @@
+---
+title: Decision Market
+description: "How Areal Finance is governed — futarchy via MetaDAO, decision markets, and the on-chain treasury"
+---
+
+**Areal Finance is governed by its community through futarchy**, powered by the
+[MetaDAO](https://metadao.fi) engine. Instead of a team or a committee deciding the protocol's
+direction, key decisions are **priced by markets**: the option a market expects to create the most
+value wins.
+
+Governance runs on **ARL**, the protocol's governance token.
+
+<a href="/governance/arl" className="rwt-card">
+  <img src="/images/arl.png" alt="ARL" className="rwt-card-logo" />
+  <div>
+    <div className="rwt-card-title">ARL — the governance token</div>
+    <div className="rwt-card-desc">Contract, supply, and how ARL steers the protocol through futarchy.</div>
+  </div>
+</a>
+
+## Futarchy in one line
+
+> Vote on **values**, bet on **beliefs**.
+
+The community agrees on a goal (a measurable success metric), and **decision markets** determine
+which action best achieves it. Each proposal spins up markets that forecast the outcome under
+"adopt" vs. "reject"; the market's verdict decides the result. This replaces opinion-based voting
+with skin-in-the-game price discovery.
+
+## What the community governs
+
+Every meaningful protocol parameter is a governance decision, not a hard-coded constant:
+
+| Decision | Examples |
+|----------|----------|
+| **Asset listings** | Which real-world assets enter the [RWA Basket](/how-it-works/rwa-basket). |
+| **Income distribution** | The split model (currently **40 / 30 / 20 / 10** — compounding / stRWT / liquidity / ARL buyback & burn). |
+| **Fees** | The mint fee and other protocol fees. |
+| **Treasury deployment** | How DAO funds are spent, allocated, or reinvested. |
+
+These are **parameters**: the community can change any of them through governance to keep the
+protocol at maximum efficiency.
+
+## The DAO treasury
+
+The protocol's treasury is held **on-chain in a multisig** controlled by the DAO, so funds can only
+move the way governance permits:
+
+- **No unilateral access.** The treasury's configuration authority is the futarchy program — no
+  single party can pull funds. Treasury actions require a passing proposal.
+- **Spending limits for operations.** Recurring operational budgets can be granted as bounded,
+  on-chain **spending limits** (capped per period, optionally to allow-listed destinations), so the
+  team can cover day-to-day costs without a full proposal for every payment — while large or novel
+  spending still goes through futarchy.
+- **Fully verifiable.** Every balance, limit, and transfer is on-chain and auditable.
+
+## Why futarchy
+
+- **Market-priced, not committee-decided.** Decisions reflect forecasted value, not the loudest voice.
+- **Transparent.** Proposals, markets, and outcomes are all on-chain.
+- **Aligned.** Participants put capital behind their beliefs, so good information is rewarded and
+  cheap talk is filtered out.
+
+<Note>
+Governance is live from day one via MetaDAO. As proposals are created and decided, the protocol's
+parameters and treasury evolve according to what the markets price as most valuable.
+</Note>

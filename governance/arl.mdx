@@ -1,0 +1,106 @@
+---
+title: "ARL Token"
+description: "Areal Finance's governance token, launched through MetaDAO futarchy"
+---
+
+import { ArlLive } from "/snippets/arl-live.mdx";
+
+**ARL is the governance token of Areal Finance.** It is the token through which the community steers
+the protocol: ARL holders set the goals and the [decision markets](/governance/overview) price the
+best way to reach them. ARL was launched through the **MetaDAO** futarchy launchpad.
+
+**Contract address (Solana)**
+
+```text ARL Token CA
+6JSXRGMH6wNiukuLi4x6rSHazJMQL51WGbzirXxsmeta
+```
+
+<ArlLive />
+
+## At a glance
+
+| Property        | Value                                              |
+|-----------------|----------------------------------------------------|
+| **Name**        | Areal Finance                                      |
+| **Symbol**      | ARL                                                |
+| **Network**     | Solana                                             |
+| **Decimals**    | 6                                                  |
+| **Supply**      | ~25.8M ARL                                         |
+| **Launch**      | MetaDAO futarchy launchpad                         |
+| **Role**        | Governance — futarchy decision markets             |
+
+<Note>
+Supply and all token data are on-chain and verifiable. View ARL on
+[Solscan](https://solscan.io/token/6JSXRGMH6wNiukuLi4x6rSHazJMQL51WGbzirXxsmeta).
+</Note>
+
+## Buyback & Burn
+
+**10% of the RWA Basket's revenue is used to buy ARL on the open market and burn it.** This is how
+real-world cash flow accrues to ARL: the income produced by the basket is continuously converted
+into permanent ARL supply reduction.
+
+<div className="rate-flow">
+  <div className="rf-box">
+    <div className="rf-cap">RWA Basket revenue</div>
+    <div className="rf-main rf-gold">10% share</div>
+  </div>
+  <div className="rf-arrow">→</div>
+  <div className="rf-box">
+    <div className="rf-cap">Open market</div>
+    <div className="rf-main">Buy ARL</div>
+  </div>
+  <div className="rf-arrow">→</div>
+  <div className="rf-box">
+    <div className="rf-cap">Result</div>
+    <div className="rf-main">Burn ARL</div>
+    <div className="rf-sub rf-up">supply ▼</div>
+  </div>
+</div>
+
+The mechanism is **deflationary by design**: as the basket grows and earns more, more ARL is bought
+and burned, so the circulating supply only goes down. The cumulative amount removed is shown live in
+the **Burned** stat of the widget above.
+
+- **Backed by real income, not emissions.** Buybacks are funded by actual basket revenue, not by
+  printing new tokens.
+- **Permanent.** Burned ARL is destroyed on-chain and can never re-enter circulation.
+- **Compounding pressure.** Every new income-generating asset added to the basket increases the
+  revenue stream feeding the buyback.
+
+<Note>
+Burned is computed as **genesis supply − circulating supply**. Burns are executed on-chain and are
+fully verifiable.
+</Note>
+
+## What ARL is for
+
+- **Governance.** ARL is the token of the Areal DAO. Protocol decisions — [asset
+  listings](/how-it-works/rwa-basket), the [income distribution model](/how-it-works/overview),
+  fees, and treasury deployment — are made through **futarchy** rather than by a team or committee.
+- **Market-priced decisions.** Proposals open decision markets that forecast the value of each
+  option; the market's verdict decides the outcome. See [Decision Market](/governance/overview).
+- **Value accrual.** 10% of RWA Basket revenue buys back and burns ARL (see
+  [Buyback & Burn](#buyback-%26-burn)), so real-world income continuously reduces ARL supply.
+- **Treasury alignment.** Protocol revenue and fees flow to the DAO treasury, which is governed by
+  ARL holders through futarchy.
+
+## ARL vs. RWT and stRWT
+
+Areal has distinct tokens with distinct jobs — don't confuse them:
+
+| Token   | What it is                                                                 |
+|---------|---------------------------------------------------------------------------|
+| **RWT** | A share in the [RWA Basket](/how-it-works/rwt), priced at Book NAV.        |
+| **stRWT** | [Staked RWT](/how-it-works/strwt) — earns protocol income via a rising rate. |
+| **ARL** | The **governance** token — steers the protocol through futarchy.            |
+
+RWT and stRWT give you exposure to the productive real-world assets; **ARL gives you a say in how
+the protocol is run.**
+
+## Treasury & spending
+
+The DAO treasury is held on-chain in a multisig whose configuration authority is the futarchy
+program — no single party can move funds. Routine operating budgets can be granted as bounded,
+on-chain **spending limits**, while larger or novel spending goes through a futarchy proposal. See
+[Decision Market → The DAO treasury](/governance/overview) for details.

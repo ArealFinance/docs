@@ -96,6 +96,7 @@ html.dark .toc-item {
 .wfr-apy { height: 320px; }
 .wfr-staked { height: 320px; }
 .wfr-reserves { height: 460px; }
+.wfr-arl { height: 380px; }
 /* Heights above are fallbacks; custom.js auto-sizes each iframe to its content. */
 
 /* =============================================

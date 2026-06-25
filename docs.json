@@ -59,6 +59,14 @@
             ]
           },
           {
+            "group": "Governance",
+            "icon": "landmark",
+            "pages": [
+              "governance/overview",
+              "governance/arl"
+            ]
+          },
+          {
             "group": "Statistics",
             "icon": "chart-simple",
             "pages": [
